@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/controller",
+    "crates/api-server",
+    "crates/vm-supervisor",
+    "crates/net-proxy",
+    "crates/identity-proxy",
+    "crates/mcp-gateway",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/PhilippeVienne/atelier"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+kube = { version = "0.98", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+schemars = "0.8"
+axum = "0.8"

@@ -1,0 +1,91 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workshops.atelier.dev
+spec:
+  group: atelier.dev
+  names:
+    categories: []
+    kind: Workshop
+    plural: workshops
+    shortNames:
+    - wks
+    singular: workshop
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for WorkshopSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : image de la microVM, ressources allouees, politique reseau et outillage active.'
+            properties:
+              egress_allowlist:
+                default: []
+                description: Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
+                items:
+                  type: string
+                type: array
+              owner_subject:
+                description: Identite du sujet JWT autorise a piloter ce Workshop.
+                type: string
+              resources:
+                description: Ressources allouees au pod parent (qui heberge la microVM + le tooling).
+                properties:
+                  cpu:
+                    type: string
+                  disk:
+                    nullable: true
+                    type: string
+                  memory:
+                    type: string
+                required:
+                - cpu
+                - memory
+                type: object
+              tools:
+                default: []
+                description: 'Outils/simulateurs a exposer via le mcp-gateway (ex: "aws-sim", "identity").'
+                items:
+                  type: string
+                type: array
+              vm_image:
+                description: Image de la microVM (rootfs + kernel) a booter dans Firecracker.
+                type: string
+            required:
+            - owner_subject
+            - resources
+            - vm_image
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                additionalProperties:
+                  type: string
+                default: {}
+                type: object
+              phase:
+                enum:
+                - Pending
+                - Provisioning
+                - Running
+                - Terminating
+                - Failed
+                type: string
+              pod_name:
+                nullable: true
+                type: string
+            required:
+            - phase
+            type: object
+        required:
+        - spec
+        title: Workshop
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
