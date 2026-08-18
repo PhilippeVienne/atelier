@@ -1,371 +1,278 @@
 # Architecture d'Atelier
 
+> État d'avancement, ce qui est testé et ce qui reste ouvert : voir
+> [`PROGRESS.md`](PROGRESS.md). Ce document decrit la cible et les decisions
+> de conception ; il n'essaie pas de suivre l'avancement au jour le jour.
+
+## Sommaire
+
+- [Objectif](#objectif)
+- [Le devcontainer comme source de verite](#le-devcontainer-comme-source-de-verite)
+- [Vue d'ensemble](#vue-densemble)
+- [Composants](#composants)
+- [Cycle de vie d'un Workshop](#cycle-de-vie-dun-workshop)
+- [Mise en veille : snapshot/restore Firecracker](#mise-en-veille--snapshotrestore-firecracker)
+- [Identite et secrets : Kanidm + OpenBao](#identite-et-secrets--kanidm--openbao)
+- [Observabilite](#observabilite)
+- [Modele de securite](#modele-de-securite)
+- [Allocation de ressources et scaling](#allocation-de-ressources-et-scaling)
+
 ## Objectif
 
 Fournir a un agent de code (Claude Code, Gemini CLI, etc.) un environnement
-d'execution auquel on peut accorder des pouvoirs larges (shell, reseau, ecriture
-disque) sans risque pour le reste du systeme, parce qu'il est execute dans une
-prison suffisamment etanche : une microVM Firecracker, elle-meme orchestree
-depuis un pod Kubernetes.
+d'execution auquel on peut accorder des pouvoirs larges (shell, reseau,
+ecriture disque) sans risque pour le reste du systeme, parce qu'il est
+execute dans une prison suffisamment etanche : une **microVM Firecracker**,
+elle-meme orchestree depuis un **pod Kubernetes**.
 
-## Definition de l'environnement : le devcontainer comme source de verite
+## Le devcontainer comme source de verite
 
-L'environnement livre a l'agent n'est pas decrit par une image ad hoc : il est
-defini par un `.devcontainer/devcontainer.json` standard, au sens de la
+L'environnement livre a l'agent n'est pas decrit par une image ad hoc : il
+est defini par un `.devcontainer/devcontainer.json` standard, au sens de la
 [specification VS Code Dev Containers](https://containers.dev/). N'importe
 quel depot deja equipe pour Dev Containers (VS Code, GitHub Codespaces,
-`devcontainer` CLI) peut donc etre servi tel quel par Atelier : c'est le
-`devcontainer.json` du projet qui pilote l'image de base, le Dockerfile
-eventuel, les features et les commandes de setup.
+`devcontainer` CLI) peut donc etre servi tel quel par Atelier.
 
-Le composant **image-builder** ne reimplemente pas la resolution du
-devcontainer.json : il delegue a
-[envbuilder](https://github.com/coder/envbuilder) (appele en sous-processus,
-present dans l'image du job de build). Pipeline reel, verifie de bout en
-bout (y compris boot Firecracker du resultat) :
+`image-builder` ne reimplemente pas la resolution du devcontainer.json : il
+delegue a [envbuilder](https://github.com/coder/envbuilder).
 
-1. `envbuilder` clone le repo, resout le devcontainer.json, construit
-   l'environnement (base image + `postCreateCommand` etc.) et **le pousse
-   comme image OCI standard** vers un registre de conteneurs
-   (`ENVBUILDER_PUSH_IMAGE`/`ENVBUILDER_CACHE_REPO`). Envbuilder ne produit
-   *pas* de dossier d'export propre : il construit "en place" en supprimant
-   le systeme de fichiers du conteneur qui l'execute (sauf `/.envbuilder`)
-   avant d'y extraire l'image cible — `image-builder` tourne donc dans le
-   *meme* conteneur qu'envbuilder (`crates/image-builder/Dockerfile`), et
-   tout ce dont il a besoin *apres* cet appel doit vivre sur un point de
-   montage separe de la racine, sous peine d'etre efface.
-2. [`crane export`](https://github.com/google/go-containerregistry) (outil
-   externe etabli, pas de client OCI ecrit a la main) aplatit cette image en
-   tarball.
-3. Le tarball est extrait puis empaquete en image ext4 (`mke2fs -d`).
-4. Le digest sha256 du fichier ext4 sert de cle dans le cache
-   content-addresse — aujourd'hui un repertoire monte depuis un **PVC
-   Kubernetes** partage (lecture-ecriture pour le Job image-builder, lecture
-   seule pour les pods parents) ; offload/reload vers S3 quand le PVC est
-   trop rempli, envisage plus tard mais pas implemente — puis reference
-   dans `WorkshopStatus.image_digest`, que `vm-supervisor` consomme pour
-   booter la microVM. Un `Workshop` passe donc par une phase `BuildingImage`
-   avant `Provisioning`/`Running`.
+```mermaid
+flowchart LR
+    A["envbuilder\nclone + resout devcontainer.json"] -->|"push image OCI"| B[("registre de\nconteneurs")]
+    B -->|"crane export"| C["tarball du\nfilesystem"]
+    C -->|"mke2fs -d"| D["rootfs.ext4"]
+    D -->|"digest sha256"| E[("PVC de cache\ncontent-addressed")]
+    E -->|"WorkshopStatus\n.imageDigest"| F["vm-supervisor\nboot Firecracker"]
+```
 
-Voir `deploy/dev/image-builder/README.md` pour reproduire ce pipeline en
-local (registre de dev, extraction des binaires envbuilder/crane).
+Point de conception a retenir : `envbuilder` ne produit **pas** de dossier
+d'export propre. Il construit "en place" — il commence par supprimer le
+systeme de fichiers du conteneur qui l'execute (sauf `/.envbuilder`) avant
+d'y extraire l'image cible. Consequences directes sur `image-builder` :
+
+- il tourne dans le **meme conteneur** qu'envbuilder
+  (`crates/image-builder/Dockerfile`), pas en l'invoquant depuis un
+  conteneur separe ;
+- tout outil dont il a besoin **apres** l'appel a envbuilder (`crane`, le
+  cache) doit vivre sur un point de montage distinct de la racine du
+  conteneur, sous peine d'etre efface avec le reste.
+
+Voir [`deploy/dev/image-builder/README.md`](../deploy/dev/image-builder/README.md)
+pour reproduire ce pipeline en local.
 
 ## Vue d'ensemble
 
-```
-                         ┌────────────────────────────────────────┐
-Client externe (JWT) ───►│              api-server                │
-                         │  (auth JWT, expose Workshop CRUD)       │
-                         └───────────────┬──────────────────────────┘
-                                          │ cree/lit des CR
-                                          ▼
-                         ┌────────────────────────────────────────┐
-                         │              controller                │
-                         │  (operateur, reconcilie Workshop → Pod) │
-                         └───────────────┬──────────────────────────┘
-                                          │ spec.devcontainer
-                                          ▼
-                         ┌────────────────────────────────────────┐
-                         │             image-builder               │
-                         │  (devcontainer.json → rootfs Firecracker)│
-                         │  status.image_digest                     │
-                         └───────────────┬──────────────────────────┘
-                                          │ cree le pod parent
-                                          ▼
-      ┌───────────────────────── Pod parent (namespace isole) ─────────────────────────┐
-      │                                                                                  │
-      │   ┌───────────────┐   ┌───────────┐   ┌────────────────┐   ┌─────────────────┐  │
-      │   │ vm-supervisor │   │ net-proxy │   │ identity-proxy │   │   mcp-gateway    │  │
-      │   │ (lifecycle    │   │ (egress   │   │ (injection de  │   │ (agent ↔ monde   │  │
-      │   │  Firecracker) │   │  allowlist│   │  credentials)  │   │  exterieur, MCP) │  │
-      │   └───────┬───────┘   └─────┬─────┘   └────────┬───────┘   └────────┬─────────┘  │
-      │           │ vsock/API       │ reseau            │ reseau            │ vsock       │
-      │           ▼                 └──────────┬────────┴───────────────────┘             │
-      │   ┌─────────────────────────────────────▼─────────────────────────────────────┐   │
-      │   │                     microVM Firecracker (jailer)                          │   │
-      │   │   agent de code (Claude Code, ...) + shell + acces disque de travail       │   │
-      │   └─────────────────────────────────────────────────────────────────────────┘   │
-      │                                                                                  │
-      └──────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Client(["Client externe\n(JWT Kanidm)"]) -->|"CRUD Workshop"| API["api-server"]
+    API -->|"cree/lit"| CR[("CR Workshop")]
+    CR <-->|"reconcile"| Controller["controller"]
+
+    Controller -->|"spec.devcontainer"| Builder["image-builder (Job)"]
+    Builder -->|"status.imageDigest"| Cache[("PVC cache\nrootfs ext4")]
+
+    Controller -->|"cree"| Pod
+
+    subgraph Pod["Pod parent (namespace isole)"]
+        direction LR
+        VMS["vm-supervisor\n(cycle de vie Firecracker)"]
+        NetProxy["net-proxy\n(egress allowlist)"]
+        IdProxy["identity-proxy\n(credentials OpenBao)"]
+        MCP["mcp-gateway\n(agent ↔ monde exterieur)"]
+        VMS -->|"vsock / API"| VM
+        NetProxy -->|"reseau"| VM
+        IdProxy -->|"reseau"| VM
+        MCP -->|"vsock"| VM
+
+        subgraph VM["microVM Firecracker (jailer)"]
+            Agent["agent de code\n+ shell + disque de travail"]
+        end
+    end
+
+    Cache -.->|"lecture seule"| VMS
+    Controller -->|"ServiceAccount dedie"| Pod
+    IdProxy -->|"auth Kubernetes"| OpenBao[("OpenBao")]
+    Controller -->|"provisionne entite +\nrole OpenBao"| OpenBao
+    Controller -->|"provisionne entite"| Kanidm[("Kanidm")]
+    API -->|"valide JWT"| Kanidm
 ```
 
 ## Composants
 
-### control plane (hors du pod parent)
+### Control plane (hors du pod parent)
 
-- **api-server** (`crates/api-server`) : API HTTP externe. Authentifie les
-  appels via un JWT dont l'issuer est [Kanidm](https://kanidm.com/) (JWKS
-  recuperes au demarrage). Cree/lit/detruit des CR `Workshop`. Voir la
-  section dediee « Identite et secrets » ci-dessous.
-- **controller** (`crates/controller`) : operateur Kubernetes (kube-rs) qui
-  reconcilie les CR `Workshop` en ressources concretes (pod parent,
-  ResourceQuota, NetworkPolicy) et met a jour leur statut. Un finalizer
-  (`atelier.dev/cleanup`) bloque la suppression effective d'un Workshop tant
-  que ses ressources externes (entite Kanidm, role OpenBao) n'ont pas ete
-  nettoyees ; les ressources Kubernetes owned (Job, ServiceAccount, Pod)
-  n'en ont pas besoin, le garbage collector standard suffit.
-- **CRD `Workshop`** (`crates/common/src/crd.rs`, manifeste genere dans
-  `crds/workshop.yaml`) : source de verite declarative pour un environnement
-  (source devcontainer, ressources, allowlist reseau, outils/simulateurs
-  actifs, proprietaire).
-- **image-builder** (`crates/image-builder`) : construit le rootfs Firecracker
-  a partir de `WorkshopSpec.devcontainer` en invoquant `envbuilder` en
-  sous-processus pour la resolution du devcontainer.json, puis empaquette le
-  resultat en ext4 et le publie dans le cache content-addressed. Voir section
-  dediee ci-dessus.
+| Composant | Role |
+|---|---|
+| **api-server** (`crates/api-server`) | API HTTP externe. Authentifie via JWT dont l'issuer est [Kanidm](https://kanidm.com/) (JWKS recuperes au demarrage). Cree/lit/detruit des CR `Workshop`. |
+| **controller** (`crates/controller`) | Operateur Kubernetes (kube-rs) qui reconcilie les CR `Workshop` en ressources concretes (pod parent, Job de build, PVC, ServiceAccount) et met a jour leur statut. Un finalizer (`atelier.dev/cleanup`) bloque la suppression effective d'un Workshop tant que ses ressources externes (entite Kanidm, role OpenBao) n'ont pas ete nettoyees ; les ressources Kubernetes owned (Job, ServiceAccount, Pod) n'en ont pas besoin, le garbage collector standard suffit. |
+| **CRD `Workshop`** (`crates/common/src/crd.rs` → `crds/workshop.yaml`) | Source de verite declarative pour un environnement (source devcontainer, ressources, allowlist reseau, outils/simulateurs actifs, proprietaire). |
+| **image-builder** (`crates/image-builder`) | Construit le rootfs Firecracker a partir de `WorkshopSpec.devcontainer` (voir pipeline ci-dessus) et le publie dans le cache content-addressed. |
 
-### tooling du pod parent (a cote de la microVM, pas dedans)
+### Tooling du pod parent (a cote de la microVM, pas dedans)
 
-- **vm-supervisor** (`crates/vm-supervisor`) : demarre/arrete la microVM
-  Firecracker **jailee** (chroot, cgroups), gere le cycle boot/snapshot/
-  restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas un client
-  HTTP maison). Le jailer tourne avec des capabilities Linux dediees
-  (`setcap`, pas root/sudo). **Branche reellement dans le pod parent** (plus
-  un placeholder) : monte le PVC de cache en lecture seule pour lire le
-  rootfs a l'emplacement derive de `status.imageDigest`, verifie de bout en
-  bout contre un vrai cluster (Workshop reel → pod → microVM `Running`, cf.
-  `deploy/dev/vm-supervisor/README.md`). Le pod tourne en `privileged: true`
-  pour l'acces a `/dev/kvm` (le device cgroup controller de Kubernetes
-  bloque l'ouverture du device sans ca, meme avec les bonnes capabilities —
-  un device plugin KVM dedie serait plus fin, pas fait). Pas encore de
-  canal de controle vsock vers l'agent/le controller.
-- **net-proxy** (`crates/net-proxy`) : seul chemin de sortie reseau autorise
-  pour la microVM ; n'autorise que les domaines listes dans
-  `Workshop.spec.egress_allowlist`, journalise chaque appel.
-- **identity-proxy** (`crates/identity-proxy`) : injecte des credentials/tokens
-  dans les appels sortants (ex: acces a une API necessitant un token) sans
-  jamais exposer le secret brut a l'agent dans la VM. Secrets stockes dans
-  OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du
-  pod parent (pas l'identite Kanidm). Voir la section dediee « Identite et
-  secrets » ci-dessous.
-- **mcp-gateway** (`crates/mcp-gateway`) : serveur MCP expose a l'agent (via
-  vsock). C'est le seul point d'entree pour que l'agent (1) agisse sur le
-  monde exterieur au-dela du simple reseau proxifie, et (2) demande des
-  reglages a l'atelier (elargir une allowlist, activer un simulateur
-  d'API/AWS, demander un credential). Point d'extension privilegie pour
-  ajouter de nouveaux simulateurs (LocalStack pour AWS, mocks d'API, etc.).
+| Composant | Role |
+|---|---|
+| **vm-supervisor** (`crates/vm-supervisor`) | Demarre/arrete la microVM Firecracker **jailee** (chroot, cgroups) et gere le cycle boot/snapshot/restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas de client HTTP maison). Le jailer tourne avec des capabilities Linux dediees (`setcap`), pas root/sudo. |
+| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. |
+| **identity-proxy** (`crates/identity-proxy`) | Injecte des credentials/tokens dans les appels sortants sans jamais exposer le secret brut a l'agent. Secrets stockes dans OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du pod parent (pas l'identite Kanidm — voir [Identite et secrets](#identite-et-secrets--kanidm--openbao)). |
+| **mcp-gateway** (`crates/mcp-gateway`) | Serveur MCP expose a l'agent (via vsock). Seul point d'entree pour que l'agent agisse sur le monde exterieur au-dela du reseau proxifie, et demande des reglages a l'atelier (elargir une allowlist, activer un simulateur, demander un credential). Point d'extension privilegie pour de nouveaux simulateurs (LocalStack pour AWS, mocks d'API, etc.). |
 
-### interfaces utilisateur
+### Interfaces utilisateur
 
-- **dashboard** (`dashboard/`, Next.js) : vue admin et vue utilisateur final.
-  Lister/creer/detruire des Workshops, visualiser leur etat et leur
-  consommation de ressources, s'y connecter (SSH ou VS Code via un
-  code-server embarque, cf. `coder/code-server` comme reference
-  d'implementation).
+| Composant | Role |
+|---|---|
+| **dashboard** (`dashboard/`, Next.js) | Vue admin et utilisateur final : lister/creer/detruire des Workshops, visualiser leur etat, s'y connecter (SSH ou VS Code via un `code-server` embarque, cf. `coder/code-server` comme reference). |
+
+## Cycle de vie d'un Workshop
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> BuildingImage: image_digest absent
+    BuildingImage --> Provisioning: image_digest pret
+    Provisioning --> Running: pod parent Running
+    Running --> Suspending: desiredState=Suspended
+    Suspending --> Suspended: pod parent libere
+    Suspended --> Resuming: desiredState=Running
+    Resuming --> Running: pod parent recree
+    Running --> Terminating: suppression demandee
+    Suspended --> Terminating: suppression demandee
+    Terminating --> [*]: finalizer leve (Kanidm/OpenBao nettoyes)
+```
+
+Chaque flèche correspond a un pas de la boucle de reconciliation
+(`crates/controller/src/reconcile.rs::apply`) : le `controller` ne fait
+qu'une seule transition par appel, et se rappelle lui-meme (`requeue`)
+jusqu'a convergence.
 
 ## Mise en veille : snapshot/restore Firecracker
 
 Un Workshop n'est pas seulement demarre/detruit : il peut etre **suspendu**.
-Firecracker expose nativement `PUT /snapshot/create` (fige l'etat de la VM et
-son contenu memoire) et `PUT /snapshot/load` (restaure a l'identique), ce qui
-permet de :
+Firecracker expose nativement `snapshot/create` (fige l'etat de la VM et sa
+memoire) et `snapshot/load` (restaure a l'identique), ce qui permet de :
 
-- liberer les ressources du pod parent (CPU/memoire/pod du cluster) pendant
-  qu'un Workshop est inactif, sans perdre l'etat de travail de l'agent ;
+- liberer les ressources du pod parent pendant qu'un Workshop est inactif,
+  sans perdre l'etat de travail de l'agent ;
 - reprendre en quelques centaines de millisecondes, sans rejouer le boot du
-  noyau invite ni le setup du devcontainer (contrairement a une destruction
-  suivie d'un nouveau `Provisioning`).
+  noyau invite ni le setup du devcontainer.
 
-Ce cycle est pilote par `WorkshopSpec.desired_state` (`Running` /
-`Suspended`), que le `controller` fait converger :
+```mermaid
+sequenceDiagram
+    participant U as Utilisateur/api-server
+    participant C as controller
+    participant P as Pod parent
+    participant VM as vm-supervisor
 
-- `Running` → `Suspended` : phase `Suspending`, `vm-supervisor` declenche
-  `snapshot/create`, publie le resultat dans le cache content-addressed
-  (meme mecanisme que les images `image-builder`), le digest est ecrit dans
-  `WorkshopStatus.snapshot_digest`, puis le pod parent est libere.
-- `Suspended` → `Running` : phase `Resuming`, le `controller` recree le pod
-  parent, `vm-supervisor` recupere le snapshot via son digest et appelle
-  `snapshot/load` au lieu de rebooter depuis `image_digest`.
+    U->>C: spec.desiredState = Suspended
+    C->>P: supprime le pod (phase Suspending)
+    Note over C: TODO : demander un snapshot<br/>avant suppression (pas encore cable)
+    C-->>U: status.phase = Suspended
+
+    U->>C: spec.desiredState = Running
+    C->>P: recree le pod (phase Resuming)
+    P->>VM: boot (depuis image_digest)
+    VM-->>C: pod Running
+    C-->>U: status.phase = Running
+```
 
 L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
-(`crates/api-server`), typiquement utilises par le dashboard pour une mise en
-veille manuelle ou par une politique d'auto-suspend sur inactivite (a
+(`crates/api-server`), typiquement utilises par le dashboard pour une mise
+en veille manuelle ou une politique d'auto-suspend sur inactivite (a
 definir).
 
-**Etat actuel de l'implementation** : le `controller` fait bien converger
-`status.phase` selon `spec.desiredState` (`Suspending`/`Suspended`/
-`Resuming`/`Running`) et libere/recree le pod parent en consequence — verifie
-en conditions reelles (suspend puis resume contre un vrai cluster,
-`crates/controller/src/reconcile.rs`). `vm-supervisor` sait de son cote
-reellement piloter Firecracker pour un snapshot/restore complet (pause,
-`snapshot/create`, puis `snapshot/load` dans un nouveau process — verifie en
-conditions reelles avec KVM, `crates/vm-supervisor/src/vm.rs`). Ce qui
-**manque encore** est le cablage entre les deux : le `controller` n'appelle
-pas encore `vm-supervisor` au moment de suspendre/reprendre (pas de canal
-vsock), et `status.snapshotDigest` n'est donc jamais peuple — pour l'instant,
-suspendre libere juste le pod (le process `firecracker` meurt avec lui, sans
-snapshot pris), et reprendre en recree un depuis `status.imageDigest`
-(equivalent a un redemarrage, pas a une vraie reprise memoire). L'entite
-Kanidm et le role OpenBao du Workshop sont deliberement laisses intacts a
-travers ce cycle (pas reprovisionnes a chaque resume), et les endpoints
-`/suspend`/`/resume` de l'api-server restent a cabler.
+L'entite Kanidm et le role OpenBao du Workshop sont deliberement **laisses
+intacts** a travers ce cycle (pas reprovisionnes a chaque resume) : un
+Workshop suspendu reste "le meme" Workshop du point de vue identite/secrets.
 
 ## Identite et secrets : Kanidm + OpenBao
 
-Deux notions d'identite bien distinctes dans Atelier :
+Deux notions d'identite bien distinctes :
 
-- **L'utilisateur humain** proprietaire d'un Workshop (`WorkshopSpec.owner_subject`).
-  Son identite est geree par [Kanidm](https://kanidm.com/), qui sert de
-  fournisseur d'identite pour l'ensemble d'Atelier (`api-server` ne valide que
-  des JWT dont l'issuer est Kanidm) et peut lui-meme federer vers un provider
-  externe (OIDC/LDAP d'entreprise) sans qu'Atelier ait a gerer cette
-  integration directement.
-- **L'environnement lui-meme** : chaque `Workshop` se voit attribuer sa propre
-  entite machine dans Kanidm (`WorkshopStatus.kanidm_entity_id`), distincte du
-  sujet humain proprietaire. Cette identite reste la reference cote
+- **L'utilisateur humain** proprietaire d'un Workshop
+  (`WorkshopSpec.owner_subject`). Son identite est geree par
+  [Kanidm](https://kanidm.com/), fournisseur d'identite pour l'ensemble
+  d'Atelier (`api-server` ne valide que des JWT dont l'issuer est Kanidm),
+  qui peut lui-meme federer vers un provider externe (OIDC/LDAP
+  d'entreprise) sans qu'Atelier ait a gerer cette integration directement.
+- **L'environnement lui-meme** : chaque `Workshop` recoit sa propre entite
+  machine dans Kanidm (`WorkshopStatus.kanidmEntityId`), distincte du sujet
+  humain proprietaire. Cette identite reste la reference cote
   utilisateur/dashboard, mais ce n'est **pas** elle qui sert de pont vers
-  OpenBao (voir ci-dessous) — decision deliberee, cf. « Pont d'identite vers
-  OpenBao ».
+  OpenBao (choix deliberement explique ci-dessous).
 
-Les secrets destines aux environnements (credentials/tokens que
-`identity-proxy` injecte dans les appels sortants de l'agent) sont stockes
-dans [OpenBao](https://openbao.org/) — deliberement separe des Secrets
-Kubernetes du cluster sous-jacent, qui restent geres par les mecanismes k8s
-standards pour le fonctionnement du control plane lui-meme. Un secret stocke
-la est frequemment lui-meme l'identite de sortie de l'environnement (ex: une
-cle d'API que l'environnement presente a un service externe) : **seul**
-`identity-proxy` peut la recuperer et l'utiliser — l'agent dans la microVM
-n'y a jamais acces directement, meme indirectement via les variables
-d'environnement ou le systeme de fichiers de la VM. C'est `identity-proxy`,
-et lui seul, qui agit « en tant que » l'environnement aupres des services
-externes.
+Les secrets destines aux environnements (credentials/tokens injectes par
+`identity-proxy`) sont stockes dans [OpenBao](https://openbao.org/) —
+deliberement separe des Secrets Kubernetes du cluster sous-jacent, qui
+restent geres par les mecanismes k8s standards pour le control plane
+lui-meme. Un secret stocke la est souvent lui-meme l'identite de sortie de
+l'environnement (ex: une cle d'API presentee a un service externe) :
+**seul** `identity-proxy` peut la recuperer et l'utiliser — l'agent dans la
+microVM n'y a jamais acces directement, meme indirectement via les
+variables d'environnement ou le systeme de fichiers de la VM.
 
 ### Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm
 
 `identity-proxy` s'authentifie aupres d'OpenBao via la **methode d'auth
 Kubernetes** d'OpenBao, pas via une federation JWT/OIDC avec Kanidm. Le pod
 parent de chaque Workshop recoit son propre ServiceAccount Kubernetes
-(`<name>-parent`, cree par le `controller`) ; identity-proxy presente le
-token projete de ce ServiceAccount, qu'OpenBao verifie en direct aupres de
-l'API Kubernetes (TokenReview) — aucun secret a distribuer ou stocker pour
-amorcer cette confiance.
+(`<name>-parent`) ; `identity-proxy` presente le token projete de ce
+ServiceAccount, qu'OpenBao verifie en direct aupres de l'API Kubernetes
+(TokenReview) — aucun secret a distribuer ou stocker pour amorcer cette
+confiance.
 
 Le `controller` provisionne, par Workshop, une policy OpenBao et un role
 `auth/kubernetes/role/workshop-<name>` scopant l'acces au chemin KV
 `secret/{data,metadata}/workshops/<name>/*` au seul ServiceAccount de ce
-Workshop (`crates/controller/src/openbao.rs`), ce qui borne le rayon d'action
-d'un Workshop compromis aux seuls secrets qui lui ont ete explicitement
-destines. Optionnel via `OPENBAO_ADDR`/`OPENBAO_TOKEN` (`ReconcileCtx.openbao`),
-meme pattern que le provisioning Kanidm.
+Workshop (`crates/controller/src/openbao.rs`), ce qui borne le rayon
+d'action d'un Workshop compromis aux seuls secrets qui lui ont ete
+explicitement destines.
 
-Ce choix a ete fait deliberement au detriment de la coherence "Kanidm =
-identite pour tout" : une federation JWT/OIDC Kanidm -> OpenBao demanderait
-de configurer un Resource Server OAuth2 cote Kanidm et un backend JWT/OIDC
-cote OpenBao (JWKS, client credentials grant) pour un gain de coherence
-conceptuelle, contre une integration nettement plus lourde et une surface de
-panne plus grande que l'auth Kubernetes, deja standard et deja testee de
-bout en bout (`crates/controller/tests/reconcile.rs`,
-`apply_provisions_openbao_role_when_configured`).
+> **Pourquoi pas une federation Kanidm → OpenBao ?** Ce serait plus
+> coherent conceptuellement ("Kanidm = identite pour tout"), mais
+> demanderait de configurer un Resource Server OAuth2 cote Kanidm et un
+> backend JWT/OIDC cote OpenBao (JWKS, client credentials grant) — une
+> integration nettement plus lourde et une surface de panne plus grande que
+> l'auth Kubernetes, deja standard.
 
-## Observabilite : OpenTelemetry
+## Observabilite
 
-Convention imposee a tous les binaires du control plane et du tooling du pod
-parent : chaque `main.rs` appelle `atelier_common::telemetry::init("<nom-du-binaire>")`
-en toute premiere instruction (`crates/common/src/telemetry.rs`), et garde le
-`TelemetryGuard` renvoye en vie jusqu'a la fin de `main` pour que les traces
-en cours soient flush avant l'arret du processus. Ce helper commun :
+Convention imposee a tous les binaires : chaque `main.rs` appelle
+`atelier_common::telemetry::init("<nom-du-binaire>")` en toute premiere
+instruction (`crates/common/src/telemetry.rs`), et garde le
+`TelemetryGuard` renvoye en vie jusqu'a la fin de `main` (flush des traces
+avant l'arret). Ce helper commun :
 
-- configure `tracing-subscriber` (logs structures, filtrable via `RUST_LOG`) ;
-- si `OTEL_EXPORTER_OTLP_ENDPOINT` est present dans l'environnement, ajoute en
-  plus une couche `tracing-opentelemetry` qui exporte les spans en OTLP/gRPC,
-  avec `service.name` = le nom du binaire ;
-- sans cette variable (tests d'integration, dev local sans collecteur), reste
-  en logging simple sans tenter d'exporter — aucune dependance dure a un
-  collecteur pour que le reste du systeme fonctionne.
+- configure `tracing-subscriber` (logs structures, filtrable via
+  `RUST_LOG`) — toujours actif ;
+- si `OTEL_EXPORTER_OTLP_ENDPOINT` est present, ajoute une couche
+  `tracing-opentelemetry` qui exporte les spans en OTLP/gRPC
+  (`service.name` = le nom du binaire) ;
+- sans cette variable (tests, dev local), aucune dependance dure a un
+  collecteur.
 
 Les fonctions de la boucle de reconciliation du `controller` sont annotees
-`#[tracing::instrument]` (`reconcile`, `apply`, `ensure_image_build_job`,
-`ensure_parent_pod`), ce qui produit une hierarchie de spans exploitable
-(`reconciling object` → `reconcile` → `apply` → `ensure_*`). Verifie en
-conditions reelles avec un OTel Collector local (exporteur `debug`) : les
-spans arrivent bien groupes par trace, avec les attributs attendus
-(`workshop=<nom>`, `service.name=atelier-controller`).
+`#[tracing::instrument]`, ce qui produit une hierarchie de spans exploitable
+(`reconciling object` → `reconcile` → `apply` → `ensure_*`).
 
-Backlog (pas encore fait) : deployer un stack d'observabilite complet
-(collector + backend de stockage des traces/metriques + **Grafana**) et un
-dashboard de supervision dedie, pour visualiser l'activite des Workshops en
-plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
-(cible cluster) le moment venu.
+**Backlog** : deployer un stack d'observabilite complet (collector +
+backend de stockage des traces/metriques + **Grafana**) et un dashboard de
+supervision dedie — pour l'instant seule l'instrumentation applicative est
+en place.
 
 ## Modele de securite
 
 - La seule surface d'attaque exposee par la microVM vers l'exterieur passe
-  par le pod parent : reseau (net-proxy), identite (identity-proxy) et
-  controle (mcp-gateway). Aucun acces direct de la VM au reste du cluster.
-- Isolation memoire/noyau assuree par Firecracker (jailer, seccomp, cgroups)
-  plutot que par la seule isolation de conteneur d'un Pod.
-- Authentification externe : JWT emis par Kanidm (JWKS recupere au demarrage
-  de l'api-server). Pas de gestion d'utilisateurs locale dans Atelier
-  lui-meme ; Kanidm est la seule source de verite identite.
+  par le pod parent : reseau (`net-proxy`), identite (`identity-proxy`) et
+  controle (`mcp-gateway`). Aucun acces direct de la VM au reste du
+  cluster.
+- Isolation memoire/noyau assuree par Firecracker (jailer, seccomp,
+  cgroups) plutot que par la seule isolation de conteneur d'un Pod.
+- Authentification externe : JWT emis par Kanidm, seule source de verite
+  identite. Pas de gestion d'utilisateurs locale dans Atelier lui-meme.
 
 ## Allocation de ressources et scaling
 
-- Chaque `Workshop` se traduit par un pod avec `resources.requests/limits`
-  explicites (`WorkshopSpec.resources`), compatible avec le cluster-autoscaler
-  et un HPA standard au niveau du nombre de Workshops actifs.
-
-## Ce qui reste a trancher (hors MVP initial)
-
-- `vm-supervisor` pilote reellement Firecracker **jaile** : boot depuis un
-  kernel/rootfs, snapshot (pause + `snapshot/create`), restauration
-  (`snapshot/load` dans un nouveau jail) — via `fctools`
-  (`crates/vm-supervisor/src/vm.rs`), teste en conditions reelles (KVM,
-  jailer avec capabilities Linux, pas root) contre les artefacts de
-  `deploy/dev/firecracker/`. Pas encore de seccomp dedie (le jailer
-  applique le seccomp par defaut de Firecracker, pas un profil affine pour
-  Atelier). Ce qui manque encore : le canal de controle vsock expose au
-  `controller`, la recuperation du kernel/rootfs depuis le cache
-  content-addressed (`image_digest`) plutot que des chemins fournis
-  directement par variables d'environnement, et — point ouvert non
-  resolu — comment reconstituer le `ResourceSystem` source d'une VM au
-  moment de la reprise quand celle-ci a lieu dans un tout autre process que
-  celui qui a pris le snapshot (le SDK `fctools` modelise la restauration
-  comme partant d'une VM source encore en memoire, ce qui ne correspond pas
-  telle quelle a un resume declenche bien plus tard depuis un nouveau pod).
-- Chaine complete verifiee de bout en bout contre un vrai cluster : le
-  pipeline `image-builder` (envbuilder → push OCI → `crane export` → ext4 →
-  cache PVC) et le pod parent (`vm-supervisor` monte ce meme PVC en lecture
-  seule, boote la microVM jailee) ont chacun ete testes independamment avec
-  succes ; le passage bout-en-bout Workshop → image-builder (via un vrai
-  registre joignable depuis kind) → pod → microVM `Running` reste a
-  cabler/tester ensemble (le Job image-builder ne peut pas encore joindre
-  le registre de dev local depuis l'interieur de kind — testable en
-  attendant en peuplant le PVC a la main, cf.
-  `deploy/dev/vm-supervisor/README.md`). Pas de gestion de couches/diffs
-  pour eviter de tout reconstruire a chaque revision (chaque build repart
-  de zero). Kernel invite reste un fichier fixe, pas dans le cache (partage
-  entre tous les Workshops, embarque dans l'image `vm-supervisor`). Registre
-  de conteneurs pour les images poussees par envbuilder : adresse
-  configurable (`ATELIER_REGISTRY_ADDR`/`ATELIER_REGISTRY_INSECURE` sur le
-  `controller`), mais pas de registre de production provisionne — teste
-  contre un registre `registry:2` local ad hoc.
-- Le pod parent tourne en `privileged: true` pour l'acces a `/dev/kvm`
-  (necessaire : le device cgroup controller de Kubernetes bloque l'ouverture
-  du device meme avec les bonnes capabilities/permissions sans ca, constate
-  en pratique) — un device plugin KVM dedie serait plus fin et evite un pod
-  entierement privilegie, pas fait.
-- Support du sous-ensemble de la spec devcontainer.json a couvrir en premier
-  (image simple vs build Dockerfile vs features vs docker-compose multi-service).
-- Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
-  l'agent sont auto-approuvees vs necessitent une validation humaine).
-- Le `controller` provisionne un service account Kanidm et un role OpenBao
-  par Workshop (`crates/controller/src/{kanidm,openbao}.rs`, tous deux
-  optionnels), et les nettoie a la suppression du Workshop via un finalizer
-  Kubernetes (`atelier.dev/cleanup`) — verifie en conditions reelles
-  (creation, suppression, entite/role bien absents ensuite). A travers un
-  cycle suspend/resume, ils sont deliberement laisses intacts (seul le pod
-  parent est libere/recree), verifie egalement en conditions reelles.
-- `identity-proxy` sait s'authentifier aupres d'OpenBao et lister les
-  secrets disponibles, mais rien n'ecrit encore de secrets utiles pour un
-  Workshop donne (pas de mapping avec `WorkshopSpec.tools`/`egress_allowlist`),
-  et il ne fait pas encore office de proxy HTTP(S) qui intercepte et enrichit
-  les appels sortants de l'agent — seulement l'authentification et le
-  listing, cf. TODO dans `crates/identity-proxy/src/main.rs`.
-- Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
-  compatibilite des snapshots entre versions de kernel/Firecracker (un
-  snapshot fige une version precise ; que faire s'il faut mettre a jour le
-  kernel invite entre deux reprises ?).
-- Stack d'observabilite complet (collector deploye, backend de stockage des
-  traces/metriques, **Grafana** + dashboard dedie) — pour l'instant seule
-  l'instrumentation applicative (OpenTelemetry) est en place, testee contre
-  un collecteur local ad hoc, voir section « Observabilite » ci-dessus.
+Chaque `Workshop` se traduit par un pod avec `resources.requests/limits`
+explicites (`WorkshopSpec.resources`), compatible avec le
+cluster-autoscaler et un HPA standard au niveau du nombre de Workshops
+actifs.
