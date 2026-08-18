@@ -12,3 +12,7 @@ deploy/dev/kanidm/data/
 # binaires/images Firecracker de dev (gros fichiers, recuperes via
 # deploy/dev/firecracker/fetch-test-assets.sh)
 deploy/dev/firecracker/assets/
+
+# binaires envbuilder/crane de dev (gros fichiers)
+deploy/dev/envbuilder/envbuilder
+deploy/dev/crane/crane

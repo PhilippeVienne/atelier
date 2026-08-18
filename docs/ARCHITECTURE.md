@@ -21,13 +21,34 @@ eventuel, les features et les commandes de setup.
 Le composant **image-builder** ne reimplemente pas la resolution du
 devcontainer.json : il delegue a
 [envbuilder](https://github.com/coder/envbuilder) (appele en sous-processus,
-present dans l'image du job de build), qui sait deja construire un
-devcontainer sans daemon Docker (buildkit rootless embarque). `image-builder`
-se charge d'invoquer envbuilder avec la source resolue, puis d'empaqueter le
-resultat en image ext4 publiee dans un cache content-addresse (cle = digest
-du contenu resolu), reference dans `WorkshopStatus.image_digest` que
-`vm-supervisor` consomme pour booter la microVM. Un `Workshop` passe donc par
-une phase `BuildingImage` avant `Provisioning`/`Running`.
+present dans l'image du job de build). Pipeline reel, verifie de bout en
+bout (y compris boot Firecracker du resultat) :
+
+1. `envbuilder` clone le repo, resout le devcontainer.json, construit
+   l'environnement (base image + `postCreateCommand` etc.) et **le pousse
+   comme image OCI standard** vers un registre de conteneurs
+   (`ENVBUILDER_PUSH_IMAGE`/`ENVBUILDER_CACHE_REPO`). Envbuilder ne produit
+   *pas* de dossier d'export propre : il construit "en place" en supprimant
+   le systeme de fichiers du conteneur qui l'execute (sauf `/.envbuilder`)
+   avant d'y extraire l'image cible — `image-builder` tourne donc dans le
+   *meme* conteneur qu'envbuilder (`crates/image-builder/Dockerfile`), et
+   tout ce dont il a besoin *apres* cet appel doit vivre sur un point de
+   montage separe de la racine, sous peine d'etre efface.
+2. [`crane export`](https://github.com/google/go-containerregistry) (outil
+   externe etabli, pas de client OCI ecrit a la main) aplatit cette image en
+   tarball.
+3. Le tarball est extrait puis empaquete en image ext4 (`mke2fs -d`).
+4. Le digest sha256 du fichier ext4 sert de cle dans le cache
+   content-addresse — aujourd'hui un repertoire monte depuis un **PVC
+   Kubernetes** partage (lecture-ecriture pour le Job image-builder, lecture
+   seule pour les pods parents) ; offload/reload vers S3 quand le PVC est
+   trop rempli, envisage plus tard mais pas implemente — puis reference
+   dans `WorkshopStatus.image_digest`, que `vm-supervisor` consomme pour
+   booter la microVM. Un `Workshop` passe donc par une phase `BuildingImage`
+   avant `Provisioning`/`Running`.
+
+Voir `deploy/dev/image-builder/README.md` pour reproduire ce pipeline en
+local (registre de dev, extraction des binaires envbuilder/crane).
 
 ## Vue d'ensemble
 
@@ -294,9 +315,16 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   celui qui a pris le snapshot (le SDK `fctools` modelise la restauration
   comme partant d'une VM source encore en memoire, ce qui ne correspond pas
   telle quelle a un resume declenche bien plus tard depuis un nouveau pod).
-- Empaquetage concret du resultat d'envbuilder en image ext4 (outillage exact,
-  gestion des couches/diffs pour eviter de tout reconstruire a chaque revision)
-  et choix du kernel invite partage vs embarque dans le build.
+- Le pipeline `image-builder` (envbuilder → push OCI → `crane export` →
+  ext4 → cache) est implemente et verifie de bout en bout (y compris boot
+  Firecracker du resultat), mais le cache est aujourd'hui un simple
+  repertoire de dev, pas encore un vrai PVC provisionne par le
+  `controller` (ni monte dans le Job image-builder, ni dans le pod parent
+  pour que `vm-supervisor` y lise `ATELIER_VM_ROOTFS_PATH`) — reste a
+  cabler. Pas de gestion de couches/diffs pour eviter de tout reconstruire
+  a chaque revision (chaque build repart de zero). Kernel invite reste un
+  fichier fixe, pas encore dans le cache (partage entre tous les Workshops
+  pour l'instant, embarque dans l'image `vm-supervisor`).
 - Support du sous-ensemble de la spec devcontainer.json a couvrir en premier
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
