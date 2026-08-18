@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
     status = "WorkshopStatus",
     shortname = "wks"
 )]
+#[serde(rename_all = "camelCase")]
 pub struct WorkshopSpec {
     /// Definition de l'environnement au format devcontainer.json (spec VS Code
     /// Dev Containers). C'est cette source qui est construite en rootfs
@@ -47,6 +48,7 @@ pub enum WorkshopDesiredState {
 /// Reference vers un projet portant un `.devcontainer/devcontainer.json`
 /// (ou equivalent), au sens de la specification VS Code Dev Containers.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DevcontainerSource {
     /// URL du depot git contenant la definition devcontainer.
     pub repo: String,
@@ -76,6 +78,7 @@ pub struct WorkshopResources {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkshopStatus {
     pub phase: WorkshopPhase,
     #[serde(default)]
