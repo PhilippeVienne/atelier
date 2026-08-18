@@ -143,6 +143,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atelier-common",
+ "k8s-openapi",
+ "kube",
  "serde",
  "serde_json",
  "tokio",
