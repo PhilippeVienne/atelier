@@ -5,3 +5,6 @@ dashboard/node_modules
 dashboard/.next
 dashboard/out
 dashboard/.env*.local
+
+# donnees/certs generes par l'instance Kanidm de dev
+deploy/dev/kanidm/data/
