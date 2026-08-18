@@ -1,7 +1,9 @@
+use crate::kanidm;
 use atelier_common::{Workshop, WorkshopPhase, WorkshopStatus};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, PodTemplateSpec};
+use kanidm_client::KanidmClient;
 use kube::api::{Api, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
@@ -14,12 +16,21 @@ const FIELD_MANAGER: &str = "atelier-controller";
 // TODO: rendre configurable (registre interne) une fois l'image publiee.
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
 
+/// Dependances partagees par toutes les reconciliations. `kanidm` est
+/// optionnel : sans configuration (`KANIDM_URL` absent), le controller
+/// fonctionne normalement mais ne provisionne pas d'identite par Workshop.
+pub struct ReconcileCtx {
+    pub client: Client,
+    pub kanidm: Option<Arc<KanidmClient>>,
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
+    let kanidm = kanidm::client_from_env().await?.map(Arc::new);
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
-        .run(reconcile, error_policy, Arc::new(client))
+        .run(reconcile, error_policy, Arc::new(ReconcileCtx { client, kanidm }))
         .for_each(|res| async move {
             if let Err(e) = res {
                 tracing::error!(error = %e, "reconcile failed");
@@ -31,38 +42,44 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
-async fn reconcile(workshop: Arc<Workshop>, client: Arc<Client>) -> Result<Action, kube::Error> {
+async fn reconcile(workshop: Arc<Workshop>, ctx: Arc<ReconcileCtx>) -> Result<Action, kube::Error> {
     let name = workshop.name_any();
     tracing::info!("reconciling workshop");
 
-    match apply(&client, &workshop).await {
-        Ok(status) => update_status(&client, &workshop, status).await?,
+    match apply(&ctx, &workshop).await {
+        Ok(status) => update_status(&ctx.client, &workshop, status).await?,
         Err(err) => tracing::error!(name = %name, %err, "reconcile apply failed"),
     }
 
     Ok(Action::requeue(Duration::from_secs(15)))
 }
 
-fn error_policy(_workshop: Arc<Workshop>, _err: &kube::Error, _client: Arc<Client>) -> Action {
+fn error_policy(_workshop: Arc<Workshop>, _err: &kube::Error, _ctx: Arc<ReconcileCtx>) -> Action {
     Action::requeue(Duration::from_secs(5))
 }
 
 /// Fait converger un `Workshop` d'un pas de reconciliation et renvoie le
 /// statut resultant.
 ///
-/// Deux etapes successives, chacune gardee par l'etape precedente :
-/// 1. Tant que `status.imageDigest` est absent, s'assurer qu'un `Job`
+/// Trois etapes, les deux dernieres gardees par la precedente :
+/// 1. Si Kanidm est configure et qu'aucune entite n'existe encore pour ce
+///    Workshop, la provisionner (`WorkshopStatus.kanidm_entity_id`). Rapide
+///    (un appel HTTP synchrone), donc fait directement ici plutot que via un
+///    Job asynchrone comme pour l'image.
+/// 2. Tant que `status.imageDigest` est absent, s'assurer qu'un `Job`
 ///    `image-builder` tourne (phase `BuildingImage`) ; `image-builder` se
 ///    charge lui-meme de patcher `status.imageDigest` a la fin du build,
 ///    voir `crates/image-builder`.
-/// 2. Une fois l'image disponible, creer/mettre a jour le pod parent
+/// 3. Une fois l'image disponible, creer/mettre a jour le pod parent
 ///    (phase `Provisioning` -> `Running`). Iteration 2 : ce pod parent est
 ///    encore un placeholder (`registry.k8s.io/pause`), pas encore les vrais
 ///    conteneurs vm-supervisor/net-proxy/identity-proxy/mcp-gateway.
 #[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
-pub async fn apply(client: &Client, workshop: &Workshop) -> anyhow::Result<WorkshopStatus> {
+pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<WorkshopStatus> {
     let ns = workshop.namespace().unwrap_or_else(|| "default".into());
     let name = workshop.name_any();
+
+    let kanidm_entity_id = resolve_kanidm_entity(ctx, workshop, &name).await;
 
     let image_digest = workshop
         .status
@@ -70,10 +87,37 @@ pub async fn apply(client: &Client, workshop: &Workshop) -> anyhow::Result<Works
         .and_then(|s| s.image_digest.clone());
 
     let Some(image_digest) = image_digest else {
-        return ensure_image_build_job(client, workshop, &ns, &name).await;
+        return Ok(ensure_image_build_job(&ctx.client, workshop, &ns, &name, kanidm_entity_id).await?);
     };
 
-    ensure_parent_pod(client, workshop, &ns, &name, image_digest).await
+    ensure_parent_pod(&ctx.client, workshop, &ns, &name, image_digest, kanidm_entity_id).await
+}
+
+/// Renvoie l'identite Kanidm existante, ou tente d'en provisionner une
+/// nouvelle si Kanidm est configure. Une erreur de provisioning est
+/// journalisee mais ne bloque pas le reste de la reconciliation : ce n'est
+/// pas une etape bloquante (contrairement au build d'image).
+async fn resolve_kanidm_entity(
+    ctx: &ReconcileCtx,
+    workshop: &Workshop,
+    name: &str,
+) -> Option<String> {
+    let existing = workshop
+        .status
+        .as_ref()
+        .and_then(|s| s.kanidm_entity_id.clone());
+    if existing.is_some() {
+        return existing;
+    }
+
+    let kanidm_client = ctx.kanidm.as_ref()?;
+    match kanidm::ensure_workshop_entity(kanidm_client, name).await {
+        Ok(entity_id) => Some(entity_id),
+        Err(err) => {
+            tracing::error!(%err, "provisioning de l'identite Kanidm echoue");
+            None
+        }
+    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -82,6 +126,7 @@ async fn ensure_image_build_job(
     workshop: &Workshop,
     ns: &str,
     name: &str,
+    kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
     let job_name = format!("{name}-image-build");
@@ -156,7 +201,7 @@ async fn ensure_image_build_job(
         WorkshopPhase::BuildingImage
     };
 
-    Ok(carry_forward_status(workshop, phase, None))
+    Ok(carry_forward_status(workshop, phase, None, kanidm_entity_id))
 }
 
 #[tracing::instrument(skip_all)]
@@ -166,6 +211,7 @@ async fn ensure_parent_pod(
     ns: &str,
     name: &str,
     image_digest: String,
+    kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
     let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
     let pod_name = format!("{name}-parent");
@@ -216,7 +262,7 @@ async fn ensure_parent_pod(
         _ => WorkshopPhase::Provisioning,
     };
 
-    let mut status = carry_forward_status(workshop, phase, Some(image_digest));
+    let mut status = carry_forward_status(workshop, phase, Some(image_digest), kanidm_entity_id);
     status.pod_name = Some(pod_name);
     Ok(status)
 }
@@ -225,6 +271,7 @@ fn carry_forward_status(
     workshop: &Workshop,
     phase: WorkshopPhase,
     image_digest: Option<String>,
+    kanidm_entity_id: Option<String>,
 ) -> WorkshopStatus {
     WorkshopStatus {
         phase,
@@ -234,13 +281,7 @@ fn carry_forward_status(
             .status
             .as_ref()
             .and_then(|s| s.snapshot_digest.clone()),
-        // TODO: provisionner une entite machine Kanidm des la creation du
-        // Workshop (avant meme BuildingImage) plutot que de se contenter de
-        // la reporter tel quel ici.
-        kanidm_entity_id: workshop
-            .status
-            .as_ref()
-            .and_then(|s| s.kanidm_entity_id.clone()),
+        kanidm_entity_id,
         conditions: BTreeMap::new(),
     }
 }

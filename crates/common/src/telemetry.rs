@@ -31,7 +31,21 @@ impl Drop for TelemetryGuard {
     }
 }
 
+/// Plusieurs dependances (kube, kanidm_client, ...) compilent chacune leur
+/// propre choix par defaut de provider crypto rustls (`aws-lc-rs`, `ring`),
+/// ce qui rend le choix automatique ambigu au premier usage TLS et fait
+/// paniquer rustls. On tranche explicitement une fois pour tout le
+/// processus. Idempotent : safe a appeler plusieurs fois (ex: depuis les
+/// tests d'integration, qui n'appellent pas `init()`).
+pub fn ensure_crypto_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 pub fn init(service_name: &str) -> TelemetryGuard {
+    ensure_crypto_provider();
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer();
 

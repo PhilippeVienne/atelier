@@ -230,11 +230,13 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
   l'agent sont auto-approuvees vs necessitent une validation humaine).
-- Provisioning concret de l'entite machine Kanidm par Workshop (a quel
-  moment du cycle de vie, avec quel cycle de vie propre — supprimee a
-  `Terminating` ? conservee a travers un cycle suspend/resume ?) et mapping
-  precis entre `WorkshopSpec.tools`/`egress_allowlist` et les politiques
-  OpenBao qui bornent les secrets accessibles.
+- Le `controller` provisionne un service account Kanidm par Workshop
+  (`crates/controller/src/kanidm.rs`, optionnel via `KANIDM_URL`), mais ne le
+  supprime pas encore a `Terminating` (pas de nettoyage a la destruction du
+  Workshop) et ne gere pas son devenir a travers un cycle suspend/resume.
+- Mapping precis entre `WorkshopSpec.tools`/`egress_allowlist` et les
+  politiques OpenBao qui bornent les secrets accessibles a l'entite Kanidm
+  du Workshop (integration OpenBao elle-meme pas encore implementee).
 - Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
   compatibilite des snapshots entre versions de kernel/Firecracker (un
   snapshot fige une version precise ; que faire s'il faut mettre a jour le

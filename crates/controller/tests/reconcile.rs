@@ -10,11 +10,21 @@ use atelier_common::{
     DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,
     WorkshopSpec,
 };
+use atelier_controller::reconcile::ReconcileCtx;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Contexte de test sans Kanidm configure (comportement par defaut,
+/// identique a avant l'introduction du provisioning d'identite).
+fn ctx_without_kanidm(client: Client) -> ReconcileCtx {
+    ReconcileCtx {
+        client,
+        kanidm: None,
+    }
+}
 
 /// Un `Job` ne supprime pas ses pods en cascade par defaut (contrairement a
 /// un `Pod` avec owner reference geree par le garbage collector standard) :
@@ -57,6 +67,7 @@ fn sample_spec() -> WorkshopSpec {
 /// et rester en phase BuildingImage, sans creer de pod parent.
 #[tokio::test]
 async fn apply_triggers_image_build_job_when_digest_missing() {
+    atelier_common::telemetry::ensure_crypto_provider();
     let client = Client::try_default()
         .await
         .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
@@ -65,13 +76,14 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
     let name = unique_name("test-workshop-build");
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_kanidm(client.clone());
 
     let created = workshops
         .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
         .await
         .expect("creation du Workshop");
 
-    let status = atelier_controller::reconcile::apply(&client, &created)
+    let status = atelier_controller::reconcile::apply(&ctx, &created)
         .await
         .expect("apply() ne doit pas echouer");
 
@@ -108,6 +120,7 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
 /// (idempotent) plutot que de redeclencher un build.
 #[tokio::test]
 async fn apply_creates_owned_parent_pod_once_image_ready() {
+    atelier_common::telemetry::ensure_crypto_provider();
     let client = Client::try_default()
         .await
         .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
@@ -117,6 +130,7 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
     let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_kanidm(client.clone());
 
     let created = workshops
         .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
@@ -126,7 +140,7 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     // Premier apply() : declenche le Job image-builder et initialise
     // status.phase=BuildingImage (necessaire avant tout patch partiel, le
     // CRD exige status.phase). Cf. l'autre test pour cette etape en detail.
-    let building_status = atelier_controller::reconcile::apply(&client, &created)
+    let building_status = atelier_controller::reconcile::apply(&ctx, &created)
         .await
         .expect("premier apply()");
     workshops
@@ -150,7 +164,7 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         .expect("patch du statut");
     let with_digest = workshops.get(&name).await.expect("get workshop");
 
-    let status = atelier_controller::reconcile::apply(&client, &with_digest)
+    let status = atelier_controller::reconcile::apply(&ctx, &with_digest)
         .await
         .expect("apply() ne doit pas echouer");
 
@@ -169,7 +183,7 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     assert_eq!(owners[0].name, name);
 
     // apply() doit rester idempotent : un deuxieme appel ne doit pas echouer.
-    atelier_controller::reconcile::apply(&client, &with_digest)
+    atelier_controller::reconcile::apply(&ctx, &with_digest)
         .await
         .expect("un deuxieme apply() doit rester idempotent");
 
@@ -180,4 +194,73 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         .await
         .ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Necessite en plus une instance Kanidm accessible via KANIDM_URL /
+/// KANIDM_API_TOKEN (+ KANIDM_CA_PATH si TLS auto-signe), cf.
+/// deploy/dev/kanidm/README.md. Sans ces variables, le test passe sans rien
+/// verifier : le provisioning Kanidm est une fonctionnalite optionnelle,
+/// pas une dependance dure du controller (cf. ReconcileCtx.kanidm).
+#[tokio::test]
+async fn apply_provisions_kanidm_entity_when_configured() {
+    atelier_common::telemetry::ensure_crypto_provider();
+    let Some(kanidm) = atelier_controller::kanidm::client_from_env()
+        .await
+        .expect("client_from_env ne doit pas echouer si les variables sont coherentes")
+        .map(std::sync::Arc::new)
+    else {
+        eprintln!(
+            "KANIDM_URL non defini, test ignore (voir deploy/dev/kanidm/README.md pour le configurer)"
+        );
+        return;
+    };
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name = unique_name("test-workshop-kanidm");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let ctx = ReconcileCtx {
+        client: client.clone(),
+        kanidm: Some(kanidm.clone()),
+    };
+
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+
+    let status = atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let expected_entity = format!("atelier-workshop-{name}");
+    assert_eq!(status.kanidm_entity_id.as_deref(), Some(expected_entity.as_str()));
+
+    let entity = kanidm
+        .idm_service_account_get(&expected_entity)
+        .await
+        .expect("lecture du service account Kanidm")
+        .expect("le service account doit avoir ete cree dans Kanidm");
+    assert_eq!(
+        entity.attrs.get("name").and_then(|v| v.first()).map(String::as_str),
+        Some(expected_entity.as_str())
+    );
+
+    // Un deuxieme apply() ne doit pas tenter de recreer l'entite (elle
+    // existe deja d'apres status.kanidmEntityId).
+    atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("un deuxieme apply() doit rester idempotent");
+
+    kanidm
+        .idm_service_account_delete(&expected_entity)
+        .await
+        .ok();
+    workshops
+        .delete(&name, &foreground_delete())
+        .await
+        .ok();
 }
