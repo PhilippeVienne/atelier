@@ -26,7 +26,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-vm-supervisor");
     tracing::info!("atelier-vm-supervisor starting");
     // TODO: lancer le jailer Firecracker avec la config issue du Workshop CR
     //       (depuis image_digest, ou restauration depuis snapshot_digest)

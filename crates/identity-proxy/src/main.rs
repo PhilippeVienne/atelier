@@ -10,7 +10,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-identity-proxy");
     tracing::info!("atelier-identity-proxy starting");
     // TODO: s'authentifier aupres d'OpenBao avec l'identite Kanidm du Workshop
     // TODO: signer/injecter les credentials a la volee dans les requetes proxiees

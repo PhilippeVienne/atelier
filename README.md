@@ -47,3 +47,17 @@ kubectl apply -f crds/workshop.yaml
 cargo test --workspace
 ```
 
+## Observabilite
+
+Tous les binaires appellent `atelier_common::telemetry::init(...)` (voir
+`docs/ARCHITECTURE.md`). Sans configuration, ils se contentent de logger. Pour
+exporter les traces en OTLP vers un collecteur local :
+
+```sh
+docker run -d --name atelier-otel-collector-dev -p 4317:4317 \
+  -v "$(pwd)/deploy/dev/otel/collector-config.yaml":/etc/otelcol/config.yaml:ro \
+  otel/opentelemetry-collector:latest --config /etc/otelcol/config.yaml
+
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run -p atelier-controller --bin atelier-controller
+```
+

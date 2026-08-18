@@ -172,6 +172,36 @@ recuperer que les secrets scopes a celui-ci (politique OpenBao derivee de
 `WorkshopSpec.tools`/`egress_allowlist`), ce qui borne le rayon d'action d'un
 Workshop compromis aux seuls secrets qui lui ont ete explicitement destines.
 
+## Observabilite : OpenTelemetry
+
+Convention imposee a tous les binaires du control plane et du tooling du pod
+parent : chaque `main.rs` appelle `atelier_common::telemetry::init("<nom-du-binaire>")`
+en toute premiere instruction (`crates/common/src/telemetry.rs`), et garde le
+`TelemetryGuard` renvoye en vie jusqu'a la fin de `main` pour que les traces
+en cours soient flush avant l'arret du processus. Ce helper commun :
+
+- configure `tracing-subscriber` (logs structures, filtrable via `RUST_LOG`) ;
+- si `OTEL_EXPORTER_OTLP_ENDPOINT` est present dans l'environnement, ajoute en
+  plus une couche `tracing-opentelemetry` qui exporte les spans en OTLP/gRPC,
+  avec `service.name` = le nom du binaire ;
+- sans cette variable (tests d'integration, dev local sans collecteur), reste
+  en logging simple sans tenter d'exporter — aucune dependance dure a un
+  collecteur pour que le reste du systeme fonctionne.
+
+Les fonctions de la boucle de reconciliation du `controller` sont annotees
+`#[tracing::instrument]` (`reconcile`, `apply`, `ensure_image_build_job`,
+`ensure_parent_pod`), ce qui produit une hierarchie de spans exploitable
+(`reconciling object` → `reconcile` → `apply` → `ensure_*`). Verifie en
+conditions reelles avec un OTel Collector local (exporteur `debug`) : les
+spans arrivent bien groupes par trace, avec les attributs attendus
+(`workshop=<nom>`, `service.name=atelier-controller`).
+
+Backlog (pas encore fait) : deployer un stack d'observabilite complet
+(collector + backend de stockage des traces/metriques + **Grafana**) et un
+dashboard de supervision dedie, pour visualiser l'activite des Workshops en
+plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
+(cible cluster) le moment venu.
+
 ## Modele de securite
 
 - La seule surface d'attaque exposee par la microVM vers l'exterieur passe
@@ -209,3 +239,7 @@ Workshop compromis aux seuls secrets qui lui ont ete explicitement destines.
   compatibilite des snapshots entre versions de kernel/Firecracker (un
   snapshot fige une version precise ; que faire s'il faut mettre a jour le
   kernel invite entre deux reprises ?).
+- Stack d'observabilite complet (collector deploye, backend de stockage des
+  traces/metriques, **Grafana** + dashboard dedie) — pour l'instant seule
+  l'instrumentation applicative (OpenTelemetry) est en place, testee contre
+  un collecteur local ad hoc, voir section « Observabilite » ci-dessus.

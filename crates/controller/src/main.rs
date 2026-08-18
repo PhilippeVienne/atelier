@@ -3,6 +3,6 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-controller");
     atelier_controller::reconcile::run().await
 }

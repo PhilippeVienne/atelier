@@ -3,7 +3,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-net-proxy");
     tracing::info!("atelier-net-proxy starting");
     // TODO: proxy HTTP(S) CONNECT avec allowlist de domaines
     // TODO: journal d'audit des appels sortants (destination, taille, resultat)

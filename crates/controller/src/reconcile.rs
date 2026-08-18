@@ -30,9 +30,10 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
 async fn reconcile(workshop: Arc<Workshop>, client: Arc<Client>) -> Result<Action, kube::Error> {
     let name = workshop.name_any();
-    tracing::info!(name = %name, "reconciling workshop");
+    tracing::info!("reconciling workshop");
 
     match apply(&client, &workshop).await {
         Ok(status) => update_status(&client, &workshop, status).await?,
@@ -58,6 +59,7 @@ fn error_policy(_workshop: Arc<Workshop>, _err: &kube::Error, _client: Arc<Clien
 ///    (phase `Provisioning` -> `Running`). Iteration 2 : ce pod parent est
 ///    encore un placeholder (`registry.k8s.io/pause`), pas encore les vrais
 ///    conteneurs vm-supervisor/net-proxy/identity-proxy/mcp-gateway.
+#[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
 pub async fn apply(client: &Client, workshop: &Workshop) -> anyhow::Result<WorkshopStatus> {
     let ns = workshop.namespace().unwrap_or_else(|| "default".into());
     let name = workshop.name_any();
@@ -74,6 +76,7 @@ pub async fn apply(client: &Client, workshop: &Workshop) -> anyhow::Result<Works
     ensure_parent_pod(client, workshop, &ns, &name, image_digest).await
 }
 
+#[tracing::instrument(skip_all)]
 async fn ensure_image_build_job(
     client: &Client,
     workshop: &Workshop,
@@ -156,6 +159,7 @@ async fn ensure_image_build_job(
     Ok(carry_forward_status(workshop, phase, None))
 }
 
+#[tracing::instrument(skip_all)]
 async fn ensure_parent_pod(
     client: &Client,
     workshop: &Workshop,

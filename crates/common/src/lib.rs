@@ -1,5 +1,6 @@
 pub mod crd;
 pub mod status;
+pub mod telemetry;
 
 pub use crd::{
     DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,

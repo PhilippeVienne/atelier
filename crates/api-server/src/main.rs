@@ -8,7 +8,7 @@ use axum::Router;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-api-server");
 
     let app = Router::new().merge(routes::router());
 

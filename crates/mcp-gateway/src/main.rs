@@ -4,7 +4,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-mcp-gateway");
     tracing::info!("atelier-mcp-gateway starting");
     // TODO: serveur MCP (stdio ou socket vsock) expose a l'agent dans la VM
     // TODO: outils MCP : list_tools, request_egress, enable_simulator, request_credential

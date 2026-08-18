@@ -21,7 +21,7 @@ use tokio::process::Command;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = atelier_common::telemetry::init("atelier-image-builder");
 
     // MVP : la source et l'identite du Workshop sont injectees via
     // l'environnement par le Job que le `controller` declenche.
