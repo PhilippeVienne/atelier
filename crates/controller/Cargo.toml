@@ -21,6 +21,7 @@ thiserror.workspace = true
 futures = "0.3"
 serde_yaml = "0.9"
 kanidm_client = "1.11.1"
+reqwest.workspace = true
 
 [[bin]]
 name = "crdgen"

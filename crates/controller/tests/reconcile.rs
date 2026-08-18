@@ -17,12 +17,13 @@ use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams, PropagationPo
 use kube::Client;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Contexte de test sans Kanidm configure (comportement par defaut,
-/// identique a avant l'introduction du provisioning d'identite).
+/// Contexte de test sans Kanidm ni OpenBao configures (comportement par
+/// defaut, identique a avant l'introduction du provisioning d'identite).
 fn ctx_without_kanidm(client: Client) -> ReconcileCtx {
     ReconcileCtx {
         client,
         kanidm: None,
+        openbao: None,
     }
 }
 
@@ -181,16 +182,138 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         .owner_references
         .expect("le pod doit avoir une owner reference vers le Workshop");
     assert_eq!(owners[0].name, name);
+    assert_eq!(
+        pod.spec.as_ref().and_then(|s| s.service_account_name.clone()),
+        Some(expected_pod_name.clone()),
+        "le pod parent doit utiliser son propre ServiceAccount dedie"
+    );
 
     // apply() doit rester idempotent : un deuxieme appel ne doit pas echouer.
     atelier_controller::reconcile::apply(&ctx, &with_digest)
         .await
         .expect("un deuxieme apply() doit rester idempotent");
 
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
     pods.delete(&expected_pod_name, &DeleteParams::default())
         .await
         .ok();
     jobs.delete(&format!("{name}-image-build"), &foreground_delete())
+        .await
+        .ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Necessite en plus une instance OpenBao accessible via OPENBAO_ADDR /
+/// OPENBAO_TOKEN, cf. deploy/dev/openbao/README.md. Sans ces variables, le
+/// test passe sans rien verifier : le provisioning OpenBao est une
+/// fonctionnalite optionnelle (cf. ReconcileCtx.openbao).
+///
+/// Verifie la chaine complete : le controller provisionne un role
+/// kubernetes-auth scope au ServiceAccount du pod parent, et ce
+/// ServiceAccount (via un vrai token, obtenu comme le ferait Kubernetes en
+/// le projetant dans le pod) peut effectivement se logger aupres d'OpenBao
+/// et n'obtenir que les policies de son propre Workshop.
+#[tokio::test]
+async fn apply_provisions_openbao_role_when_configured() {
+    atelier_common::telemetry::ensure_crypto_provider();
+
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name = unique_name("test-workshop-openbao");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let ctx = ReconcileCtx {
+        client: client.clone(),
+        kanidm: None,
+        openbao: Some(atelier_controller::openbao::OpenBaoConfig {
+            addr: openbao_addr.clone(),
+            token: openbao_token,
+        }),
+    };
+
+    workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "phase": "Pending", "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+
+    atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let expected_pod_name = format!("{name}-parent");
+    let sa = service_accounts
+        .get(&expected_pod_name)
+        .await
+        .expect("le ServiceAccount dedie doit avoir ete cree");
+    assert_eq!(sa.metadata.name.as_deref(), Some(expected_pod_name.as_str()));
+
+    // Obtient un vrai token pour ce ServiceAccount (equivalent a ce que
+    // Kubernetes projette automatiquement dans un pod qui l'utilise).
+    let output = std::process::Command::new("kubectl")
+        .args(["create", "token", &expected_pod_name, "-n", ns])
+        .output()
+        .expect("kubectl doit etre disponible");
+    assert!(output.status.success(), "kubectl create token a echoue: {output:?}");
+    let sa_token = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+    let http = reqwest::Client::new();
+    let login: serde_json::Value = http
+        .post(format!("{openbao_addr}/v1/auth/kubernetes/login"))
+        .json(&serde_json::json!({ "jwt": sa_token, "role": format!("workshop-{name}") }))
+        .send()
+        .await
+        .expect("requete de login OpenBao")
+        .error_for_status()
+        .expect("le login OpenBao doit reussir avec le token du ServiceAccount dedie")
+        .json()
+        .await
+        .expect("reponse JSON de login OpenBao");
+
+    let policies = login["auth"]["policies"]
+        .as_array()
+        .expect("policies dans la reponse de login")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        policies.contains(&format!("workshop-{name}")),
+        "le token OpenBao obtenu doit porter la policy scopee a ce Workshop: {policies:?}"
+    );
+
+    pods.delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
         .await
         .ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
@@ -225,6 +348,7 @@ async fn apply_provisions_kanidm_entity_when_configured() {
     let ctx = ReconcileCtx {
         client: client.clone(),
         kanidm: Some(kanidm.clone()),
+        openbao: None,
     };
 
     let created = workshops

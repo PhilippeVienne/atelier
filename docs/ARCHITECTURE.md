@@ -100,8 +100,9 @@ Client externe (JWT) ───►│              api-server                │
 - **identity-proxy** (`crates/identity-proxy`) : injecte des credentials/tokens
   dans les appels sortants (ex: acces a une API necessitant un token) sans
   jamais exposer le secret brut a l'agent dans la VM. Secrets stockes dans
-  OpenBao, recuperes avec l'identite Kanidm propre au Workshop. Voir la
-  section dediee « Identite et secrets » ci-dessous.
+  OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du
+  pod parent (pas l'identite Kanidm). Voir la section dediee « Identite et
+  secrets » ci-dessous.
 - **mcp-gateway** (`crates/mcp-gateway`) : serveur MCP expose a l'agent (via
   vsock). C'est le seul point d'entree pour que l'agent (1) agisse sur le
   monde exterieur au-dela du simple reseau proxifie, et (2) demande des
@@ -158,19 +159,50 @@ Deux notions d'identite bien distinctes dans Atelier :
   integration directement.
 - **L'environnement lui-meme** : chaque `Workshop` se voit attribuer sa propre
   entite machine dans Kanidm (`WorkshopStatus.kanidm_entity_id`), distincte du
-  sujet humain proprietaire. C'est cette identite d'environnement que
-  `identity-proxy` presente pour s'authentifier aupres du backend de secrets,
-  pas l'identite de l'utilisateur qui a demande le Workshop.
+  sujet humain proprietaire. Cette identite reste la reference cote
+  utilisateur/dashboard, mais ce n'est **pas** elle qui sert de pont vers
+  OpenBao (voir ci-dessous) — decision deliberee, cf. « Pont d'identite vers
+  OpenBao ».
 
 Les secrets destines aux environnements (credentials/tokens que
 `identity-proxy` injecte dans les appels sortants de l'agent) sont stockes
 dans [OpenBao](https://openbao.org/) — deliberement separe des Secrets
 Kubernetes du cluster sous-jacent, qui restent geres par les mecanismes k8s
-standards pour le fonctionnement du control plane lui-meme. `identity-proxy`
-s'authentifie aupres d'OpenBao avec l'entite Kanidm du Workshop et ne peut
-recuperer que les secrets scopes a celui-ci (politique OpenBao derivee de
-`WorkshopSpec.tools`/`egress_allowlist`), ce qui borne le rayon d'action d'un
-Workshop compromis aux seuls secrets qui lui ont ete explicitement destines.
+standards pour le fonctionnement du control plane lui-meme. Un secret stocke
+la est frequemment lui-meme l'identite de sortie de l'environnement (ex: une
+cle d'API que l'environnement presente a un service externe) : **seul**
+`identity-proxy` peut la recuperer et l'utiliser — l'agent dans la microVM
+n'y a jamais acces directement, meme indirectement via les variables
+d'environnement ou le systeme de fichiers de la VM. C'est `identity-proxy`,
+et lui seul, qui agit « en tant que » l'environnement aupres des services
+externes.
+
+### Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm
+
+`identity-proxy` s'authentifie aupres d'OpenBao via la **methode d'auth
+Kubernetes** d'OpenBao, pas via une federation JWT/OIDC avec Kanidm. Le pod
+parent de chaque Workshop recoit son propre ServiceAccount Kubernetes
+(`<name>-parent`, cree par le `controller`) ; identity-proxy presente le
+token projete de ce ServiceAccount, qu'OpenBao verifie en direct aupres de
+l'API Kubernetes (TokenReview) — aucun secret a distribuer ou stocker pour
+amorcer cette confiance.
+
+Le `controller` provisionne, par Workshop, une policy OpenBao et un role
+`auth/kubernetes/role/workshop-<name>` scopant l'acces au chemin KV
+`secret/{data,metadata}/workshops/<name>/*` au seul ServiceAccount de ce
+Workshop (`crates/controller/src/openbao.rs`), ce qui borne le rayon d'action
+d'un Workshop compromis aux seuls secrets qui lui ont ete explicitement
+destines. Optionnel via `OPENBAO_ADDR`/`OPENBAO_TOKEN` (`ReconcileCtx.openbao`),
+meme pattern que le provisioning Kanidm.
+
+Ce choix a ete fait deliberement au detriment de la coherence "Kanidm =
+identite pour tout" : une federation JWT/OIDC Kanidm -> OpenBao demanderait
+de configurer un Resource Server OAuth2 cote Kanidm et un backend JWT/OIDC
+cote OpenBao (JWKS, client credentials grant) pour un gain de coherence
+conceptuelle, contre une integration nettement plus lourde et une surface de
+panne plus grande que l'auth Kubernetes, deja standard et deja testee de
+bout en bout (`crates/controller/tests/reconcile.rs`,
+`apply_provisions_openbao_role_when_configured`).
 
 ## Observabilite : OpenTelemetry
 
@@ -234,9 +266,16 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   (`crates/controller/src/kanidm.rs`, optionnel via `KANIDM_URL`), mais ne le
   supprime pas encore a `Terminating` (pas de nettoyage a la destruction du
   Workshop) et ne gere pas son devenir a travers un cycle suspend/resume.
-- Mapping precis entre `WorkshopSpec.tools`/`egress_allowlist` et les
-  politiques OpenBao qui bornent les secrets accessibles a l'entite Kanidm
-  du Workshop (integration OpenBao elle-meme pas encore implementee).
+- Le `controller` provisionne aussi un role OpenBao par Workshop
+  (`crates/controller/src/openbao.rs`, optionnel via `OPENBAO_ADDR`) et
+  `identity-proxy` sait s'y authentifier et lister les secrets disponibles,
+  mais rien n'ecrit encore de secrets utiles dans OpenBao pour un Workshop
+  donne (pas de mapping avec `WorkshopSpec.tools`/`egress_allowlist`), et
+  `identity-proxy` ne fait pas encore office de proxy HTTP(S) qui intercepte
+  et enrichit les appels sortants de l'agent — seulement l'authentification
+  et le listing, cf. TODO dans `crates/identity-proxy/src/main.rs`.
+- Nettoyage du role OpenBao et de l'entite Kanidm a `Terminating` (idem
+  ci-dessus, pas encore implemente).
 - Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
   compatibilite des snapshots entre versions de kernel/Firecracker (un
   snapshot fige une version precise ; que faire s'il faut mettre a jour le

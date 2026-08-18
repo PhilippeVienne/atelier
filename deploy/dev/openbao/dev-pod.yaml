@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: atelier-openbao-dev
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: atelier-openbao-dev-token-review
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: atelier-openbao-dev
+    namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: atelier-openbao-dev
+  namespace: default
+  labels:
+    app: atelier-openbao-dev
+spec:
+  serviceAccountName: atelier-openbao-dev
+  containers:
+    - name: openbao
+      image: openbao/openbao:latest
+      args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-root-token-id=root"]
+      ports:
+        - containerPort: 8200
+      env:
+        - name: BAO_ADDR
+          value: "http://127.0.0.1:8200"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-openbao-dev
+  namespace: default
+spec:
+  selector:
+    app: atelier-openbao-dev
+  ports:
+    - port: 8200
+      targetPort: 8200
+  type: NodePort

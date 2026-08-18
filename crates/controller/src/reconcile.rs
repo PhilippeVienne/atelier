@@ -1,8 +1,8 @@
-use crate::kanidm;
+use crate::{kanidm, openbao};
 use atelier_common::{Workshop, WorkshopPhase, WorkshopStatus};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
-use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, PodTemplateSpec};
+use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, PodTemplateSpec, ServiceAccount};
 use kanidm_client::KanidmClient;
 use kube::api::{Api, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -16,21 +16,31 @@ const FIELD_MANAGER: &str = "atelier-controller";
 // TODO: rendre configurable (registre interne) une fois l'image publiee.
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
 
-/// Dependances partagees par toutes les reconciliations. `kanidm` est
-/// optionnel : sans configuration (`KANIDM_URL` absent), le controller
-/// fonctionne normalement mais ne provisionne pas d'identite par Workshop.
+/// Dependances partagees par toutes les reconciliations. `kanidm` et
+/// `openbao` sont optionnels : sans configuration, le controller fonctionne
+/// normalement mais ne provisionne pas d'identite/secrets par Workshop.
 pub struct ReconcileCtx {
     pub client: Client,
     pub kanidm: Option<Arc<KanidmClient>>,
+    pub openbao: Option<openbao::OpenBaoConfig>,
 }
 
 pub async fn run() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
     let kanidm = kanidm::client_from_env().await?.map(Arc::new);
+    let openbao = openbao::config_from_env()?;
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
-        .run(reconcile, error_policy, Arc::new(ReconcileCtx { client, kanidm }))
+        .run(
+            reconcile,
+            error_policy,
+            Arc::new(ReconcileCtx {
+                client,
+                kanidm,
+                openbao,
+            }),
+        )
         .for_each(|res| async move {
             if let Err(e) = res {
                 tracing::error!(error = %e, "reconcile failed");
@@ -70,8 +80,11 @@ fn error_policy(_workshop: Arc<Workshop>, _err: &kube::Error, _ctx: Arc<Reconcil
 ///    `image-builder` tourne (phase `BuildingImage`) ; `image-builder` se
 ///    charge lui-meme de patcher `status.imageDigest` a la fin du build,
 ///    voir `crates/image-builder`.
-/// 3. Une fois l'image disponible, creer/mettre a jour le pod parent
-///    (phase `Provisioning` -> `Running`). Iteration 2 : ce pod parent est
+/// 3. Une fois l'image disponible, creer/mettre a jour le ServiceAccount et
+///    le pod parent (phase `Provisioning` -> `Running`), et si OpenBao est
+///    configure, le role Kubernetes-auth qui scope l'acces de ce
+///    ServiceAccount aux seuls secrets de ce Workshop (voir
+///    `crates/controller/src/openbao.rs`). Iteration 2 : ce pod parent est
 ///    encore un placeholder (`registry.k8s.io/pause`), pas encore les vrais
 ///    conteneurs vm-supervisor/net-proxy/identity-proxy/mcp-gateway.
 #[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
@@ -87,10 +100,10 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
         .and_then(|s| s.image_digest.clone());
 
     let Some(image_digest) = image_digest else {
-        return Ok(ensure_image_build_job(&ctx.client, workshop, &ns, &name, kanidm_entity_id).await?);
+        return ensure_image_build_job(ctx, workshop, &ns, &name, kanidm_entity_id).await;
     };
 
-    ensure_parent_pod(&ctx.client, workshop, &ns, &name, image_digest, kanidm_entity_id).await
+    ensure_parent_pod(ctx, workshop, &ns, &name, image_digest, kanidm_entity_id).await
 }
 
 /// Renvoie l'identite Kanidm existante, ou tente d'en provisionner une
@@ -122,13 +135,13 @@ async fn resolve_kanidm_entity(
 
 #[tracing::instrument(skip_all)]
 async fn ensure_image_build_job(
-    client: &Client,
+    ctx: &ReconcileCtx,
     workshop: &Workshop,
     ns: &str,
     name: &str,
     kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
-    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ns);
     let job_name = format!("{name}-image-build");
 
     let owner_ref = workshop
@@ -206,19 +219,52 @@ async fn ensure_image_build_job(
 
 #[tracing::instrument(skip_all)]
 async fn ensure_parent_pod(
-    client: &Client,
+    ctx: &ReconcileCtx,
     workshop: &Workshop,
     ns: &str,
     name: &str,
     image_digest: String,
     kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
-    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let service_accounts: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), ns);
     let pod_name = format!("{name}-parent");
+    let sa_name = pod_name.clone();
 
     let owner_ref = workshop
         .controller_owner_ref(&())
         .expect("Workshop a un namespace, owner_ref toujours disponible");
+
+    // ServiceAccount dedie : c'est l'identite que le pod parent (et donc
+    // identity-proxy) presente a OpenBao via la methode d'auth Kubernetes.
+    let service_account = ServiceAccount {
+        metadata: ObjectMeta {
+            name: Some(sa_name.clone()),
+            namespace: Some(ns.to_string()),
+            owner_references: Some(vec![owner_ref.clone()]),
+            labels: Some(BTreeMap::from([(
+                "atelier.dev/workshop".to_string(),
+                name.to_string(),
+            )])),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    service_accounts
+        .patch(
+            &sa_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&service_account),
+        )
+        .await?;
+
+    if let Some(openbao_config) = &ctx.openbao {
+        if let Err(err) =
+            openbao::ensure_workshop_role(openbao_config, name, ns, &sa_name).await
+        {
+            tracing::error!(%err, "provisioning du role OpenBao echoue");
+        }
+    }
 
     let pod = Pod {
         metadata: ObjectMeta {
@@ -232,6 +278,7 @@ async fn ensure_parent_pod(
             ..Default::default()
         },
         spec: Some(PodSpec {
+            service_account_name: Some(sa_name),
             containers: vec![Container {
                 // TODO: remplacer par vm-supervisor + net-proxy + identity-proxy
                 // + mcp-gateway une fois ces images publiees, avec image_digest
