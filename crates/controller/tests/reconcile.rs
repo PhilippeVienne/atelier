@@ -208,6 +208,144 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
 
+/// Suspendre un Workshop doit liberer son pod parent sans toucher a son
+/// ServiceAccount ; le reprendre doit recreer le pod (phase `Resuming` puis
+/// `Running`) sans reconstruire l'image.
+#[tokio::test]
+async fn apply_suspend_then_resume_releases_and_recreates_pod_only() {
+    atelier_common::telemetry::ensure_crypto_provider();
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name = unique_name("test-workshop-suspend");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_kanidm(client.clone());
+    let pod_name = format!("{name}-parent");
+
+    workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "phase": "Pending", "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+
+    let running = workshops.get(&name).await.expect("get workshop");
+    let status = atelier_controller::reconcile::apply(&ctx, &running)
+        .await
+        .expect("apply() initial (creation du pod)");
+    assert_ne!(status.phase, WorkshopPhase::Suspended);
+    pods.get(&pod_name)
+        .await
+        .expect("le pod parent doit exister avant toute suspension");
+
+    // Suspendre : patch de spec.desiredState (pas status).
+    workshops
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "spec": { "desiredState": "Suspended" } })),
+        )
+        .await
+        .expect("passage en desiredState=Suspended");
+    let suspending = workshops.get(&name).await.expect("get workshop");
+
+    let status = atelier_controller::reconcile::apply(&ctx, &suspending)
+        .await
+        .expect("apply() de suspension");
+    assert!(
+        matches!(status.phase, WorkshopPhase::Suspending | WorkshopPhase::Suspended),
+        "phase attendue Suspending ou Suspended, obtenu {:?}",
+        status.phase
+    );
+    assert!(status.pod_name.is_none());
+
+    // Le ServiceAccount doit survivre a la suspension.
+    service_accounts
+        .get(&pod_name)
+        .await
+        .expect("le ServiceAccount ne doit pas etre supprime par la suspension");
+
+    // La suppression du pod n'est pas instantanee (grace period par
+    // defaut) : on reapplique en boucle jusqu'a confirmation Suspended,
+    // comme le ferait le controller reel au fil de ses cycles de requeue.
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": status })),
+        )
+        .await
+        .expect("ecriture du statut de suspension");
+
+    let mut status = status;
+    for _ in 0..30 {
+        let current = workshops.get(&name).await.expect("get workshop");
+        status = atelier_controller::reconcile::apply(&ctx, &current)
+            .await
+            .expect("apply() de confirmation de suspension");
+        workshops
+            .patch_status(
+                &name,
+                &PatchParams::default(),
+                &Patch::Merge(&serde_json::json!({ "status": status })),
+            )
+            .await
+            .expect("ecriture du statut de suspension");
+        if status.phase == WorkshopPhase::Suspended {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    assert_eq!(status.phase, WorkshopPhase::Suspended, "timeout en attendant Suspended");
+    assert!(
+        pods.get_opt(&pod_name).await.expect("get_opt pod").is_none(),
+        "le pod parent doit avoir disparu une fois suspendu"
+    );
+
+    // Reprendre : patch de spec.desiredState vers Running (le statut
+    // Suspended a deja ete ecrit par la boucle ci-dessus).
+    workshops
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "spec": { "desiredState": "Running" } })),
+        )
+        .await
+        .expect("passage en desiredState=Running");
+    let resuming = workshops.get(&name).await.expect("get workshop");
+
+    let status = atelier_controller::reconcile::apply(&ctx, &resuming)
+        .await
+        .expect("apply() de reprise");
+    assert!(
+        matches!(status.phase, WorkshopPhase::Resuming | WorkshopPhase::Running),
+        "phase attendue Resuming ou Running, obtenu {:?}",
+        status.phase
+    );
+    assert_eq!(status.image_digest.as_deref(), Some("sha256:deadbeef"));
+    pods.get(&pod_name)
+        .await
+        .expect("le pod parent doit avoir ete recree a la reprise");
+
+    service_accounts
+        .delete(&pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    pods.delete(&pod_name, &DeleteParams::default()).await.ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
 /// Necessite en plus une instance OpenBao accessible via OPENBAO_ADDR /
 /// OPENBAO_TOKEN, cf. deploy/dev/openbao/README.md. Sans ces variables, le
 /// test passe sans rien verifier : le provisioning OpenBao est une

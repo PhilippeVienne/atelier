@@ -151,6 +151,20 @@ L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 veille manuelle ou par une politique d'auto-suspend sur inactivite (a
 definir).
 
+**Etat actuel de l'implementation** (`crates/controller/src/reconcile.rs`) :
+le `controller` fait bien converger `status.phase` selon `spec.desiredState`
+(`Suspending`/`Suspended`/`Resuming`/`Running`) et libere/recree le pod
+parent en consequence — verifie en conditions reelles (suspend puis resume
+contre un vrai cluster). Ce qui **manque encore** : le vrai snapshot/restore
+Firecracker lui-meme (`vm-supervisor` ne pilote pas encore de microVM reelle,
+donc pas de `snapshot/create`/`snapshot/load` ni de `status.snapshotDigest`
+peuple) — pour l'instant, suspendre libere juste le pod, et reprendre en
+recree un depuis `status.imageDigest` (equivalent a un redemarrage, pas
+encore a une vraie reprise memoire). L'entite Kanidm et le role OpenBao du
+Workshop sont deliberement laisses intacts a travers ce cycle (pas
+reprovisionnes a chaque resume), seuls les endpoints `/suspend`/`/resume`
+de l'api-server restent a cabler.
+
 ## Identite et secrets : Kanidm + OpenBao
 
 Deux notions d'identite bien distinctes dans Atelier :
@@ -270,10 +284,9 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   par Workshop (`crates/controller/src/{kanidm,openbao}.rs`, tous deux
   optionnels), et les nettoie a la suppression du Workshop via un finalizer
   Kubernetes (`atelier.dev/cleanup`) — verifie en conditions reelles
-  (creation, suppression, entite/role bien absents ensuite). Ne gere en
-  revanche pas encore leur devenir a travers un cycle suspend/resume
-  (conserves tels quels pour l'instant, ce qui est probablement correct
-  puisqu'un Workshop suspendu reste "le meme" Workshop, mais pas verifie).
+  (creation, suppression, entite/role bien absents ensuite). A travers un
+  cycle suspend/resume, ils sont deliberement laisses intacts (seul le pod
+  parent est libere/recree), verifie egalement en conditions reelles.
 - `identity-proxy` sait s'authentifier aupres d'OpenBao et lister les
   secrets disponibles, mais rien n'ecrit encore de secrets utiles pour un
   Workshop donne (pas de mapping avec `WorkshopSpec.tools`/`egress_allowlist`),
