@@ -78,7 +78,11 @@ Client externe (JWT) ───►│              api-server                │
   section dediee « Identite et secrets » ci-dessous.
 - **controller** (`crates/controller`) : operateur Kubernetes (kube-rs) qui
   reconcilie les CR `Workshop` en ressources concretes (pod parent,
-  ResourceQuota, NetworkPolicy) et met a jour leur statut.
+  ResourceQuota, NetworkPolicy) et met a jour leur statut. Un finalizer
+  (`atelier.dev/cleanup`) bloque la suppression effective d'un Workshop tant
+  que ses ressources externes (entite Kanidm, role OpenBao) n'ont pas ete
+  nettoyees ; les ressources Kubernetes owned (Job, ServiceAccount, Pod)
+  n'en ont pas besoin, le garbage collector standard suffit.
 - **CRD `Workshop`** (`crates/common/src/crd.rs`, manifeste genere dans
   `crds/workshop.yaml`) : source de verite declarative pour un environnement
   (source devcontainer, ressources, allowlist reseau, outils/simulateurs
@@ -262,20 +266,20 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
   l'agent sont auto-approuvees vs necessitent une validation humaine).
-- Le `controller` provisionne un service account Kanidm par Workshop
-  (`crates/controller/src/kanidm.rs`, optionnel via `KANIDM_URL`), mais ne le
-  supprime pas encore a `Terminating` (pas de nettoyage a la destruction du
-  Workshop) et ne gere pas son devenir a travers un cycle suspend/resume.
-- Le `controller` provisionne aussi un role OpenBao par Workshop
-  (`crates/controller/src/openbao.rs`, optionnel via `OPENBAO_ADDR`) et
-  `identity-proxy` sait s'y authentifier et lister les secrets disponibles,
-  mais rien n'ecrit encore de secrets utiles dans OpenBao pour un Workshop
-  donne (pas de mapping avec `WorkshopSpec.tools`/`egress_allowlist`), et
-  `identity-proxy` ne fait pas encore office de proxy HTTP(S) qui intercepte
-  et enrichit les appels sortants de l'agent — seulement l'authentification
-  et le listing, cf. TODO dans `crates/identity-proxy/src/main.rs`.
-- Nettoyage du role OpenBao et de l'entite Kanidm a `Terminating` (idem
-  ci-dessus, pas encore implemente).
+- Le `controller` provisionne un service account Kanidm et un role OpenBao
+  par Workshop (`crates/controller/src/{kanidm,openbao}.rs`, tous deux
+  optionnels), et les nettoie a la suppression du Workshop via un finalizer
+  Kubernetes (`atelier.dev/cleanup`) — verifie en conditions reelles
+  (creation, suppression, entite/role bien absents ensuite). Ne gere en
+  revanche pas encore leur devenir a travers un cycle suspend/resume
+  (conserves tels quels pour l'instant, ce qui est probablement correct
+  puisqu'un Workshop suspendu reste "le meme" Workshop, mais pas verifie).
+- `identity-proxy` sait s'authentifier aupres d'OpenBao et lister les
+  secrets disponibles, mais rien n'ecrit encore de secrets utiles pour un
+  Workshop donne (pas de mapping avec `WorkshopSpec.tools`/`egress_allowlist`),
+  et il ne fait pas encore office de proxy HTTP(S) qui intercepte et enrichit
+  les appels sortants de l'agent — seulement l'authentification et le
+  listing, cf. TODO dans `crates/identity-proxy/src/main.rs`.
 - Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
   compatibilite des snapshots entre versions de kernel/Firecracker (un
   snapshot fige une version precise ; que faire s'il faut mettre a jour le

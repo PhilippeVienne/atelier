@@ -6,6 +6,7 @@ use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, PodTemplateSpe
 use kanidm_client::KanidmClient;
 use kube::api::{Api, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
+use kube::runtime::finalizer::{self, Event};
 use kube::runtime::watcher;
 use kube::{Client, Resource, ResourceExt};
 use std::collections::BTreeMap;
@@ -15,6 +16,20 @@ use std::time::Duration;
 const FIELD_MANAGER: &str = "atelier-controller";
 // TODO: rendre configurable (registre interne) une fois l'image publiee.
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
+/// Bloque la suppression effective d'un Workshop tant que
+/// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
+/// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
+/// elles sont recuperees par le garbage collector standard via leurs owner
+/// references.
+const CLEANUP_FINALIZER: &str = "atelier.dev/cleanup";
+
+#[derive(Debug, thiserror::Error)]
+enum ReconcileError {
+    #[error(transparent)]
+    Apply(#[from] anyhow::Error),
+    #[error(transparent)]
+    Kube(#[from] kube::Error),
+}
 
 /// Dependances partagees par toutes les reconciliations. `kanidm` et
 /// `openbao` sont optionnels : sans configuration, le controller fonctionne
@@ -52,20 +67,55 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
-async fn reconcile(workshop: Arc<Workshop>, ctx: Arc<ReconcileCtx>) -> Result<Action, kube::Error> {
-    let name = workshop.name_any();
-    tracing::info!("reconciling workshop");
+async fn reconcile(
+    workshop: Arc<Workshop>,
+    ctx: Arc<ReconcileCtx>,
+) -> Result<Action, finalizer::Error<ReconcileError>> {
+    let ns = workshop.namespace().unwrap_or_else(|| "default".into());
+    let api: Api<Workshop> = Api::namespaced(ctx.client.clone(), &ns);
 
-    match apply(&ctx, &workshop).await {
-        Ok(status) => update_status(&ctx.client, &workshop, status).await?,
-        Err(err) => tracing::error!(name = %name, %err, "reconcile apply failed"),
-    }
-
-    Ok(Action::requeue(Duration::from_secs(15)))
+    finalizer::finalizer(&api, CLEANUP_FINALIZER, workshop, |event| async {
+        match event {
+            Event::Apply(workshop) => {
+                tracing::info!("reconciling workshop");
+                let status = apply(&ctx, &workshop).await?;
+                update_status(&ctx.client, &workshop, status).await?;
+                Ok(Action::requeue(Duration::from_secs(15)))
+            }
+            Event::Cleanup(workshop) => {
+                tracing::info!("cleaning up workshop");
+                cleanup(&ctx, &workshop).await?;
+                Ok(Action::await_change())
+            }
+        }
+    })
+    .await
 }
 
-fn error_policy(_workshop: Arc<Workshop>, _err: &kube::Error, _ctx: Arc<ReconcileCtx>) -> Action {
+fn error_policy(
+    _workshop: Arc<Workshop>,
+    err: &finalizer::Error<ReconcileError>,
+    _ctx: Arc<ReconcileCtx>,
+) -> Action {
+    tracing::error!(%err, "reconcile failed");
     Action::requeue(Duration::from_secs(5))
+}
+
+/// Nettoie les ressources externes (non Kubernetes) d'un Workshop avant
+/// d'autoriser sa suppression effective : entite Kanidm et role OpenBao. Les
+/// ressources Kubernetes owned (Job, ServiceAccount, Pod) sont laissees au
+/// garbage collector standard.
+async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> {
+    let name = workshop.name_any();
+
+    if let Some(kanidm_client) = &ctx.kanidm {
+        kanidm::delete_workshop_entity(kanidm_client, &name).await?;
+    }
+    if let Some(openbao_config) = &ctx.openbao {
+        openbao::delete_workshop_role(openbao_config, &name).await?;
+    }
+
+    Ok(())
 }
 
 /// Fait converger un `Workshop` d'un pas de reconciliation et renvoie le

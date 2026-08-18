@@ -90,3 +90,44 @@ pub async fn ensure_workshop_role(
 
     Ok(role_name)
 }
+
+/// Supprime le role kubernetes-auth et la policy d'un Workshop. Idempotent :
+/// un 404 (deja absent) n'est pas une erreur ; toute autre erreur est
+/// remontee pour que le finalizer retente plutot que de laisser un role
+/// orphelin (surface d'acces residuelle a des secrets).
+pub async fn delete_workshop_role(config: &OpenBaoConfig, workshop_name: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let role_name = format!("workshop-{workshop_name}");
+
+    delete_if_present(
+        &client,
+        &format!("{}/v1/auth/kubernetes/role/{role_name}", config.addr),
+        &config.token,
+    )
+    .await?;
+    delete_if_present(
+        &client,
+        &format!("{}/v1/sys/policy/{role_name}", config.addr),
+        &config.token,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn delete_if_present(client: &reqwest::Client, url: &str, token: &str) -> anyhow::Result<()> {
+    let response = client
+        .delete(url)
+        .header("X-Vault-Token", token)
+        .send()
+        .await?;
+
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "suppression OpenBao ({url}) a echoue: {}",
+        response.status()
+    ))
+}

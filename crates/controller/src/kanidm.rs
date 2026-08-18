@@ -5,7 +5,7 @@
 //! d'identite plutot que d'echouer — utile pour le dev/tests qui n'ont pas
 //! besoin de cette brique.
 
-use kanidm_client::{KanidmClient, KanidmClientBuilder};
+use kanidm_client::{ClientError, KanidmClient, KanidmClientBuilder};
 
 /// Construit le client Kanidm a partir de l'environnement :
 /// - `KANIDM_URL` (requis pour activer le provisioning)
@@ -64,4 +64,18 @@ pub async fn ensure_workshop_entity(
     }
 
     Ok(account_name)
+}
+
+/// Supprime le service account Kanidm d'un Workshop. Idempotent : un 404
+/// (deja absent) n'est pas une erreur, pour ne pas bloquer indefiniment la
+/// suppression d'un Workshop dont l'entite a deja ete nettoyee ; toute autre
+/// erreur (reseau, auth, ...) est remontee pour que le finalizer retente
+/// plutot que de risquer une entite orpheline.
+pub async fn delete_workshop_entity(client: &KanidmClient, workshop_name: &str) -> anyhow::Result<()> {
+    let account_name = format!("atelier-workshop-{workshop_name}");
+    match client.idm_service_account_delete(&account_name).await {
+        Ok(()) => Ok(()),
+        Err(ClientError::Http(status, _, _)) if status == reqwest::StatusCode::NOT_FOUND => Ok(()),
+        Err(err) => Err(anyhow::anyhow!("suppression du service account Kanidm: {err:?}")),
+    }
 }
