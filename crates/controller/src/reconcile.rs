@@ -24,8 +24,11 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn reconcile(workshop: Arc<Workshop>, _ctx: Arc<Client>) -> Result<Action, kube::Error> {
     tracing::info!(name = %workshop.name_any(), "reconciling workshop");
-    // TODO: creer/mettre a jour le pod parent (tooling sidecar + vm-supervisor)
-    // TODO: appliquer les ResourceQuota / LimitRange associes
+    // TODO: si WorkshopStatus.image_digest est absent, declencher un build
+    //       image-builder a partir de spec.devcontainer (phase BuildingImage)
+    // TODO: une fois l'image disponible, creer/mettre a jour le pod parent
+    //       (tooling sidecar + vm-supervisor, phase Provisioning -> Running)
+    // TODO: appliquer les ResourceQuota / NetworkPolicy associes
     // TODO: mettre a jour WorkshopStatus.phase
     Ok(Action::requeue(Duration::from_secs(30)))
 }

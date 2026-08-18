@@ -8,6 +8,7 @@ members = [
     "crates/net-proxy",
     "crates/identity-proxy",
     "crates/mcp-gateway",
+    "crates/image-builder",
 ]
 
 [workspace.package]

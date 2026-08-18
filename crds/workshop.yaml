@@ -20,8 +20,25 @@ spec:
         description: Auto-generated derived type for WorkshopSpec via `CustomResource`
         properties:
           spec:
-            description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : image de la microVM, ressources allouees, politique reseau et outillage active.'
+            description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : source devcontainer, ressources allouees, politique reseau et outillage active.'
             properties:
+              devcontainer:
+                description: Definition de l'environnement au format devcontainer.json (spec VS Code Dev Containers). C'est cette source qui est construite en rootfs bootable par le composant `image-builder`.
+                properties:
+                  config_path:
+                    default: .devcontainer/devcontainer.json
+                    description: Chemin vers le fichier devcontainer.json dans le depot.
+                    type: string
+                  repo:
+                    description: URL du depot git contenant la definition devcontainer.
+                    type: string
+                  revision:
+                    default: HEAD
+                    description: Branche, tag ou commit a utiliser.
+                    type: string
+                required:
+                - repo
+                type: object
               egress_allowlist:
                 default: []
                 description: Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
@@ -51,13 +68,10 @@ spec:
                 items:
                   type: string
                 type: array
-              vm_image:
-                description: Image de la microVM (rootfs + kernel) a booter dans Firecracker.
-                type: string
             required:
+            - devcontainer
             - owner_subject
             - resources
-            - vm_image
             type: object
           status:
             nullable: true
@@ -67,6 +81,10 @@ spec:
                   type: string
                 default: {}
                 type: object
+              image_digest:
+                description: Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
+                nullable: true
+                type: string
               phase:
                 enum:
                 - Pending
@@ -74,6 +92,7 @@ spec:
                 - Running
                 - Terminating
                 - Failed
+                - BuildingImage
                 type: string
               pod_name:
                 nullable: true

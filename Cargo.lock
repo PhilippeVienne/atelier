@@ -138,6 +138,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atelier-image-builder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atelier-common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "atelier-mcp-gateway"
 version = "0.1.0"
 dependencies = [

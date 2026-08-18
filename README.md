@@ -13,6 +13,7 @@ composants et du modele de securite.
 - `crates/common` — types partages, dont le CRD `Workshop`
 - `crates/controller` — operateur Kubernetes (reconciliation des `Workshop`)
 - `crates/api-server` — API externe (auth JWT, CRUD de `Workshop`)
+- `crates/image-builder` — devcontainer.json → rootfs Firecracker (cache content-addressed)
 - `crates/vm-supervisor` — cycle de vie de la microVM Firecracker (pod parent)
 - `crates/net-proxy` — proxy de sortie reseau avec allowlist (pod parent)
 - `crates/identity-proxy` — injection de credentials (pod parent)
