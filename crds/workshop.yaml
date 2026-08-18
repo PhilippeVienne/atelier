@@ -22,6 +22,13 @@ spec:
           spec:
             description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : source devcontainer, ressources allouees, politique reseau et outillage active.'
             properties:
+              desired_state:
+                default: Running
+                description: 'Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en veille via snapshot Firecracker, pod parent libere). Le controller fait converger `status.phase` vers cet etat.'
+                enum:
+                - Running
+                - Suspended
+                type: string
               devcontainer:
                 description: Definition de l'environnement au format devcontainer.json (spec VS Code Dev Containers). C'est cette source qui est construite en rootfs bootable par le composant `image-builder`.
                 properties:
@@ -93,8 +100,15 @@ spec:
                 - Terminating
                 - Failed
                 - BuildingImage
+                - Suspending
+                - Suspended
+                - Resuming
                 type: string
               pod_name:
+                nullable: true
+                type: string
+              snapshot_digest:
+                description: Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.
                 nullable: true
                 type: string
             required:

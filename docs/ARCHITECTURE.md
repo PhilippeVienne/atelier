@@ -115,6 +115,35 @@ Client externe (JWT) ───►│              api-server                │
   code-server embarque, cf. `coder/code-server` comme reference
   d'implementation).
 
+## Mise en veille : snapshot/restore Firecracker
+
+Un Workshop n'est pas seulement demarre/detruit : il peut etre **suspendu**.
+Firecracker expose nativement `PUT /snapshot/create` (fige l'etat de la VM et
+son contenu memoire) et `PUT /snapshot/load` (restaure a l'identique), ce qui
+permet de :
+
+- liberer les ressources du pod parent (CPU/memoire/pod du cluster) pendant
+  qu'un Workshop est inactif, sans perdre l'etat de travail de l'agent ;
+- reprendre en quelques centaines de millisecondes, sans rejouer le boot du
+  noyau invite ni le setup du devcontainer (contrairement a une destruction
+  suivie d'un nouveau `Provisioning`).
+
+Ce cycle est pilote par `WorkshopSpec.desired_state` (`Running` /
+`Suspended`), que le `controller` fait converger :
+
+- `Running` → `Suspended` : phase `Suspending`, `vm-supervisor` declenche
+  `snapshot/create`, publie le resultat dans le cache content-addressed
+  (meme mecanisme que les images `image-builder`), le digest est ecrit dans
+  `WorkshopStatus.snapshot_digest`, puis le pod parent est libere.
+- `Suspended` → `Running` : phase `Resuming`, le `controller` recree le pod
+  parent, `vm-supervisor` recupere le snapshot via son digest et appelle
+  `snapshot/load` au lieu de rebooter depuis `image_digest`.
+
+L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
+(`crates/api-server`), typiquement utilises par le dashboard pour une mise en
+veille manuelle ou par une politique d'auto-suspend sur inactivite (a
+definir).
+
 ## Modele de securite
 
 - La seule surface d'attaque exposee par la microVM vers l'exterieur passe
@@ -145,3 +174,7 @@ Client externe (JWT) ───►│              api-server                │
   l'agent sont auto-approuvees vs necessitent une validation humaine).
 - Stockage des secrets pour `identity-proxy` (Vault ? Secrets Kubernetes
   projetes ?).
+- Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
+  compatibilite des snapshots entre versions de kernel/Firecracker (un
+  snapshot fige une version precise ; que faire s'il faut mettre a jour le
+  kernel invite entre deux reprises ?).

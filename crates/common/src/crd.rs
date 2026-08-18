@@ -30,6 +30,18 @@ pub struct WorkshopSpec {
     pub tools: Vec<String>,
     /// Identite du sujet JWT autorise a piloter ce Workshop.
     pub owner_subject: String,
+    /// Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en
+    /// veille via snapshot Firecracker, pod parent libere). Le controller
+    /// fait converger `status.phase` vers cet etat.
+    #[serde(default)]
+    pub desired_state: WorkshopDesiredState,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default, PartialEq, Eq)]
+pub enum WorkshopDesiredState {
+    #[default]
+    Running,
+    Suspended,
 }
 
 /// Reference vers un projet portant un `.devcontainer/devcontainer.json`
@@ -72,6 +84,12 @@ pub struct WorkshopStatus {
     /// devcontainer, une fois le build termine (cache content-addressed).
     #[serde(default)]
     pub image_digest: Option<String>,
+    /// Reference du dernier snapshot Firecracker (etat VM + memoire) pris
+    /// par `vm-supervisor` lors d'une mise en veille, dans le meme cache
+    /// content-addressed que `image_digest`. Absent si le Workshop n'a
+    /// jamais ete suspendu.
+    #[serde(default)]
+    pub snapshot_digest: Option<String>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
 }
@@ -84,6 +102,14 @@ pub enum WorkshopPhase {
     BuildingImage,
     Provisioning,
     Running,
+    /// Snapshot Firecracker en cours, pod parent sur le point d'etre libere.
+    Suspending,
+    /// MicroVM arretee, snapshot disponible dans le cache ; aucun pod parent
+    /// n'est alloue tant que le Workshop reste dans cette phase.
+    Suspended,
+    /// Pod parent recree, restauration de la microVM depuis
+    /// `status.snapshot_digest` en cours.
+    Resuming,
     Terminating,
     Failed,
 }
