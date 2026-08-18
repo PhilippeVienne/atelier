@@ -73,9 +73,9 @@ Client externe (JWT) ───►│              api-server                │
 ### control plane (hors du pod parent)
 
 - **api-server** (`crates/api-server`) : API HTTP externe. Authentifie les
-  appels via un JWT dont l'issuer est signe par un provider externe
-  pre-enregistre (liste d'issuers de confiance + JWKS). Cree/lit/detruit des
-  CR `Workshop`.
+  appels via un JWT dont l'issuer est [Kanidm](https://kanidm.com/) (JWKS
+  recuperes au demarrage). Cree/lit/detruit des CR `Workshop`. Voir la
+  section dediee « Identite et secrets » ci-dessous.
 - **controller** (`crates/controller`) : operateur Kubernetes (kube-rs) qui
   reconcilie les CR `Workshop` en ressources concretes (pod parent,
   ResourceQuota, NetworkPolicy) et met a jour leur statut.
@@ -99,7 +99,9 @@ Client externe (JWT) ───►│              api-server                │
   `Workshop.spec.egress_allowlist`, journalise chaque appel.
 - **identity-proxy** (`crates/identity-proxy`) : injecte des credentials/tokens
   dans les appels sortants (ex: acces a une API necessitant un token) sans
-  jamais exposer le secret brut a l'agent dans la VM.
+  jamais exposer le secret brut a l'agent dans la VM. Secrets stockes dans
+  OpenBao, recuperes avec l'identite Kanidm propre au Workshop. Voir la
+  section dediee « Identite et secrets » ci-dessous.
 - **mcp-gateway** (`crates/mcp-gateway`) : serveur MCP expose a l'agent (via
   vsock). C'est le seul point d'entree pour que l'agent (1) agisse sur le
   monde exterieur au-dela du simple reseau proxifie, et (2) demande des
@@ -144,6 +146,32 @@ L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 veille manuelle ou par une politique d'auto-suspend sur inactivite (a
 definir).
 
+## Identite et secrets : Kanidm + OpenBao
+
+Deux notions d'identite bien distinctes dans Atelier :
+
+- **L'utilisateur humain** proprietaire d'un Workshop (`WorkshopSpec.owner_subject`).
+  Son identite est geree par [Kanidm](https://kanidm.com/), qui sert de
+  fournisseur d'identite pour l'ensemble d'Atelier (`api-server` ne valide que
+  des JWT dont l'issuer est Kanidm) et peut lui-meme federer vers un provider
+  externe (OIDC/LDAP d'entreprise) sans qu'Atelier ait a gerer cette
+  integration directement.
+- **L'environnement lui-meme** : chaque `Workshop` se voit attribuer sa propre
+  entite machine dans Kanidm (`WorkshopStatus.kanidm_entity_id`), distincte du
+  sujet humain proprietaire. C'est cette identite d'environnement que
+  `identity-proxy` presente pour s'authentifier aupres du backend de secrets,
+  pas l'identite de l'utilisateur qui a demande le Workshop.
+
+Les secrets destines aux environnements (credentials/tokens que
+`identity-proxy` injecte dans les appels sortants de l'agent) sont stockes
+dans [OpenBao](https://openbao.org/) — deliberement separe des Secrets
+Kubernetes du cluster sous-jacent, qui restent geres par les mecanismes k8s
+standards pour le fonctionnement du control plane lui-meme. `identity-proxy`
+s'authentifie aupres d'OpenBao avec l'entite Kanidm du Workshop et ne peut
+recuperer que les secrets scopes a celui-ci (politique OpenBao derivee de
+`WorkshopSpec.tools`/`egress_allowlist`), ce qui borne le rayon d'action d'un
+Workshop compromis aux seuls secrets qui lui ont ete explicitement destines.
+
 ## Modele de securite
 
 - La seule surface d'attaque exposee par la microVM vers l'exterieur passe
@@ -151,9 +179,9 @@ definir).
   controle (mcp-gateway). Aucun acces direct de la VM au reste du cluster.
 - Isolation memoire/noyau assuree par Firecracker (jailer, seccomp, cgroups)
   plutot que par la seule isolation de conteneur d'un Pod.
-- Authentification externe MVP : JWT signes par un provider externe
-  pre-enregistre (liste d'issuers + JWKS statique au demarrage de
-  l'api-server). Pas de gestion d'utilisateurs locale dans un premier temps.
+- Authentification externe : JWT emis par Kanidm (JWKS recupere au demarrage
+  de l'api-server). Pas de gestion d'utilisateurs locale dans Atelier
+  lui-meme ; Kanidm est la seule source de verite identite.
 
 ## Allocation de ressources et scaling
 
@@ -172,8 +200,11 @@ definir).
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
   l'agent sont auto-approuvees vs necessitent une validation humaine).
-- Stockage des secrets pour `identity-proxy` (Vault ? Secrets Kubernetes
-  projetes ?).
+- Provisioning concret de l'entite machine Kanidm par Workshop (a quel
+  moment du cycle de vie, avec quel cycle de vie propre — supprimee a
+  `Terminating` ? conservee a travers un cycle suspend/resume ?) et mapping
+  precis entre `WorkshopSpec.tools`/`egress_allowlist` et les politiques
+  OpenBao qui bornent les secrets accessibles.
 - Politique d'auto-suspend (delai d'inactivite avant snapshot automatique) et
   compatibilite des snapshots entre versions de kernel/Firecracker (un
   snapshot fige une version precise ; que faire s'il faut mettre a jour le

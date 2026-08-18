@@ -93,6 +93,12 @@ pub struct WorkshopStatus {
     /// jamais ete suspendu.
     #[serde(default)]
     pub snapshot_digest: Option<String>,
+    /// Identifiant de l'entite machine Kanidm provisionnee pour cet
+    /// environnement (distincte du sujet humain `spec.owner_subject`).
+    /// C'est cette identite que `identity-proxy` presente a OpenBao pour
+    /// recuperer les secrets scopes a ce Workshop.
+    #[serde(default)]
+    pub kanidm_entity_id: Option<String>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
 }

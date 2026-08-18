@@ -230,6 +230,13 @@ fn carry_forward_status(
             .status
             .as_ref()
             .and_then(|s| s.snapshot_digest.clone()),
+        // TODO: provisionner une entite machine Kanidm des la creation du
+        // Workshop (avant meme BuildingImage) plutot que de se contenter de
+        // la reporter tel quel ici.
+        kanidm_entity_id: workshop
+            .status
+            .as_ref()
+            .and_then(|s| s.kanidm_entity_id.clone()),
         conditions: BTreeMap::new(),
     }
 }

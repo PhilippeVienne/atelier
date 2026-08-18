@@ -92,6 +92,10 @@ spec:
                 description: Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
                 nullable: true
                 type: string
+              kanidmEntityId:
+                description: Identifiant de l'entite machine Kanidm provisionnee pour cet environnement (distincte du sujet humain `spec.owner_subject`). C'est cette identite que `identity-proxy` presente a OpenBao pour recuperer les secrets scopes a ce Workshop.
+                nullable: true
+                type: string
               phase:
                 enum:
                 - Pending
