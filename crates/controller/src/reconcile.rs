@@ -1,8 +1,11 @@
-use crate::{kanidm, openbao};
+use crate::{kanidm, openbao, storage};
 use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
-use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec, PodTemplateSpec, ServiceAccount};
+use k8s_openapi::api::core::v1::{
+    Container, EmptyDirVolumeSource, EnvVar, PersistentVolumeClaimVolumeSource, Pod, PodSpec,
+    PodTemplateSpec, ServiceAccount, Volume, VolumeMount,
+};
 use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -34,16 +37,27 @@ enum ReconcileError {
 /// Dependances partagees par toutes les reconciliations. `kanidm` et
 /// `openbao` sont optionnels : sans configuration, le controller fonctionne
 /// normalement mais ne provisionne pas d'identite/secrets par Workshop.
+/// `registry_addr` n'est en revanche pas optionnel : sans registre, la
+/// phase `BuildingImage` ne peut pas aboutir (le Job image-builder echoue),
+/// mais on garde une valeur par defaut de dev plutot que de faire echouer
+/// `run()` au demarrage.
 pub struct ReconcileCtx {
     pub client: Client,
     pub kanidm: Option<Arc<KanidmClient>>,
     pub openbao: Option<openbao::OpenBaoConfig>,
+    pub registry_addr: String,
+    pub registry_insecure: bool,
 }
 
 pub async fn run() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
     let kanidm = kanidm::client_from_env().await?.map(Arc::new);
     let openbao = openbao::config_from_env()?;
+    let registry_addr =
+        std::env::var("ATELIER_REGISTRY_ADDR").unwrap_or_else(|_| "localhost:5000".to_string());
+    let registry_insecure = std::env::var("ATELIER_REGISTRY_INSECURE")
+        .map(|v| v == "true")
+        .unwrap_or(false);
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -54,6 +68,8 @@ pub async fn run() -> anyhow::Result<()> {
                 client,
                 kanidm,
                 openbao,
+                registry_addr,
+                registry_insecure,
             }),
         )
         .for_each(|res| async move {
@@ -249,6 +265,11 @@ async fn ensure_image_build_job(
     name: &str,
     kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
+    // Cache partage (PVC) ou image-builder publie le rootfs construit ;
+    // cree au besoin, idempotent, pas de owner reference (partage entre
+    // Workshops, survit a la suppression de n'importe lequel d'entre eux).
+    storage::ensure_image_cache_pvc(&ctx.client, ns, "20Gi").await?;
+
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ns);
     let job_name = format!("{name}-image-build");
 
@@ -268,7 +289,41 @@ async fn ensure_image_build_job(
         ),
         env_var("ATELIER_WORKSHOP_NAME", name),
         env_var("ATELIER_WORKSHOP_NAMESPACE", ns),
+        env_var("ATELIER_REGISTRY_ADDR", &ctx.registry_addr),
+        env_var("ATELIER_REGISTRY_INSECURE", &ctx.registry_insecure.to_string()),
+        env_var("ATELIER_IMAGE_CACHE_DIR", storage::IMAGE_CACHE_MOUNT_PATH),
+        // `crane` doit vivre sur un point de montage distinct de la racine
+        // du conteneur : envbuilder efface le systeme de fichiers du
+        // conteneur qui l'execute (sauf /.envbuilder) avant d'y extraire
+        // l'image cible, ce qui emporterait un `crane` installe sur `/`
+        // (constate en pratique). D'ou l'initContainer qui le copie dans
+        // un emptyDir monte a part.
+        env_var("ATELIER_CRANE_BIN", "/tools/crane"),
     ];
+
+    let cache_volume = Volume {
+        name: "cache".to_string(),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
+            read_only: Some(false),
+        }),
+        ..Default::default()
+    };
+    let tools_volume = Volume {
+        name: "tools".to_string(),
+        empty_dir: Some(EmptyDirVolumeSource::default()),
+        ..Default::default()
+    };
+    let cache_mount = VolumeMount {
+        name: "cache".to_string(),
+        mount_path: storage::IMAGE_CACHE_MOUNT_PATH.to_string(),
+        ..Default::default()
+    };
+    let tools_mount = VolumeMount {
+        name: "tools".to_string(),
+        mount_path: "/tools".to_string(),
+        ..Default::default()
+    };
 
     let job = Job {
         metadata: ObjectMeta {
@@ -286,10 +341,23 @@ async fn ensure_image_build_job(
             template: PodTemplateSpec {
                 spec: Some(PodSpec {
                     restart_policy: Some("Never".into()),
+                    volumes: Some(vec![cache_volume, tools_volume]),
+                    init_containers: Some(vec![Container {
+                        name: "copy-tools".into(),
+                        image: Some(IMAGE_BUILDER_IMAGE.into()),
+                        command: Some(vec![
+                            "cp".to_string(),
+                            "/usr/local/bin/crane".to_string(),
+                            "/tools/crane".to_string(),
+                        ]),
+                        volume_mounts: Some(vec![tools_mount.clone()]),
+                        ..Default::default()
+                    }]),
                     containers: vec![Container {
                         name: "image-builder".into(),
                         image: Some(IMAGE_BUILDER_IMAGE.into()),
                         env: Some(env),
+                        volume_mounts: Some(vec![cache_mount, tools_mount]),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -390,8 +458,10 @@ async fn ensure_parent_pod(
             service_account_name: Some(sa_name),
             containers: vec![Container {
                 // TODO: remplacer par vm-supervisor + net-proxy + identity-proxy
-                // + mcp-gateway une fois ces images publiees, avec image_digest
-                // transmis a vm-supervisor pour recuperer le bon rootfs.
+                // + mcp-gateway une fois ces images publiees. vm-supervisor
+                // devra aussi monter le PVC de cache (storage::IMAGE_CACHE_PVC_NAME,
+                // en lecture seule) et lire le rootfs a
+                // storage::IMAGE_CACHE_MOUNT_PATH/storage::digest_cache_subdir(&image_digest)/rootfs.ext4.
                 name: "placeholder".into(),
                 image: Some("registry.k8s.io/pause:3.9".into()),
                 ..Default::default()

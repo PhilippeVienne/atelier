@@ -24,6 +24,8 @@ fn ctx_without_kanidm(client: Client) -> ReconcileCtx {
         client,
         kanidm: None,
         openbao: None,
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
     }
 }
 
@@ -100,19 +102,60 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
     let owners = job
         .metadata
         .owner_references
+        .clone()
         .expect("le job doit avoir une owner reference vers le Workshop");
     assert_eq!(owners[0].name, name);
 
-    let env = job.spec.unwrap().template.spec.unwrap().containers[0]
-        .env
-        .clone()
-        .unwrap();
+    let pod_spec = job.spec.clone().unwrap().template.spec.unwrap();
+    let env = pod_spec.containers[0].env.clone().unwrap();
     let repo_env = env
         .iter()
         .find(|e| e.name == "ATELIER_DEVCONTAINER_REPO")
         .expect("ATELIER_DEVCONTAINER_REPO doit etre transmise au job");
     assert_eq!(repo_env.value.as_deref(), Some("https://example.invalid/repo.git"));
+    let cache_dir_env = env
+        .iter()
+        .find(|e| e.name == "ATELIER_IMAGE_CACHE_DIR")
+        .expect("ATELIER_IMAGE_CACHE_DIR doit etre transmise au job");
+    assert_eq!(cache_dir_env.value.as_deref(), Some("/cache"));
 
+    // Le PVC de cache partage doit avoir ete cree (idempotent, sans owner
+    // reference : il survit a la suppression de n'importe quel Workshop).
+    let pvcs: Api<k8s_openapi::api::core::v1::PersistentVolumeClaim> =
+        Api::namespaced(client.clone(), ns);
+    let pvc = pvcs
+        .get(atelier_controller::storage::IMAGE_CACHE_PVC_NAME)
+        .await
+        .expect("le PVC de cache doit avoir ete cree");
+    assert!(
+        pvc.metadata.owner_references.is_none() || pvc.metadata.owner_references.unwrap().is_empty(),
+        "le PVC de cache est partage, il ne doit pas etre owned par un Workshop"
+    );
+
+    // ServiceAccount du pod parent pas encore cree a ce stade (avant
+    // l'image) : le Job doit monter le PVC lui-meme (lecture-ecriture) et
+    // avoir un initContainer qui prepare `crane` sur un volume separe.
+    let cache_volume = pod_spec
+        .volumes
+        .as_ref()
+        .and_then(|vols| vols.iter().find(|v| v.name == "cache"))
+        .expect("le job doit monter le volume de cache");
+    assert_eq!(
+        cache_volume
+            .persistent_volume_claim
+            .as_ref()
+            .map(|pvc| pvc.claim_name.as_str()),
+        Some(atelier_controller::storage::IMAGE_CACHE_PVC_NAME)
+    );
+    let init_containers = pod_spec
+        .init_containers
+        .as_ref()
+        .expect("le job doit avoir un initContainer pour preparer crane");
+    assert_eq!(init_containers[0].name, "copy-tools");
+
+    // Le PVC de cache est partage entre tous les Workshops du namespace : on
+    // ne le supprime pas en fin de test (d'autres tests, potentiellement en
+    // parallele, s'appuient sur sa presence idempotente).
     jobs.delete(&job_name, &foreground_delete()).await.ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
@@ -387,6 +430,8 @@ async fn apply_provisions_openbao_role_when_configured() {
             addr: openbao_addr.clone(),
             token: openbao_token,
         }),
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
     };
 
     workshops
@@ -487,6 +532,8 @@ async fn apply_provisions_kanidm_entity_when_configured() {
         client: client.clone(),
         kanidm: Some(kanidm.clone()),
         openbao: None,
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
     };
 
     let created = workshops

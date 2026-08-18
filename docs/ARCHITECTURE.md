@@ -317,14 +317,23 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   telle quelle a un resume declenche bien plus tard depuis un nouveau pod).
 - Le pipeline `image-builder` (envbuilder → push OCI → `crane export` →
   ext4 → cache) est implemente et verifie de bout en bout (y compris boot
-  Firecracker du resultat), mais le cache est aujourd'hui un simple
-  repertoire de dev, pas encore un vrai PVC provisionne par le
-  `controller` (ni monte dans le Job image-builder, ni dans le pod parent
-  pour que `vm-supervisor` y lise `ATELIER_VM_ROOTFS_PATH`) — reste a
-  cabler. Pas de gestion de couches/diffs pour eviter de tout reconstruire
-  a chaque revision (chaque build repart de zero). Kernel invite reste un
-  fichier fixe, pas encore dans le cache (partage entre tous les Workshops
-  pour l'instant, embarque dans l'image `vm-supervisor`).
+  Firecracker du resultat). Le cache est desormais un vrai PVC Kubernetes
+  (`atelier-image-cache`, cree/monte par le `controller` dans le Job
+  image-builder — `crates/controller/src/storage.rs`), verifie contre un
+  vrai cluster (PVC bind, volumes/initContainer presents sur le Job). Ce
+  qui manque encore : le montage du meme PVC (lecture seule) dans le pod
+  parent pour que `vm-supervisor` y lise le rootfs via
+  `ATELIER_VM_ROOTFS_PATH` — pas fait tant que le pod parent n'a que son
+  conteneur placeholder (`pause`), cf. TODO dans `ensure_parent_pod`. Pas
+  de gestion de couches/diffs pour eviter de tout reconstruire a chaque
+  revision (chaque build repart de zero). Kernel invite reste un fichier
+  fixe, pas dans le cache (partage entre tous les Workshops, cense etre
+  embarque dans l'image `vm-supervisor`, elle-meme pas encore construite).
+  Registre de conteneurs pour les images poussees par envbuilder : adresse
+  configurable (`ATELIER_REGISTRY_ADDR`/`ATELIER_REGISTRY_INSECURE` sur le
+  `controller`), mais pas de registre de production provisionne — teste
+  contre un registre `registry:2` local ad hoc
+  (`deploy/dev/image-builder/README.md`).
 - Support du sous-ensemble de la spec devcontainer.json a couvrir en premier
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
