@@ -1,183 +1,311 @@
 //! Cycle de vie d'une microVM Firecracker : boot depuis un kernel+rootfs,
-//! snapshot, restauration depuis un snapshot.
+//! snapshot, restauration depuis un snapshot. Construit sur
+//! [`fctools`](https://docs.rs/fctools), le SDK Rust le plus complet pour
+//! piloter Firecracker (executor jailer inclus), plutot qu'un client HTTP
+//! maison sur le socket Unix de l'API.
 //!
-//! Iteration actuelle : pilote le binaire `firecracker` directement (pas de
-//! jailer — pas de chroot/cgroups/seccomp dedies), suffisant pour valider le
-//! mecanisme lui-meme. Le jailer reste necessaire avant toute utilisation en
-//! production (isolation reelle de la microVM), cf. TODO dans
-//! `docs/ARCHITECTURE.md`.
+//! Toujours jaile (`JailedVmmExecutor`) : c'est le point de cette
+//! implementation par rapport a l'iteration precedente (Firecracker nu).
+//! Le binaire `jailer` a besoin de privileges (chroot, cgroups, unshare de
+//! namespace de montage) mais **pas de root complet** : on lui attribue les
+//! capabilities Linux necessaires directement sur le fichier binaire (une
+//! fois, via `setcap`, hors de ce code) plutot que de l'invoquer via `sudo`.
+//! `sudo` a ete essaye et abandonne : le spawner `sudo`-based de `fctools`
+//! invoque toujours `sudo -S -s <bin> ...`, et le flag `-s` fait autoriser
+//! le *shell* par sudoers plutot que le binaire jailer lui-meme — impossible
+//! de scoper une regle NOPASSWD finement dans ce cas sans autoriser un shell
+//! root arbitraire, ce qu'on ne veut pas. Voir le commentaire sur
+//! `setcap` requis :
+//! `sudo setcap cap_sys_admin,cap_sys_resource,cap_sys_chroot,cap_setuid,\
+//! cap_setgid,cap_mknod,cap_dac_override+eip <chemin-vers-jailer>`
 
-use crate::firecracker::{wait_for_socket, FirecrackerClient};
 use anyhow::{ensure, Context, Result};
+use fctools::process_spawner::DirectProcessSpawner;
+use fctools::runtime::tokio::TokioRuntime;
+use fctools::vm::api::VmApi;
+use fctools::vm::configuration::{InitMethod, VmConfiguration, VmConfigurationData};
+use fctools::vm::models::{BootSource, CreateSnapshot, Drive, MachineConfiguration, SnapshotType};
+use fctools::vm::shutdown::{VmShutdownAction, VmShutdownMethod};
+use fctools::vm::snapshot::{PrepareVmFromSnapshotOptions, VmSnapshot};
+use fctools::vmm::arguments::jailer::JailerArguments;
+use fctools::vmm::arguments::{VmmApiSocket, VmmArguments};
+use fctools::vmm::executor::jailed::{FlatVirtualPathResolver, JailedVmmExecutor};
+use fctools::vmm::id::VmmId;
+use fctools::vmm::installation::VmmInstallation;
+use fctools::vmm::ownership::VmmOwnershipModel;
+use fctools::vmm::resource::system::ResourceSystem;
+use fctools::vmm::resource::{MovedResourceType, ResourceType};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::process::{Child, Command};
+
+/// Certaines erreurs de `fctools` (`VmError`, `VmApiError`, `VmShutdownError`)
+/// n'implementent pas `Sync`, requis par `anyhow::Context`. Elles
+/// implementent en revanche toutes `Display`, d'ou cette conversion manuelle.
+fn to_anyhow<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> anyhow::Error {
+    move |e| anyhow::anyhow!("{context}: {e}")
+}
+
+type Executor = JailedVmmExecutor<FlatVirtualPathResolver>;
+type Spawner = DirectProcessSpawner;
+type FcVm = fctools::vm::Vm<Executor, Spawner, TokioRuntime>;
 
 pub struct VmConfig {
     pub firecracker_bin: PathBuf,
-    pub socket_path: PathBuf,
-    pub vcpu_count: u32,
-    pub mem_mib: u32,
+    pub jailer_bin: PathBuf,
+    pub snapshot_editor_bin: PathBuf,
+    /// Base des jails (`--chroot-base-dir` du jailer), ex: `/srv/jailer`.
+    pub chroot_base_dir: PathBuf,
+    /// Identifiant du jail, doit etre alphanumerique/`-`, 1-64 caracteres.
+    pub jail_id: String,
+    /// UID/GID sous lequel le process Firecracker tourne une fois jaile
+    /// (le jailer lui-meme tourne toujours root, c'est une contrainte du
+    /// binaire, mais downgrade immediatement vers cet utilisateur).
+    pub uid: u32,
+    pub gid: u32,
+    pub vcpu_count: u8,
+    pub mem_mib: usize,
     pub boot_args: String,
 }
 
-/// Une microVM en cours d'execution : le process `firecracker` qui la
-/// porte doit rester en vie tant que la VM tourne (le tuer arrete la VM).
-pub struct Vm {
-    process: Child,
-    client: FirecrackerClient,
-}
-
-impl Vm {
-    /// Demarre une nouvelle microVM depuis un kernel et un rootfs.
-    pub async fn boot(config: &VmConfig, kernel_path: &Path, rootfs_path: &Path) -> Result<Self> {
-        let process = spawn_firecracker(&config.firecracker_bin, &config.socket_path).await?;
-        let client = FirecrackerClient::new(&config.socket_path);
-        wait_for_socket(&config.socket_path, Duration::from_secs(5)).await?;
-
-        client
-            .put(
-                "/boot-source",
-                &serde_json::json!({
-                    "kernel_image_path": kernel_path,
-                    "boot_args": config.boot_args,
-                }),
-            )
-            .await
-            .context("configuration du boot-source")?;
-
-        client
-            .put(
-                "/drives/rootfs",
-                &serde_json::json!({
-                    "drive_id": "rootfs",
-                    "path_on_host": rootfs_path,
-                    "is_root_device": true,
-                    "is_read_only": false,
-                }),
-            )
-            .await
-            .context("configuration du drive rootfs")?;
-
-        client
-            .put(
-                "/machine-config",
-                &serde_json::json!({
-                    "vcpu_count": config.vcpu_count,
-                    "mem_size_mib": config.mem_mib,
-                }),
-            )
-            .await
-            .context("configuration machine-config")?;
-
-        client
-            .put(
-                "/actions",
-                &serde_json::json!({ "action_type": "InstanceStart" }),
-            )
-            .await
-            .context("demarrage de l'instance")?;
-
-        let vm = Self { process, client };
-        vm.wait_until_state(Duration::from_secs(5), "Running").await?;
-        Ok(vm)
+impl VmConfig {
+    fn installation(&self) -> VmmInstallation {
+        VmmInstallation::new(
+            self.firecracker_bin.clone(),
+            self.jailer_bin.clone(),
+            self.snapshot_editor_bin.clone(),
+        )
     }
 
-    /// Restaure une microVM depuis un snapshot pris precedemment par
-    /// [`Vm::snapshot`]. Un nouveau process `firecracker` est lance (le
-    /// snapshot ne peut pas etre charge dans le process qui l'a cree).
-    pub async fn restore(
-        config: &VmConfig,
-        snapshot_state_path: &Path,
-        snapshot_mem_path: &Path,
-    ) -> Result<Self> {
-        let process = spawn_firecracker(&config.firecracker_bin, &config.socket_path).await?;
-        let client = FirecrackerClient::new(&config.socket_path);
-        wait_for_socket(&config.socket_path, Duration::from_secs(5)).await?;
-
-        client
-            .put(
-                "/snapshot/load",
-                &serde_json::json!({
-                    "snapshot_path": snapshot_state_path,
-                    "mem_backend": {
-                        "backend_type": "File",
-                        "backend_path": snapshot_mem_path,
-                    },
-                    "resume_vm": true,
-                }),
-            )
-            .await
-            .context("restauration du snapshot")?;
-
-        let vm = Self { process, client };
-        vm.wait_until_state(Duration::from_secs(5), "Running").await?;
-        Ok(vm)
-    }
-
-    /// Fige la VM (pause) et ecrit son etat + sa memoire complete sur disque.
-    /// La VM reste en pause apres l'appel ; le process `firecracker` doit
-    /// ensuite etre arrete par l'appelant si le pod parent va etre libere
-    /// (cf. `Vm::into_child` / la logique d'appel dans `main.rs`).
-    pub async fn snapshot(&self, state_path: &Path, mem_path: &Path) -> Result<()> {
-        self.client
-            .patch("/vm", &serde_json::json!({ "state": "Paused" }))
-            .await
-            .context("mise en pause avant snapshot")?;
-
-        self.client
-            .put(
-                "/snapshot/create",
-                &serde_json::json!({
-                    "snapshot_path": state_path,
-                    "mem_file_path": mem_path,
-                    "snapshot_type": "Full",
-                }),
-            )
-            .await
-            .context("creation du snapshot")?;
-
-        Ok(())
-    }
-
-    pub async fn is_running(&self) -> Result<bool> {
-        let state = self.client.get("/").await?;
-        Ok(state["state"] == "Running")
-    }
-
-    async fn wait_until_state(&self, timeout: Duration, expected: &str) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let state = self.client.get("/").await?;
-            if state["state"] == expected {
-                return Ok(());
-            }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timeout en attendant l'etat {expected} (actuel: {})",
-                state["state"]
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+    fn ownership_model(&self) -> VmmOwnershipModel {
+        VmmOwnershipModel::Downgraded {
+            uid: self.uid,
+            gid: self.gid,
         }
     }
 
-    /// Arrete le process `firecracker` (et donc la VM). A appeler avant de
-    /// liberer le pod parent lors d'une suspension, une fois le snapshot
-    /// pris.
-    pub async fn kill(mut self) -> Result<()> {
-        self.process.kill().await.context("arret du process firecracker")
+    fn spawner(&self) -> Spawner {
+        // Le jailer porte ses propres capabilities Linux (setcap), aucune
+        // elevation necessaire au moment du spawn.
+        DirectProcessSpawner
+    }
+
+    fn executor(&self, socket_path: &str) -> Result<Executor> {
+        let jailer_args = JailerArguments::new(
+            VmmId::new(self.jail_id.clone()).context("jail_id invalide")?,
+        )
+        .chroot_base_dir(self.chroot_base_dir.clone());
+
+        Ok(JailedVmmExecutor::new(
+            VmmArguments::new(VmmApiSocket::Enabled(socket_path.into())),
+            jailer_args,
+            FlatVirtualPathResolver,
+        ))
     }
 }
 
-async fn spawn_firecracker(firecracker_bin: &Path, socket_path: &Path) -> Result<Child> {
-    // Le socket precedent doit etre absent, Firecracker refuse de demarrer
-    // si le fichier existe deja.
-    let _ = tokio::fs::remove_file(socket_path).await;
+/// Une microVM en cours d'execution.
+pub struct Vm {
+    inner: FcVm,
+}
 
-    Command::new(firecracker_bin)
-        .arg("--api-sock")
-        .arg(socket_path)
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("lancement de {firecracker_bin:?}"))
+impl Vm {
+    /// Demarre une nouvelle microVM jailee depuis un kernel et un rootfs.
+    pub async fn boot(config: &VmConfig, kernel_path: &Path, rootfs_path: &Path) -> Result<Self> {
+        let mut resource_system =
+            ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
+
+        let kernel = resource_system
+            .create_resource(
+                kernel_path.to_path_buf(),
+                ResourceType::Moved(MovedResourceType::Copied),
+            )
+            .context("declaration de la ressource kernel")?;
+        let rootfs = resource_system
+            .create_resource(
+                rootfs_path.to_path_buf(),
+                ResourceType::Moved(MovedResourceType::Copied),
+            )
+            .context("declaration de la ressource rootfs")?;
+
+        let data = VmConfigurationData {
+            boot_source: BootSource {
+                kernel_image: kernel,
+                boot_args: Some(config.boot_args.clone()),
+                initrd: None,
+            },
+            drives: vec![Drive {
+                drive_id: "rootfs".to_string(),
+                is_root_device: true,
+                cache_type: None,
+                partuuid: None,
+                is_read_only: Some(false),
+                block: Some(rootfs),
+                rate_limiter: None,
+                io_engine: None,
+                socket: None,
+            }],
+            pmem_devices: vec![],
+            machine_configuration: MachineConfiguration {
+                vcpu_count: config.vcpu_count,
+                mem_size_mib: config.mem_mib,
+                smt: None,
+                track_dirty_pages: Some(true),
+                huge_pages: None,
+            },
+            cpu_template: None,
+            network_interfaces: vec![],
+            balloon_device: None,
+            vsock_device: None,
+            logger_system: None,
+            metrics_system: None,
+            memory_hotplug_configuration: None,
+            mmds_configuration: None,
+            entropy_device: None,
+        };
+
+        let executor = config.executor("/run/firecracker.socket")?;
+        let installation = config.installation();
+
+        let mut inner = FcVm::prepare(
+            executor,
+            resource_system,
+            installation,
+            VmConfiguration::New {
+                init_method: InitMethod::ViaApiCalls,
+                data,
+            },
+        )
+        .await
+        .map_err(to_anyhow("preparation de la microVM (jail, ressources)"))?;
+
+        inner
+            .start(Duration::from_secs(5))
+            .await
+            .map_err(to_anyhow("demarrage de la microVM"))?;
+
+        Ok(Self { inner })
+    }
+
+    /// Restaure une microVM depuis un snapshot pris precedemment par
+    /// [`Vm::snapshot`], dans un nouveau jail (un jail ne peut pas etre
+    /// reutilise apres que son process ait quitte).
+    pub async fn restore(
+        &mut self,
+        snapshot: VmSnapshot,
+        config: &VmConfig,
+    ) -> Result<Self> {
+        let executor = config.executor("/run/firecracker.socket")?;
+
+        let mut inner = snapshot
+            .prepare_vm(
+                &mut self.inner,
+                PrepareVmFromSnapshotOptions {
+                    executor,
+                    process_spawner: config.spawner(),
+                    runtime: TokioRuntime,
+                    moved_resource_type: MovedResourceType::Copied,
+                    ownership_model: config.ownership_model(),
+                    track_dirty_pages: Some(false),
+                    resume_vm: Some(true),
+                    network_overrides: Vec::new(),
+                },
+            )
+            .await
+            .map_err(to_anyhow("preparation de la microVM depuis le snapshot"))?;
+
+        inner
+            .start(Duration::from_secs(5))
+            .await
+            .map_err(to_anyhow("restauration (snapshot/load) de la microVM"))?;
+
+        Ok(Self { inner })
+    }
+
+    /// Fige la VM (pause) et ecrit son etat + sa memoire complete sur
+    /// disque. La VM est remise en cours d'execution apres l'appel : c'est
+    /// a l'appelant de l'arreter ensuite si le pod parent va etre libere
+    /// (mise en veille). Les chemins hote reels des fichiers produits sont
+    /// dans le `VmSnapshot` renvoye (`snapshot_path`/`mem_file_path`).
+    ///
+    /// Note d'implementation : pour une ressource `Produced`, `fctools`
+    /// transmet le chemin initial tel quel a Firecracker (pas de resolution
+    /// virtuelle automatique comme pour les ressources `Moved`). Il faut
+    /// donc lui donner un chemin **relatif au jail** ("/snapshot.state"),
+    /// pas un chemin hote — sinon Firecracker (qui tourne chroote) cherche
+    /// ce chemin a l'intérieur du jail et echoue avec ENOENT. Le chemin
+    /// hote effectif (`jail_root/snapshot.state`) est calcule par fctools
+    /// et expose ensuite via `VmSnapshot`.
+    pub async fn snapshot(&mut self) -> Result<VmSnapshot> {
+        self.inner.pause().await.map_err(to_anyhow("mise en pause avant snapshot"))?;
+
+        let create_snapshot = CreateSnapshot {
+            snapshot_type: Some(SnapshotType::Full),
+            snapshot: self
+                .inner
+                .get_resource_system_mut()
+                .create_resource(PathBuf::from("/snapshot.state"), ResourceType::Produced)
+                .context("declaration de la ressource snapshot")?,
+            mem_file: self
+                .inner
+                .get_resource_system_mut()
+                .create_resource(PathBuf::from("/snapshot.mem"), ResourceType::Produced)
+                .context("declaration de la ressource memoire")?,
+        };
+
+        let snapshot = self
+            .inner
+            .create_snapshot(create_snapshot)
+            .await
+            .map_err(to_anyhow("creation du snapshot"))?;
+
+        self.inner.resume().await.map_err(to_anyhow("reprise apres snapshot"))?;
+
+        Ok(snapshot)
+    }
+
+    /// La microVM est vivante et non figee (un `get_info()` reussi suffit a
+    /// prouver que le process VMM repond ; `is_paused` distingue du cas ou
+    /// elle vient d'etre mise en pause pour un snapshot).
+    pub async fn is_running(&mut self) -> Result<bool> {
+        let info = self
+            .inner
+            .get_info()
+            .await
+            .map_err(to_anyhow("lecture de l'etat de la microVM"))?;
+        Ok(!info.is_paused)
+    }
+
+    /// Arrete proprement la microVM (Ctrl-Alt-Del puis kill en secours) et
+    /// nettoie le jail sur disque. Le nettoyage est tente meme si la VM
+    /// s'est deja arretee d'elle-meme entre-temps (auto-shutdown du guest,
+    /// crash, ...) : `shutdown()` cote fctools echoue dans ce cas des la
+    /// verification d'etat initiale, avant meme de tenter une action,
+    /// laissant sinon le jail orphelin sur le disque.
+    pub async fn shutdown(mut self) -> Result<()> {
+        let shutdown_result = self
+            .inner
+            .shutdown([
+                VmShutdownAction {
+                    method: VmShutdownMethod::CtrlAltDel,
+                    timeout: Some(Duration::from_secs(3)),
+                    graceful: true,
+                },
+                VmShutdownAction {
+                    method: VmShutdownMethod::Kill,
+                    timeout: Some(Duration::from_secs(2)),
+                    graceful: false,
+                },
+            ])
+            .await
+            .map_err(to_anyhow("arret de la microVM"));
+
+        self.inner.cleanup().await.map_err(to_anyhow("nettoyage du jail"))?;
+
+        let outcome = shutdown_result?;
+        ensure!(
+            outcome.exit_status.success() || !outcome.graceful,
+            "arret de la microVM en echec: {outcome:?}"
+        );
+        Ok(())
+    }
 }

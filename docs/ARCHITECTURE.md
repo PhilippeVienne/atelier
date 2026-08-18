@@ -96,9 +96,11 @@ Client externe (JWT) ───►│              api-server                │
 ### tooling du pod parent (a cote de la microVM, pas dedans)
 
 - **vm-supervisor** (`crates/vm-supervisor`) : demarre/arrete la microVM
-  Firecracker via son API HTTP (socket Unix), gere le cycle
-  boot/snapshot/restore. Pas encore de jailer (firecracker nu) ni de canal
-  de controle vsock vers l'agent/le controller.
+  Firecracker **jailee** (chroot, cgroups), gere le cycle boot/snapshot/
+  restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas un client
+  HTTP maison). Le jailer tourne avec des capabilities Linux dediees
+  (`setcap`, pas root/sudo). Pas encore de canal de controle vsock vers
+  l'agent/le controller.
 - **net-proxy** (`crates/net-proxy`) : seul chemin de sortie reseau autorise
   pour la microVM ; n'autorise que les domaines listes dans
   `Workshop.spec.egress_allowlist`, journalise chaque appel.
@@ -276,17 +278,22 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
 
 ## Ce qui reste a trancher (hors MVP initial)
 
-- `vm-supervisor` pilote reellement Firecracker : boot depuis un
+- `vm-supervisor` pilote reellement Firecracker **jaile** : boot depuis un
   kernel/rootfs, snapshot (pause + `snapshot/create`), restauration
-  (`snapshot/load`) — client HTTP maison sur le socket Unix de l'API
-  Firecracker (`crates/vm-supervisor/src/firecracker.rs`), teste en
-  conditions reelles (KVM) contre les artefacts de
-  `deploy/dev/firecracker/`. Ce qui manque encore : le jailer (chroot,
-  cgroups, seccomp dedies — pour l'instant le binaire `firecracker` est
-  lance nu, sans l'isolation renforcee prevue en production), le canal de
-  controle vsock expose au `controller`, et la recuperation du
-  kernel/rootfs depuis le cache content-addressed (`image_digest`) plutot
-  que des chemins fournis directement par variables d'environnement.
+  (`snapshot/load` dans un nouveau jail) — via `fctools`
+  (`crates/vm-supervisor/src/vm.rs`), teste en conditions reelles (KVM,
+  jailer avec capabilities Linux, pas root) contre les artefacts de
+  `deploy/dev/firecracker/`. Pas encore de seccomp dedie (le jailer
+  applique le seccomp par defaut de Firecracker, pas un profil affine pour
+  Atelier). Ce qui manque encore : le canal de controle vsock expose au
+  `controller`, la recuperation du kernel/rootfs depuis le cache
+  content-addressed (`image_digest`) plutot que des chemins fournis
+  directement par variables d'environnement, et — point ouvert non
+  resolu — comment reconstituer le `ResourceSystem` source d'une VM au
+  moment de la reprise quand celle-ci a lieu dans un tout autre process que
+  celui qui a pris le snapshot (le SDK `fctools` modelise la restauration
+  comme partant d'une VM source encore en memoire, ce qui ne correspond pas
+  telle quelle a un resume declenche bien plus tard depuis un nouveau pod).
 - Empaquetage concret du resultat d'envbuilder en image ext4 (outillage exact,
   gestion des couches/diffs pour eviter de tout reconstruire a chaque revision)
   et choix du kernel invite partage vs embarque dans le build.

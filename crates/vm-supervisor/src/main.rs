@@ -8,17 +8,17 @@
 //! conteneur Docker.
 //!
 //! Mise en veille : Firecracker sait figer une microVM (etat + memoire) via
-//! `PUT /snapshot/create` et la restaurer via `PUT /snapshot/load` (voir
-//! `crates/vm-supervisor/src/vm.rs`), ce qui permet de suspendre un Workshop
-//! (liberer le pod parent, ne garder que le snapshot dans le cache) puis de
-//! le reprendre en quelques centaines de ms sans rejouer le boot ni le setup
-//! du devcontainer.
+//! `snapshot/create` et la restaurer via `snapshot/load` (voir
+//! `crates/vm-supervisor/src/vm.rs`, construit sur `fctools`), ce qui permet
+//! de suspendre un Workshop (liberer le pod parent, ne garder que le
+//! snapshot dans le cache) puis de le reprendre en quelques centaines de ms
+//! sans rejouer le boot ni le setup du devcontainer.
 //!
 //! Iteration actuelle : boot direct depuis un kernel/rootfs fournis par
 //! l'environnement (pas encore de recuperation depuis le cache
 //! content-addressed `image_digest`/`snapshot_digest`, ni de pilotage par le
 //! `controller` via vsock — cf. TODO plus bas). Le mecanisme Firecracker
-//! lui-meme (boot, snapshot, restore) est reel et teste, voir
+//! lui-meme (boot jaile, snapshot, restore) est reel et teste, voir
 //! `crates/vm-supervisor/tests/vm.rs`.
 
 use atelier_vm_supervisor::vm::{Vm, VmConfig};
@@ -31,7 +31,12 @@ async fn main() -> anyhow::Result<()> {
 
     let config = VmConfig {
         firecracker_bin: env_path("ATELIER_FIRECRACKER_BIN", "firecracker"),
-        socket_path: env_path("ATELIER_VM_SOCKET_PATH", "/run/firecracker.sock"),
+        jailer_bin: env_path("ATELIER_JAILER_BIN", "jailer"),
+        snapshot_editor_bin: env_path("ATELIER_SNAPSHOT_EDITOR_BIN", "snapshot-editor"),
+        chroot_base_dir: env_path("ATELIER_VM_CHROOT_BASE_DIR", "/srv/jailer"),
+        jail_id: std::env::var("ATELIER_VM_JAIL_ID").unwrap_or_else(|_| "atelier-vm".to_string()),
+        uid: env_u32("ATELIER_VM_UID", 0),
+        gid: env_u32("ATELIER_VM_GID", 0),
         vcpu_count: std::env::var("ATELIER_VM_VCPU_COUNT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -51,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     tracing::info!(?kernel_path, ?rootfs_path, "booting microVM");
-    let vm = Vm::boot(&config, &kernel_path, &rootfs_path).await?;
+    let mut vm = Vm::boot(&config, &kernel_path, &rootfs_path).await?;
     tracing::info!("microVM running");
 
     // TODO: recuperer kernel/rootfs depuis le cache content-addressed via
@@ -60,16 +65,16 @@ async fn main() -> anyhow::Result<()> {
     // TODO: canal de controle (vsock) expose au controller/api-server pour
     //       les commandes suspend (Vm::snapshot puis arret) / status
     // TODO: relayer logs/metriques de la VM vers le control plane
-    // TODO: jailer (chroot/cgroups/seccomp) plutot que firecracker nu
 
     // En attendant le canal de controle, le process reste vivant tant que
-    // la VM tourne (le tuer arrete la VM, cf. Vm::boot/kill_on_drop).
+    // la VM tourne. A la sortie de cette boucle, on tente un arret propre
+    // (Vm::shutdown) plutot que de laisser le jail derriere soi.
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         match vm.is_running().await {
             Ok(true) => {}
             Ok(false) => {
-                tracing::warn!("microVM n'est plus en etat Running");
+                tracing::warn!("microVM en pause ou injoignable");
                 break;
             }
             Err(err) => {
@@ -79,9 +84,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    vm.shutdown().await
 }
 
 fn env_path(var: &str, default: &str) -> PathBuf {
     std::env::var(var).unwrap_or_else(|_| default.to_string()).into()
+}
+
+fn env_u32(var: &str, default: u32) -> u32 {
+    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
