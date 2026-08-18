@@ -34,3 +34,16 @@ cargo run -p atelier-controller --bin crdgen > crds/workshop.yaml
 # dashboard
 cd dashboard && npm run dev
 ```
+
+## Tests
+
+Les tests des composants control plane qui parlent a Kubernetes (ex:
+`crates/controller`) sont des tests d'integration reels contre un cluster,
+pas des mocks. Un cluster [kind](https://kind.sigs.k8s.io/) local suffit :
+
+```sh
+kind create cluster --name atelier-dev
+kubectl apply -f crds/workshop.yaml
+cargo test --workspace
+```
+
