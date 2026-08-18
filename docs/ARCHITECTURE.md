@@ -18,13 +18,16 @@ quel depot deja equipe pour Dev Containers (VS Code, GitHub Codespaces,
 `devcontainer.json` du projet qui pilote l'image de base, le Dockerfile
 eventuel, les features et les commandes de setup.
 
-Le composant **image-builder** resout cette source et construit un rootfs
-bootable par Firecracker, sans dependre d'un daemon Docker dans le pod —
-approche inspiree de [coder/envbuilder](https://github.com/coder/envbuilder).
-Le resultat est mis en cache (cle = digest du contenu resolu) et reference
-dans `WorkshopStatus.image_digest`, que `vm-supervisor` consomme pour booter
-la microVM. Un `Workshop` passe donc par une phase `BuildingImage` avant
-`Provisioning`/`Running`.
+Le composant **image-builder** ne reimplemente pas la resolution du
+devcontainer.json : il delegue a
+[envbuilder](https://github.com/coder/envbuilder) (appele en sous-processus,
+present dans l'image du job de build), qui sait deja construire un
+devcontainer sans daemon Docker (buildkit rootless embarque). `image-builder`
+se charge d'invoquer envbuilder avec la source resolue, puis d'empaqueter le
+resultat en image ext4 publiee dans un cache content-addresse (cle = digest
+du contenu resolu), reference dans `WorkshopStatus.image_digest` que
+`vm-supervisor` consomme pour booter la microVM. Un `Workshop` passe donc par
+une phase `BuildingImage` avant `Provisioning`/`Running`.
 
 ## Vue d'ensemble
 
@@ -81,9 +84,10 @@ Client externe (JWT) ───►│              api-server                │
   (source devcontainer, ressources, allowlist reseau, outils/simulateurs
   actifs, proprietaire).
 - **image-builder** (`crates/image-builder`) : construit le rootfs Firecracker
-  a partir de `WorkshopSpec.devcontainer` (clone du depot, resolution du
-  devcontainer.json, build du filesystem, empaquetage ext4, cache
-  content-addressed). Voir section dediee ci-dessus.
+  a partir de `WorkshopSpec.devcontainer` en invoquant `envbuilder` en
+  sous-processus pour la resolution du devcontainer.json, puis empaquette le
+  resultat en ext4 et le publie dans le cache content-addressed. Voir section
+  dediee ci-dessus.
 
 ### tooling du pod parent (a cote de la microVM, pas dedans)
 
@@ -132,9 +136,9 @@ Client externe (JWT) ───►│              api-server                │
 
 - Mecanisme concret d'orchestration Firecracker (jailer pilote directement
   par `vm-supervisor`, decision prise : pas de runtime OCI type Kata).
-- Implementation concrete d'`image-builder` : reutiliser envbuilder tel quel
-  (appel externe) vs reimplementer la resolution devcontainer.json en Rust ;
-  choix du kernel invite partage vs embarque dans le build.
+- Empaquetage concret du resultat d'envbuilder en image ext4 (outillage exact,
+  gestion des couches/diffs pour eviter de tout reconstruire a chaque revision)
+  et choix du kernel invite partage vs embarque dans le build.
 - Support du sous-ensemble de la spec devcontainer.json a couvrir en premier
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de
