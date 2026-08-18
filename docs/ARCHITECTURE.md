@@ -120,8 +120,15 @@ Client externe (JWT) ───►│              api-server                │
   Firecracker **jailee** (chroot, cgroups), gere le cycle boot/snapshot/
   restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas un client
   HTTP maison). Le jailer tourne avec des capabilities Linux dediees
-  (`setcap`, pas root/sudo). Pas encore de canal de controle vsock vers
-  l'agent/le controller.
+  (`setcap`, pas root/sudo). **Branche reellement dans le pod parent** (plus
+  un placeholder) : monte le PVC de cache en lecture seule pour lire le
+  rootfs a l'emplacement derive de `status.imageDigest`, verifie de bout en
+  bout contre un vrai cluster (Workshop reel → pod → microVM `Running`, cf.
+  `deploy/dev/vm-supervisor/README.md`). Le pod tourne en `privileged: true`
+  pour l'acces a `/dev/kvm` (le device cgroup controller de Kubernetes
+  bloque l'ouverture du device sans ca, meme avec les bonnes capabilities —
+  un device plugin KVM dedie serait plus fin, pas fait). Pas encore de
+  canal de controle vsock vers l'agent/le controller.
 - **net-proxy** (`crates/net-proxy`) : seul chemin de sortie reseau autorise
   pour la microVM ; n'autorise que les domaines listes dans
   `Workshop.spec.egress_allowlist`, journalise chaque appel.
@@ -315,25 +322,28 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
   celui qui a pris le snapshot (le SDK `fctools` modelise la restauration
   comme partant d'une VM source encore en memoire, ce qui ne correspond pas
   telle quelle a un resume declenche bien plus tard depuis un nouveau pod).
-- Le pipeline `image-builder` (envbuilder → push OCI → `crane export` →
-  ext4 → cache) est implemente et verifie de bout en bout (y compris boot
-  Firecracker du resultat). Le cache est desormais un vrai PVC Kubernetes
-  (`atelier-image-cache`, cree/monte par le `controller` dans le Job
-  image-builder — `crates/controller/src/storage.rs`), verifie contre un
-  vrai cluster (PVC bind, volumes/initContainer presents sur le Job). Ce
-  qui manque encore : le montage du meme PVC (lecture seule) dans le pod
-  parent pour que `vm-supervisor` y lise le rootfs via
-  `ATELIER_VM_ROOTFS_PATH` — pas fait tant que le pod parent n'a que son
-  conteneur placeholder (`pause`), cf. TODO dans `ensure_parent_pod`. Pas
-  de gestion de couches/diffs pour eviter de tout reconstruire a chaque
-  revision (chaque build repart de zero). Kernel invite reste un fichier
-  fixe, pas dans le cache (partage entre tous les Workshops, cense etre
-  embarque dans l'image `vm-supervisor`, elle-meme pas encore construite).
-  Registre de conteneurs pour les images poussees par envbuilder : adresse
+- Chaine complete verifiee de bout en bout contre un vrai cluster : le
+  pipeline `image-builder` (envbuilder → push OCI → `crane export` → ext4 →
+  cache PVC) et le pod parent (`vm-supervisor` monte ce meme PVC en lecture
+  seule, boote la microVM jailee) ont chacun ete testes independamment avec
+  succes ; le passage bout-en-bout Workshop → image-builder (via un vrai
+  registre joignable depuis kind) → pod → microVM `Running` reste a
+  cabler/tester ensemble (le Job image-builder ne peut pas encore joindre
+  le registre de dev local depuis l'interieur de kind — testable en
+  attendant en peuplant le PVC a la main, cf.
+  `deploy/dev/vm-supervisor/README.md`). Pas de gestion de couches/diffs
+  pour eviter de tout reconstruire a chaque revision (chaque build repart
+  de zero). Kernel invite reste un fichier fixe, pas dans le cache (partage
+  entre tous les Workshops, embarque dans l'image `vm-supervisor`). Registre
+  de conteneurs pour les images poussees par envbuilder : adresse
   configurable (`ATELIER_REGISTRY_ADDR`/`ATELIER_REGISTRY_INSECURE` sur le
   `controller`), mais pas de registre de production provisionne — teste
-  contre un registre `registry:2` local ad hoc
-  (`deploy/dev/image-builder/README.md`).
+  contre un registre `registry:2` local ad hoc.
+- Le pod parent tourne en `privileged: true` pour l'acces a `/dev/kvm`
+  (necessaire : le device cgroup controller de Kubernetes bloque l'ouverture
+  du device meme avec les bonnes capabilities/permissions sans ca, constate
+  en pratique) — un device plugin KVM dedie serait plus fin et evite un pod
+  entierement privilegie, pas fait.
 - Support du sous-ensemble de la spec devcontainer.json a couvrir en premier
   (image simple vs build Dockerfile vs features vs docker-compose multi-service).
 - Modele d'autorisation fin cote `mcp-gateway` (quelles demandes de

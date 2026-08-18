@@ -3,8 +3,9 @@ use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStat
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, PersistentVolumeClaimVolumeSource, Pod, PodSpec,
-    PodTemplateSpec, ServiceAccount, Volume, VolumeMount,
+    Container, EmptyDirVolumeSource, EnvVar, HostPathVolumeSource,
+    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, SecurityContext,
+    ServiceAccount, Volume, VolumeMount,
 };
 use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
@@ -19,6 +20,7 @@ use std::time::Duration;
 const FIELD_MANAGER: &str = "atelier-controller";
 // TODO: rendre configurable (registre interne) une fois l'image publiee.
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
+const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
 /// Bloque la suppression effective d'un Workshop tant que
 /// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
 /// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
@@ -443,6 +445,29 @@ async fn ensure_parent_pod(
         }
     }
 
+    // Le PVC de cache existe deja (cree lors de la phase BuildingImage),
+    // mais s'assurer qu'il existe reste idempotent et bon marche : couvre
+    // le cas d'un Workshop dont l'image aurait ete construite autrement.
+    storage::ensure_image_cache_pvc(&ctx.client, ns, "20Gi").await?;
+
+    let rootfs_path = format!(
+        "{}/{}/rootfs.ext4",
+        storage::IMAGE_CACHE_MOUNT_PATH,
+        storage::digest_cache_subdir(&image_digest)
+    );
+
+    let cache_mount = VolumeMount {
+        name: "cache".to_string(),
+        mount_path: storage::IMAGE_CACHE_MOUNT_PATH.to_string(),
+        read_only: Some(true),
+        ..Default::default()
+    };
+    let kvm_mount = VolumeMount {
+        name: "kvm".to_string(),
+        mount_path: "/dev/kvm".to_string(),
+        ..Default::default()
+    };
+
     let pod = Pod {
         metadata: ObjectMeta {
             name: Some(pod_name.clone()),
@@ -456,14 +481,40 @@ async fn ensure_parent_pod(
         },
         spec: Some(PodSpec {
             service_account_name: Some(sa_name),
+            // TODO: net-proxy/identity-proxy/mcp-gateway restent a ajouter
+            // comme conteneurs supplementaires de ce pod.
+            volumes: Some(vec![
+                Volume {
+                    name: "cache".to_string(),
+                    persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                        claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
+                        read_only: Some(true),
+                    }),
+                    ..Default::default()
+                },
+                Volume {
+                    name: "kvm".to_string(),
+                    host_path: Some(HostPathVolumeSource {
+                        path: "/dev/kvm".to_string(),
+                        type_: Some("CharDevice".to_string()),
+                    }),
+                    ..Default::default()
+                },
+            ]),
             containers: vec![Container {
-                // TODO: remplacer par vm-supervisor + net-proxy + identity-proxy
-                // + mcp-gateway une fois ces images publiees. vm-supervisor
-                // devra aussi monter le PVC de cache (storage::IMAGE_CACHE_PVC_NAME,
-                // en lecture seule) et lire le rootfs a
-                // storage::IMAGE_CACHE_MOUNT_PATH/storage::digest_cache_subdir(&image_digest)/rootfs.ext4.
-                name: "placeholder".into(),
-                image: Some("registry.k8s.io/pause:3.9".into()),
+                name: "vm-supervisor".into(),
+                image: Some(VM_SUPERVISOR_IMAGE.into()),
+                env: Some(vec![env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path)]),
+                volume_mounts: Some(vec![cache_mount, kvm_mount]),
+                // Requis pour l'acces a /dev/kvm : le cgroup device
+                // controller bloque l'ouverture du device meme avec les
+                // bonnes permissions de fichier sans ceci — constate en
+                // pratique (cf. deploy/dev/vm-supervisor/README.md). Pas de
+                // device plugin KVM dedie pour l'instant.
+                security_context: Some(SecurityContext {
+                    privileged: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }],
             ..Default::default()
