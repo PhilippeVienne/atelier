@@ -47,6 +47,11 @@ kubectl apply -f crds/workshop.yaml
 cargo test --workspace
 ```
 
+Les tests de `crates/vm-supervisor` pilotent un vrai Firecracker (necessite
+KVM) : voir `deploy/dev/firecracker/README.md` pour recuperer les binaires
+et fixtures de test necessaires. Sans ces variables d'environnement, ce test
+est ignore comme les autres tests optionnels (Kanidm, OpenBao).
+
 ## Observabilite
 
 Tous les binaires appellent `atelier_common::telemetry::init(...)` (voir

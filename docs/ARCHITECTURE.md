@@ -96,8 +96,9 @@ Client externe (JWT) ───►│              api-server                │
 ### tooling du pod parent (a cote de la microVM, pas dedans)
 
 - **vm-supervisor** (`crates/vm-supervisor`) : demarre/arrete la microVM
-  Firecracker via jailer + socket API, expose un canal de controle (vsock)
-  vers l'agent.
+  Firecracker via son API HTTP (socket Unix), gere le cycle
+  boot/snapshot/restore. Pas encore de jailer (firecracker nu) ni de canal
+  de controle vsock vers l'agent/le controller.
 - **net-proxy** (`crates/net-proxy`) : seul chemin de sortie reseau autorise
   pour la microVM ; n'autorise que les domaines listes dans
   `Workshop.spec.egress_allowlist`, journalise chaque appel.
@@ -151,19 +152,23 @@ L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 veille manuelle ou par une politique d'auto-suspend sur inactivite (a
 definir).
 
-**Etat actuel de l'implementation** (`crates/controller/src/reconcile.rs`) :
-le `controller` fait bien converger `status.phase` selon `spec.desiredState`
-(`Suspending`/`Suspended`/`Resuming`/`Running`) et libere/recree le pod
-parent en consequence — verifie en conditions reelles (suspend puis resume
-contre un vrai cluster). Ce qui **manque encore** : le vrai snapshot/restore
-Firecracker lui-meme (`vm-supervisor` ne pilote pas encore de microVM reelle,
-donc pas de `snapshot/create`/`snapshot/load` ni de `status.snapshotDigest`
-peuple) — pour l'instant, suspendre libere juste le pod, et reprendre en
-recree un depuis `status.imageDigest` (equivalent a un redemarrage, pas
-encore a une vraie reprise memoire). L'entite Kanidm et le role OpenBao du
-Workshop sont deliberement laisses intacts a travers ce cycle (pas
-reprovisionnes a chaque resume), seuls les endpoints `/suspend`/`/resume`
-de l'api-server restent a cabler.
+**Etat actuel de l'implementation** : le `controller` fait bien converger
+`status.phase` selon `spec.desiredState` (`Suspending`/`Suspended`/
+`Resuming`/`Running`) et libere/recree le pod parent en consequence — verifie
+en conditions reelles (suspend puis resume contre un vrai cluster,
+`crates/controller/src/reconcile.rs`). `vm-supervisor` sait de son cote
+reellement piloter Firecracker pour un snapshot/restore complet (pause,
+`snapshot/create`, puis `snapshot/load` dans un nouveau process — verifie en
+conditions reelles avec KVM, `crates/vm-supervisor/src/vm.rs`). Ce qui
+**manque encore** est le cablage entre les deux : le `controller` n'appelle
+pas encore `vm-supervisor` au moment de suspendre/reprendre (pas de canal
+vsock), et `status.snapshotDigest` n'est donc jamais peuple — pour l'instant,
+suspendre libere juste le pod (le process `firecracker` meurt avec lui, sans
+snapshot pris), et reprendre en recree un depuis `status.imageDigest`
+(equivalent a un redemarrage, pas a une vraie reprise memoire). L'entite
+Kanidm et le role OpenBao du Workshop sont deliberement laisses intacts a
+travers ce cycle (pas reprovisionnes a chaque resume), et les endpoints
+`/suspend`/`/resume` de l'api-server restent a cabler.
 
 ## Identite et secrets : Kanidm + OpenBao
 
@@ -271,8 +276,17 @@ plus des traces brutes. A ajouter dans `deploy/dev/` (dev) et `deploy/`
 
 ## Ce qui reste a trancher (hors MVP initial)
 
-- Mecanisme concret d'orchestration Firecracker (jailer pilote directement
-  par `vm-supervisor`, decision prise : pas de runtime OCI type Kata).
+- `vm-supervisor` pilote reellement Firecracker : boot depuis un
+  kernel/rootfs, snapshot (pause + `snapshot/create`), restauration
+  (`snapshot/load`) — client HTTP maison sur le socket Unix de l'API
+  Firecracker (`crates/vm-supervisor/src/firecracker.rs`), teste en
+  conditions reelles (KVM) contre les artefacts de
+  `deploy/dev/firecracker/`. Ce qui manque encore : le jailer (chroot,
+  cgroups, seccomp dedies — pour l'instant le binaire `firecracker` est
+  lance nu, sans l'isolation renforcee prevue en production), le canal de
+  controle vsock expose au `controller`, et la recuperation du
+  kernel/rootfs depuis le cache content-addressed (`image_digest`) plutot
+  que des chemins fournis directement par variables d'environnement.
 - Empaquetage concret du resultat d'envbuilder en image ext4 (outillage exact,
   gestion des couches/diffs pour eviter de tout reconstruire a chaque revision)
   et choix du kernel invite partage vs embarque dans le build.
