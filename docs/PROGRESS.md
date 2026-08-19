@@ -35,7 +35,7 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Non demarre | — |
-| `dashboard` | Squelette Next.js | Pas encore branche sur `api-server` |
+| `dashboard` | Fonctionnel (CRUD de base) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
 
@@ -131,6 +131,37 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
     manquants, necessaires pour que les capabilities de fichier posees par
     `setcap` sur le binaire `jailer` soient elevables a l'exec (voir
     "Lecons retenues"). `image-builder` beneficie du meme mecanisme.
+13. **Dashboard** (`dashboard/`, Next.js 16 App Router) : pattern
+    backend-for-frontend plutot qu'un client OAuth2 cote navigateur — le
+    dashboard lui-meme est le client public PKCE, jamais le JS servi au
+    navigateur. `/api/auth/login` genere le couple PKCE (`lib/pkce.ts`) et
+    redirige vers `${KANIDM_URL}/ui/oauth2` (pas directement
+    `/oauth2/authorise`, qui exige un `Authorization: Bearer` deja present —
+    inatteignable pour un navigateur sans session, decouvert en testant
+    reellement : 401 systematique sans ce header). Kanidm gere son propre
+    login+consentement puis redirige vers `/api/auth/callback`, qui echange
+    le code (`/oauth2/token`) et pose un cookie **httpOnly**
+    (`atelier_session`, jamais lisible par le JS navigateur). Toutes les
+    donnees (`lib/api-server.ts`) et mutations (`app/actions.ts`, Server
+    Actions suspend/resume/delete/create) relaient ce token en
+    `Authorization: Bearer` vers `atelier-api-server`, qui reste la seule
+    couche a revalider reellement le JWT — `proxy.ts` (ex-`middleware.ts`,
+    renomme dans Next 16) ne fait qu'une verification optimiste de presence
+    du cookie. Client OAuth2 Kanidm existant (`atelier`) reutilise, une
+    redirect_uri supplementaire ajoutee (`add-redirect-url` +
+    `enable-localhost-redirects`, necessaire pour un client public qui
+    redirige vers `localhost`, voir `deploy/dev/kanidm/README.md`). Verifie
+    reellement de bout en bout : `/api/auth/login` produit une redirection
+    Kanidm valide avec le bon `code_challenge`, le cote Kanidm du flux est
+    scripte comme `get-oauth2-token.sh` (login reel + consentement +
+    redirection avec un vrai `code`) puis rejoue contre `/api/auth/callback`
+    avec le cookie PKCE emis par le dashboard — echange de code reussi,
+    cookie de session pose avec un vrai JWT Kanidm, page d'accueil affichant
+    la vraie liste de Workshops (vide puis peuplee), creation reelle d'un
+    Workshop via `POST /v1/workshops` avec ce token, affiche dans la liste,
+    supprime. Seule la partie "clic humain dans l'UI de login Kanidm" n'est
+    pas automatisable ; tout le reste (echange de code, session, appels API)
+    est verifie contre de la vraie infrastructure, pas simule.
 
 ## Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
 
@@ -769,6 +800,22 @@ precedente) — cette partie de la session l'a implemente et valide.
   (`SYS_ADMIN` manquant) derriere un symptome different — a diagnostiquer
   avec `restartPolicy: Never` pour capturer le tout premier essai sans
   bruit de redemarrage.
+- L'endpoint API `/oauth2/authorise` de Kanidm (utilise par
+  `get-oauth2-token.sh`) exige un `Authorization: Bearer` deja present —
+  confirme en testant reellement : `401 Unauthorized` systematique sans ce
+  header, jamais de redirection vers une page de login. Ce n'est donc PAS
+  l'URL a utiliser pour un flux browser-based classique (un navigateur sans
+  session ne peut pas fournir ce bearer sur une simple navigation) :
+  `/ui/oauth2` (meme query params) sert la SPA Kanidm, qui gere son propre
+  login+consentement en JS avant de rediriger reellement le navigateur vers
+  `redirect_uri` — c'est cette URL qu'un client OAuth2 browser-based doit
+  cibler, pas l'endpoint API.
+- Un client OAuth2 public Kanidm (`create-public`, PKCE) refuse par defaut
+  toute `redirect_uri` pointant vers `localhost` (protection standard contre
+  le detournement d'un client public en local) : necessite
+  `enable-localhost-redirects` explicite en plus de `add-redirect-url`,
+  sans quoi l'echange de code echoue meme avec une redirect_uri par ailleurs
+  correctement enregistree.
 
 ## Prochaines etapes (par priorite)
 

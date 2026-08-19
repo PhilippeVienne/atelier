@@ -120,3 +120,20 @@ l'UUID Kanidm attendu. Voir `docs/PROGRESS.md` pour le detail du vrai bug
 trouve en testant ceci (`InvalidAudience` — invisible avec les tokens de
 test synthetiques du test d'integration, qui n'incluaient pas de claim
 `aud`, contrairement a un vrai token Kanidm qui en porte toujours une).
+
+## Client OAuth2 `atelier` : redirect_uri supplementaire pour le dashboard
+
+Le meme client `atelier` (cree ci-dessus) sert aussi au dashboard
+(`dashboard/README.md`), avec une seconde `redirect_uri` en plus de celle
+du script `get-oauth2-token.sh` :
+
+```sh
+kanidm system oauth2 add-redirect-url atelier http://localhost:3000/api/auth/callback --name idm_admin
+# necessaire : par defaut Kanidm refuse les redirections vers localhost
+# pour un client public (risque usuel de detournement local)
+kanidm system oauth2 enable-localhost-redirects atelier --name idm_admin
+```
+
+`oauth2_strict_redirect_uri` (active par defaut) exige une correspondance
+exacte : toute nouvelle URL de callback doit etre ajoutee explicitement via
+`add-redirect-url`, pas seulement son origine.

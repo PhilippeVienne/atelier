@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Dashboard Atelier
 
-## Getting Started
+Frontend Next.js (App Router) pour `atelier-api-server` : CRUD des
+`Workshop` (creation, suspend/resume, suppression), authentification via le
+flux OAuth2/PKCE de Kanidm (voir `docs/PROGRESS.md` et
+`deploy/dev/kanidm/README.md`).
 
-First, run the development server:
+## Architecture d'authentification (backend-for-frontend)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Le dashboard tient le rôle de client OAuth2 public (PKCE), pas le
+navigateur directement : `/api/auth/login` genere le couple PKCE et
+redirige vers `${ATELIER_KANIDM_URL}/ui/oauth2` (l'UI Kanidm, pas
+directement `/oauth2/authorise` — cet endpoint API exige un `Authorization:
+Bearer` deja present, qu'un navigateur sans session ne peut pas fournir).
+Kanidm gere login + consentement, puis redirige le navigateur vers
+`/api/auth/callback?code=...&state=...` ; ce handler echange le code contre
+un `access_token` aupres de Kanidm et le stocke dans un cookie **httpOnly**
+(`atelier_session`) — jamais expose au JS cote navigateur. Toutes les
+requetes vers `atelier-api-server` (Server Components, Server Actions)
+relaient ce token en `Authorization: Bearer`, qui le revalide integralement
+(signature JWKS + audience) a chaque appel : le dashboard ne fait aucune
+verification de securite lui-meme, `proxy.ts` ne fait qu'une verification
+optimiste (presence du cookie) pour eviter un aller-retour inutile.
+
+Voir `lib/session.ts`, `lib/api-server.ts`, `app/api/auth/{login,callback}/route.ts`.
+
+## Variables d'environnement
+
+| Variable | Defaut (dev) | Usage |
+|---|---|---|
+| `ATELIER_API_SERVER_URL` | `http://localhost:8080` | Base URL d'`atelier-api-server` |
+| `ATELIER_KANIDM_URL` | `https://localhost:8443` | Base URL de Kanidm |
+| `ATELIER_OAUTH2_CLIENT_ID` | `atelier` | Client OAuth2 public cote Kanidm |
+| `ATELIER_OAUTH2_REDIRECT_URI` | `<origin>/api/auth/callback` | Doit correspondre exactement a une redirect_uri enregistree cote Kanidm |
+| `NODE_EXTRA_CA_CERTS` | — | CA du Kanidm de dev (auto-signee), sinon l'echange du code echoue en TLS (`deploy/dev/kanidm/data/ca.pem`) |
+
+## Tester en local contre l'infra de dev reelle
+
+Prerequis, une seule fois (voir `deploy/dev/kanidm/README.md` pour le
+detail complet du client OAuth2 `atelier`) :
+
+```sh
+kanidm system oauth2 add-redirect-url atelier http://localhost:3000/api/auth/callback --name idm_admin
+kanidm system oauth2 enable-localhost-redirects atelier --name idm_admin
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Puis :
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```sh
+# api-server, cf. deploy/dev/kanidm/README.md pour ATELIER_JWT_*
+cargo run -p atelier-api-server
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# dashboard
+cd dashboard
+export NODE_EXTRA_CA_CERTS="$(pwd)/../deploy/dev/kanidm/data/ca.pem"
+npm run dev
+```
 
-## Learn More
+Ouvrir [http://localhost:3000](http://localhost:3000) : redirige vers
+`/login`, "Se connecter avec Kanidm" declenche le vrai flux OAuth2.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Deja verifie reellement cette session (voir `docs/PROGRESS.md`) : flux
+complet login -> callback -> session -> liste/creation/suppression de
+Workshops, valide contre un vrai Kanidm, un vrai `atelier-api-server` et un
+vrai cluster kind — seule la partie "clic humain dans l'UI de login
+Kanidm" n'est pas automatisable (le reste du flux, y compris l'echange du
+code et l'appel a l'API, est teste de bout en bout via curl en scriptant le
+cote Kanidm comme le fait `deploy/dev/kanidm/get-oauth2-token.sh`).
