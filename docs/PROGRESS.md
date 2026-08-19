@@ -25,8 +25,8 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
 | `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
-| `crates/builder-vm-init` (guest init de la microVM "builder") | Ecrit, boot complet toujours bloque | Compile, image Docker construite, convertie en `rootfs.ext4` bootable ; boot isole (rootfs seul, rootfs+reseau sans init custom) valide reellement, mais le boot complet (avec `envbuilder`) reste bloque avant meme d'atteindre `net-proxy` — cause pas encore identifiee, voir "Builder microVM" ci-dessous |
-| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test |
+| `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
+| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test — la microVM "builder" (ci-dessus) resout maintenant le blocage technique, reste a la brancher dans `image-builder`/`reconcile.rs` |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Fonctionnel | JWT valide reellement (RS256, cle generee via `openssl`, JWKS charge au demarrage — pas encore teste contre un vrai flux OAuth2 Kanidm, aucun n'est configure dans l'instance de dev) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) |
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
@@ -207,28 +207,79 @@ conversation) :
   de la builder VM** — meme symptome observe apres le correctif (process de
   test a 99.9% CPU en continu, jamais de sortie de `Vm::boot_with_network`,
   aucune requete n'atteint jamais `net-proxy`).
-- **Diagnostic pousse, cause du blocage principal toujours pas identifiee** :
-  isole methodiquement par elimination — boot avec reseau + petit rootfs de
-  test (`vm-supervisor`) : OK, rapide. Boot du rootfs "builder" (726 Mo)
-  seul, sans reseau : OK. Boot du rootfs "builder" avec reseau mais sans
-  `init=` custom (donc sans jamais executer `envbuilder`) : OK. Seule la
-  combinaison complete (rootfs builder + reseau + `atelier-builder-vm-init`
-  qui execute reellement `envbuilder`) bloque, avant meme d'emettre une
-  seule requete vers `net-proxy` — donc probablement encore avant ou pendant
-  la configuration reseau du guest (`configure_network`) ou tres tot dans
-  l'invocation d'`envbuilder`, pas dans le clone/build lui-meme. Sans canal
-  de controle (vsock) ni console capturee de maniere exploitable en dehors
-  du `tracing::debug!` (invisible sans subscriber configure dans le test),
-  la suite du diagnostic demande de capturer la console autrement (fichier
-  plutot que `tracing`, ou logger explicitement chaque etape de
-  `atelier-builder-vm-init` avant de shell out vers `ip`/`envbuilder`).
-- **Phase suivante (hors perimetre de cette session)** : finir ce diagnostic
-  (marche a suivre avec conteneur `--privileged` dans
-  `deploy/dev/builder-vm/README.md`, a mettre a jour avec cette procedure),
-  puis brancher ce composant dans `image-builder`/`reconcile.rs` a la place
-  de l'invocation directe d'`envbuilder`, et passer le Job `image-builder`
-  en `privileged: true` + `/dev/kvm` (exerce par notre jailer, jamais par le
-  contenu du depot cible) pour clore l'item 1 de la roadmap.
+### Blocage resolu : cinq causes racines, boot complet valide reellement
+
+Le blocage total (process de test a 99.9% CPU, jamais de sortie de
+`Vm::boot_with_network`, aucune requete n'atteint jamais `net-proxy`) evoque
+en fin de session precedente n'avait aucun rapport avec `envbuilder` ni la
+configuration reseau du guest. Diagnostic repris et pousse jusqu'au bout
+cette session (isolation par `gdb`/`strace` sur le process de test, contre
+un environnement `docker run --privileged --network host` — voir "Lecons
+retenues" pour pourquoi cet environnement remplace un acces root reel).
+Cinq causes racines independantes, trouvees et corrigees dans l'ordre ou
+elles se sont revelees :
+
+1. **Chemin de socket jail Firecracker trop long** : `sockaddr_un.sun_path`
+   est limite a 108 octets sur Linux ; les noms de jail/repertoire de travail
+   choisis dans `crates/firecracker/tests/builder_vm.rs`
+   (`atelier-builder-vm-test-<pid>` repete deux fois dans le chemin)
+   produisaient un chemin de 110 caracteres. `connect()` echouait donc en
+   `ENAMETOOLONG` a chaque tentative — et `fctools` 0.7.0-alpha.2
+   (`Vm::start`, boucle `loop { if client.get(...).is_ok() { break } }`,
+   `src/vm/mod.rs:244`) avale cette erreur dans une boucle qui ne cede
+   jamais la main a l'executeur async, empechant meme son propre timeout de
+   5s de se declencher : 100% CPU, aucun message d'erreur exploitable.
+   Confirme via `gdb -p <pid> -batch -ex bt` (pile figee dans
+   `hyper_client_sockets::uri::unix`) et un test de controle (`tests/vm.rs`,
+   chemin de 96 caracteres) qui passait sans probleme dans le meme
+   environnement. Corrige en raccourcissant les noms (`bvm-<pid>`).
+2. **`KANIKO_DIR` absent** : le `Dockerfile` de `builder-vm-init` fixe
+   `ENV KANIKO_DIR=/.envbuilder` (garde-fou interne d'envbuilder/Kaniko avant
+   de vider le filesystem), mais cette metadonnee OCI n'est interpretee que
+   par un runtime de conteneur — perdue lors de la conversion en
+   `rootfs.ext4` brut (`crane export` + `mke2fs`), puisque ce guest n'a pas
+   de runtime de conteneur, seulement `atelier-builder-vm-init` en PID 1.
+   `envbuilder` refusait donc de demarrer ("KANIKO_DIR is not set to
+   /.envbuilder. Bailing!"). Corrige en passant la variable explicitement
+   dans `run_envbuilder()`.
+3. **Rootfs trop petit** : la marge de 512 Mo (README) suffisait pour la
+   base de l'image `builder-vm-init` mais pas pour un vrai build devcontainer
+   (paquets `apt`/`pip`, ex: `gcc` pour le devcontainer Python de test) —
+   `no space left on device` en plein build. Marge passee a 4096 Mo.
+4. **Adresse de registre `localhost` exemptee du proxy** : `envbuilder`
+   (client HTTP Go, `golang.org/x/net/http/httpproxy`) exclut
+   inconditionnellement `localhost`/loopback du proxy configure via
+   `HTTP_PROXY`/`HTTPS_PROXY`, meme sans `NO_PROXY` — comportement cable en
+   dur dans cette bibliotheque. Avec `ATELIER_TEST_REGISTRY_ADDR=localhost:
+   5000` (cas courant en dev), le guest tentait une connexion directe vers
+   "lui-meme" et echouait (pas de route par defaut). Corrige en construisant
+   la reference d'image donnee au guest avec l'IP hote du lien
+   point-a-point (`network.host_ip`), jamais litteralement `localhost`.
+5. **`reboot(RB_POWER_OFF)` sans effet** : cette microVM minimale n'a pas
+   d'ACPI (`pci=off`), donc aucun handler `pm_power_off` a invoquer — le
+   noyau se contentait d'un `halt` ("reboot: System halted") sans que
+   Firecracker detecte la fin de la VM (`is_running()` restait vrai
+   indefiniment, alors qu'`envbuilder` avait bien clone, construit ET
+   pousse l'image avec succes). `reboot=k` (deja present dans les
+   `boot_args`) demande au noyau d'utiliser un reset via le controleur
+   clavier i8042 pour un **reboot**, pas un power-off — signal que
+   Firecracker intercepte lui-meme comme fin de VM (pattern standard des
+   inits minimaux Firecracker). Corrige en appelant
+   `reboot(RebootMode::RB_AUTOBOOT)` plutot que `RB_POWER_OFF`.
+
+Cycle complet valide reellement une fois les cinq corrections en place :
+boot jaile + configuration reseau + `envbuilder` (clone du dépôt public
+`vscode-remote-try-python`, build du devcontainer, push vers le registre de
+dev via `net-proxy`) + extinction propre detectee par l'hote, `crane
+manifest` confirmant que l'image attendue est bien presente
+(`cargo test -p atelier-firecracker --test builder_vm`, 35s, voir
+`deploy/dev/builder-vm/README.md`).
+
+**Phase suivante** : brancher ce composant dans `image-builder`/
+`reconcile.rs` a la place de l'invocation directe d'`envbuilder`, et passer
+le Job `image-builder` en `privileged: true` + `/dev/kvm` (exerce par notre
+jailer, jamais par le contenu du depot cible) pour clore l'item 1 de la
+roadmap.
 
 ## Lecons retenues (a ne pas re-decouvrir)
 
@@ -294,13 +345,65 @@ conversation) :
   depuis une cle privee : pratique pour construire un JWKS de test reel
   (vraie paire de cles, vraie signature) sans dupliquer la logique
   d'encodage/decodage a la main.
+- `docker run --privileged --network host --device=/dev/kvm --device=/dev/net/tun`
+  est une alternative viable a un acces `sudo` interactif reel pour les
+  tests necessitant a la fois `CAP_NET_ADMIN` (creation de TAP) ET une
+  vraie sortie reseau vers des services de l'hote (`net-proxy`, registre
+  OCI de dev) : contrairement a un `docker run --privileged` isole (NAT
+  Docker, netns separe), `--network host` partage directement le netns de
+  l'hote — le TAP cree dans le conteneur est immediatement visible et
+  routable depuis l'hote, sans configuration NAT/forwarding supplementaire.
+  Compiler avec un `CARGO_TARGET_DIR` dedie dans ce conteneur (meme piege
+  glibc que plus haut).
+- `sockaddr_un.sun_path` (Linux) est limite a 108 octets : un chemin de
+  jail Firecracker trop long (noms de test verbeux repetes dans le chemin,
+  ex: `{chroot_base_dir}/firecracker/{jail_id}/root/run/firecracker.socket`)
+  fait echouer `connect()` en `ENAMETOOLONG` a chaque tentative — silencieux
+  et non exploitable si le code appelant (ici `fctools` 0.7.0-alpha.2,
+  `Vm::start`) avale l'erreur dans une boucle de retry sans jamais la
+  remonter (voir aussi le bullet suivant). Choisir des noms de jail/dossier
+  de travail courts dans les tests.
+- `fctools` 0.7.0-alpha.2 : la boucle d'attente du socket API dans
+  `Vm::start` (`src/vm/mod.rs:244`,
+  `loop { if client.get(...).await.is_ok() { break } }`) ne cede jamais la
+  main a l'executeur async si `client.get()` echoue de facon synchrone a
+  chaque iteration (ex: `ENAMETOOLONG` sur le chemin du socket) — elle
+  tourne alors indefiniment a 100% CPU sur un seul thread, empechant meme
+  le `timeout()` englobant de se declencher (aucune erreur ni panic, juste
+  un blocage total). A diagnostiquer via `gdb -p <pid> -batch -ex bt` sur le
+  thread actif (pas `strace`, qui ne voit rien d'utile si le blocage est
+  purement en espace utilisateur sans syscall bloquant) : la pile remonte
+  directement jusqu'a la ligne fautive.
+- Une image OCI convertie en `rootfs.ext4` brut (`crane export` + `mke2fs`,
+  sans passer par un runtime de conteneur au boot) perd toute sa metadonnee
+  `ENV`/`ENTRYPOINT`/etc. — un guest qui boote directement ce filesystem
+  (init custom en PID 1, cas de `atelier-builder-vm-init`) doit re-fournir
+  explicitement toute variable d'environnement dont un binaire de l'image
+  a besoin (ex: `KANIKO_DIR` pour `envbuilder`), meme si le `Dockerfile`
+  source la definit via `ENV`.
+- `golang.org/x/net/http/httpproxy` (utilise par le client HTTP standard de
+  Go, donc par `envbuilder`) exclut **inconditionnellement** `localhost` et
+  les IP loopback du proxy configure via `HTTP_PROXY`/`HTTPS_PROXY` — meme
+  sans `NO_PROXY`, comportement non desactivable depuis l'environnement.
+  Un service passe comme `localhost:<port>` a un process qui doit y acceder
+  *via* un proxy explicite (ex: guest microVM sans route par defaut) doit
+  plutot recevoir une adresse non-loopback (IP reelle de l'hote/du lien
+  point-a-point).
+- `reboot(RebootMode::RB_POWER_OFF)` (crate `nix`) n'a aucun effet observable
+  dans une microVM Firecracker minimale sans ACPI (`pci=off` dans les
+  `boot_args`) : le noyau n'a pas de handler `pm_power_off` a invoquer et se
+  contente d'un `halt` ("reboot: System halted"), sans que Firecracker
+  detecte la fin de la VM. Avec `reboot=k` dans les `boot_args` (deja
+  necessaire pour ce type de machine minimale), c'est
+  `reboot(RebootMode::RB_AUTOBOOT)` (reboot standard, pas power-off) qu'il
+  faut appeler : il declenche un reset via le controleur clavier i8042 que
+  Firecracker intercepte lui-meme comme signal de fin de VM.
 
 ## Prochaines etapes (par priorite)
 
-1. Finir de valider la microVM "builder" (section dediee ci-dessus) —
-   boot complet + `envbuilder` + push registre via `net-proxy`, sur une
-   machine avec un vrai `CAP_NET_ADMIN` — puis la brancher dans
-   `image-builder`/`reconcile.rs` a la place de l'invocation directe
+1. Brancher la microVM "builder" (`crates/builder-vm-init`, desormais
+   validee de bout en bout — voir section "Builder microVM" ci-dessus) dans
+   `image-builder`/`reconcile.rs`, a la place de l'invocation directe
    d'`envbuilder`. Le reseau kind ↔ registre lui-meme est deja resolu et
    verifie (Service/EndpointSlice statique). Une fois branche, le pipeline
    `image-builder` → cache → `vm-supervisor` peut tourner automatiquement

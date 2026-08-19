@@ -48,7 +48,11 @@ mkdir -p /var/tmp/atelier-builder-vm/rootfs
 tar xf /var/tmp/atelier-builder-vm/rootfs.tar -C /var/tmp/atelier-builder-vm/rootfs
 
 SIZE_KB=$(du -sk /var/tmp/atelier-builder-vm/rootfs | cut -f1)
-truncate -s $(( SIZE_KB/1024 + 512 ))M /var/tmp/atelier-builder-vm/rootfs.ext4
+# Marge de 4096M (pas 512M) : un vrai build devcontainer (paquets apt/pip,
+# ex. gcc pour un devcontainer Python) a besoin de bien plus que la seule
+# taille de base de l'image builder-vm-init — 512M produisait un
+# "no space left on device" en plein build, decouvert en testant reellement.
+truncate -s $(( SIZE_KB/1024 + 4096 ))M /var/tmp/atelier-builder-vm/rootfs.ext4
 mke2fs -F -t ext4 -d /var/tmp/atelier-builder-vm/rootfs /var/tmp/atelier-builder-vm/rootfs.ext4
 ```
 
@@ -68,8 +72,7 @@ de connectivite reelle (namespace reseau isole) — deja passe cette session.
 
 ## 3. Test complet (boot + envbuilder + push registre) : necessite un vrai `CAP_NET_ADMIN`
 
-**Non valide dans un environnement de dev sandboxe sans acces root reel** :
-le guest doit atteindre `net-proxy`, qui doit lui-meme atteindre Internet —
+Le guest doit atteindre `net-proxy`, qui doit lui-meme atteindre Internet —
 les deux ne peuvent pas etre vrais a la fois dans un `unshare --net` isole
 (qui n'a pas de route de sortie). Sur une machine avec un vrai sudo :
 
@@ -89,13 +92,23 @@ sudo -E env "PATH=$PATH" \
   cargo test -p atelier-firecracker --test builder_vm -- --nocapture
 ```
 
+Sans sudo interactif disponible, un conteneur Docker `--privileged
+--network host --device=/dev/kvm --device=/dev/net/tun` est une alternative
+qui fonctionne tout aussi bien (voir `docs/PROGRESS.md`, "Lecons retenues")
+— `--network host` partage directement le netns de l'hote, donc le TAP cree
+dans le conteneur et `net-proxy` lance sur l'hote se voient mutuellement
+sans configuration supplementaire. Compiler avec un `CARGO_TARGET_DIR`
+dedie au conteneur (piege glibc, voir "Lecons retenues").
+
 Assertions : la microVM s'eteint d'elle-meme (pas de canal de controle
 vsock dans ce MVP — le succes se lit dans le registre, pas via un message
 explicite du guest) et `crane manifest` confirme que l'image attendue y a
 bien ete poussee par `envbuilder` execute a l'interieur du guest.
 
-**Etat au moment d'ecrire ceci** : etapes 1 et 2 verifiees reellement cette
-session (build Docker, conversion rootfs, mecanique TAP). L'etape 3
-(chaine complete boot -> reseau -> envbuilder -> registre) est ecrite et
-prete, mais pas encore executee faute d'acces root reel dans
-l'environnement de dev de cette session — voir `docs/PROGRESS.md`.
+**Valide reellement** : cycle complet boot -> reseau -> `envbuilder`
+(clone + build + push) -> extinction propre -> verification registre, en
+35s (`test result: ok`). Cinq causes racines ont ete trouvees et corrigees
+pour y arriver — voir `docs/PROGRESS.md`, section "Builder microVM", pour
+le detail (chemin de socket jail trop long, `KANIKO_DIR` manquant, rootfs
+trop petit, `localhost` exclu du proxy HTTP par le client Go, `reboot`
+sans ACPI).

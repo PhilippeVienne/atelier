@@ -29,14 +29,43 @@ fn main() {
     // qui reste allumee bloque indefiniment le hote, qui attend cette
     // extinction pour savoir que le build est termine (pas de canal de
     // controle vsock dans ce MVP — voir docs/PROGRESS.md).
-    let _ = reboot(RebootMode::RB_POWER_OFF);
+    //
+    // RB_AUTOBOOT (reboot), PAS RB_POWER_OFF : cette machine minimale n'a
+    // pas d'ACPI (`pci=off` dans les boot_args), donc RB_POWER_OFF n'a
+    // aucun handler `pm_power_off` a invoquer — le noyau se contente d'un
+    // `halt` ("System halted"), le process Firecracker cote hote continue
+    // de tourner indefiniment (`is_running()` ne devient jamais faux).
+    // `reboot=k` (deja dans les boot_args) demande au noyau d'utiliser le
+    // reset via le controleur clavier i8042 pour un vrai reboot — signal
+    // que Firecracker intercepte lui-meme comme fin de VM (pattern standard
+    // des inits minimaux Firecracker, cf. documentation upstream). Constate
+    // en pratique : sans ce changement, le guest affichait bien "envbuilder
+    // termine avec succes" puis "reboot: System halted", mais le hote
+    // attendait la VM pendant les 180s du deadline de test sans jamais la
+    // voir s'eteindre.
+    let _ = reboot(RebootMode::RB_AUTOBOOT);
+}
+
+/// Marqueurs de progression sur stdout : la console serie du guest
+/// (`console=ttyS0`) est le seul canal de diagnostic disponible dans ce MVP
+/// (pas de vsock), et elle n'est aujourd'hui drainee cote hote que vers
+/// `tracing::debug!` — invisible sans subscriber configure. Ces lignes
+/// permettent de localiser un blocage par elimination (quelle est la
+/// derniere etape atteinte) meme sans lire le detail d'`envbuilder`.
+fn step(label: &str) {
+    println!("atelier-builder-vm-init: {label}");
 }
 
 fn run() -> Result<()> {
+    step("demarrage");
     mount_pseudo_filesystems()?;
+    step("pseudo-filesystems montes (/proc, /sys)");
     let params = parse_cmdline_params()?;
+    step("parametres de boot lus");
     configure_network(&params)?;
+    step("reseau configure (lo, eth0)");
     run_envbuilder(&params)?;
+    step("envbuilder termine avec succes");
     Ok(())
 }
 
@@ -86,8 +115,11 @@ fn configure_network(params: &HashMap<String, String>) -> Result<()> {
     let guest_ip = require(params, "guest_ip")?;
     let prefix = require(params, "prefix")?;
 
+    step("lancement de: ip link set lo up");
     run_cmd("ip", &["link", "set", "lo", "up"])?;
+    step("lancement de: ip addr add ... dev eth0");
     run_cmd("ip", &["addr", "add", &format!("{guest_ip}/{prefix}"), "dev", "eth0"])?;
+    step("lancement de: ip link set eth0 up");
     run_cmd("ip", &["link", "set", "eth0", "up"])?;
     Ok(())
 }
@@ -127,7 +159,17 @@ fn run_envbuilder(params: &HashMap<String, String>) -> Result<()> {
     // dans l'image construite depuis ce chemin exact, cf. Dockerfile) —
     // meme contrainte que dans `crates/image-builder`.
     let mut cmd = Command::new("/.envbuilder/bin/envbuilder");
-    cmd.env("ENVBUILDER_GIT_URL", git_url)
+    cmd
+        // Le `Dockerfile` de cette image fixe `ENV KANIKO_DIR=/.envbuilder`
+        // (garde-fou interne d'envbuilder/Kaniko avant de vider le
+        // filesystem), mais cette metadonnee OCI n'est interpretee que par
+        // un runtime de conteneur — perdue lors de la conversion en
+        // `rootfs.ext4` brut (crane export + mke2fs), puisque ce guest n'a
+        // pas de runtime de conteneur, seulement ce process PID 1. Sans ce
+        // rappel explicite, envbuilder refuse de demarrer
+        // ("KANIKO_DIR is not set to /.envbuilder. Bailing!").
+        .env("KANIKO_DIR", "/.envbuilder")
+        .env("ENVBUILDER_GIT_URL", git_url)
         .env("ENVBUILDER_DEVCONTAINER_JSON_PATH", devcontainer_json_filename)
         .env("ENVBUILDER_PUSH_IMAGE", "true")
         .env("ENVBUILDER_CACHE_REPO", cache_repo)
@@ -146,6 +188,7 @@ fn run_envbuilder(params: &HashMap<String, String>) -> Result<()> {
         cmd.env("ENVBUILDER_DEVCONTAINER_DIR", devcontainer_dir);
     }
 
+    step("lancement de /.envbuilder/bin/envbuilder");
     let status = cmd.status().context("lancement du binaire envbuilder")?;
     if !status.success() {
         bail!("envbuilder a echoue avec le statut {status}");

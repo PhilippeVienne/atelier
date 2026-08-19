@@ -14,3 +14,4 @@ tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 nix = { version = "0.31.3", features = ["user"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

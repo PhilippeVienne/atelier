@@ -58,6 +58,19 @@ fn fixtures() -> Option<Fixtures> {
 
 #[tokio::test]
 async fn boots_builder_vm_and_pushes_image_to_registry() {
+    // Sans ca, la sortie console du guest (drainee vers `tracing::debug!`
+    // par `Vm::boot_with_network`, voir `crates/firecracker/src/vm.rs`) est
+    // silencieusement perdue faute de subscriber — invisible meme avec
+    // `--nocapture`. Niveau debug force ici : c'est le seul canal de
+    // diagnostic disponible pour cette VM (pas de vsock dans ce MVP).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "atelier_firecracker=debug".into()),
+        )
+        .with_test_writer()
+        .try_init();
+
     let Some(fixtures) = fixtures() else {
         eprintln!(
             "ATELIER_TEST_FIRECRACKER_BIN/JAILER_BIN/VM_KERNEL_PATH/BUILDER_ROOTFS_PATH/REGISTRY_ADDR non definis, test ignore (voir deploy/dev/builder-vm/README.md)"
@@ -65,8 +78,17 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         return;
     };
 
-    let work_dir =
-        PathBuf::from("/var/tmp").join(format!("atelier-builder-vm-test-{}", std::process::id()));
+    // Noms courts deliberement (voir jail_id plus bas) : le socket API
+    // Firecracker vit sous {chroot_base_dir}/firecracker/{jail_id}/root/run/
+    // firecracker.socket, et sockaddr_un.sun_path est limite a 108 octets
+    // sur Linux. Un nom trop long fait echouer connect() en ENAMETOOLONG a
+    // chaque tentative, ce que fctools (0.7.0-alpha.2, boucle de
+    // `Vm::start`) avale silencieusement dans une boucle qui ne cede jamais
+    // la main a l'executeur — observe en pratique comme un blocage total
+    // (99.9% CPU, jamais de timeout) sans aucun message d'erreur exploitable
+    // avant ce raccourcissement des noms. Meme categorie de piege que
+    // IFNAMSIZ pour les TAP (voir docs/PROGRESS.md, "Lecons retenues").
+    let work_dir = PathBuf::from("/var/tmp").join(format!("atelier-bvm-{}", std::process::id()));
     tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
     let tap_name = format!("fc-b{}", std::process::id() % 10000);
@@ -90,12 +112,30 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         std::process::id()
     );
 
+    // Le guest recoit une reference construite avec l'IP hote du lien
+    // point-a-point, PAS `fixtures.registry_addr` tel quel : si celui-ci
+    // vaut `localhost:5000` (cas courant en dev, registre sur la meme
+    // machine), le client HTTP Go d'envbuilder (`golang.org/x/net/http/
+    // httpproxy`) exclut inconditionnellement `localhost`/loopback du proxy
+    // configure via `HTTP_PROXY` — meme si `NO_PROXY` ne le mentionne pas.
+    // Le guest tente alors une connexion directe vers "lui-meme", qui
+    // echoue puisqu'il n'a pas de route par defaut (voir configure_network
+    // dans crates/builder-vm-init). Constate en pratique : "dial tcp: lookup
+    // localhost ...: network is unreachable" cote guest, alors que le meme
+    // registre est bien joignable via net-proxy avec une IP non-loopback.
+    let registry_port = fixtures.registry_addr.rsplit_once(':').map(|(_, p)| p).unwrap_or("5000");
+    let image_ref_for_guest = format!(
+        "{}:{registry_port}/atelier-workshops/builder-vm-test-{}:latest",
+        network.host_ip,
+        std::process::id()
+    );
+
     let boot_args = format!(
         "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/atelier-builder-vm-init \
          atelier.repo=https://github.com/microsoft/vscode-remote-try-python \
          atelier.revision=main \
          atelier.devcontainer_json_filename=devcontainer.json \
-         atelier.image_ref={image_ref} \
+         atelier.image_ref={image_ref_for_guest} \
          atelier.registry_insecure=true \
          atelier.guest_ip={} atelier.host_ip={} atelier.prefix={} \
          atelier.net_proxy_port={net_proxy_port}",
@@ -107,7 +147,7 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         jailer_bin: fixtures.jailer_bin,
         snapshot_editor_bin: fixtures.snapshot_editor_bin,
         chroot_base_dir: work_dir.join("jails"),
-        jail_id: format!("atelier-builder-vm-test-{}", std::process::id()),
+        jail_id: format!("bvm-{}", std::process::id()),
         uid: nix::unistd::Uid::current().as_raw(),
         gid: nix::unistd::Gid::current().as_raw(),
         vcpu_count: 2,
