@@ -6,11 +6,25 @@
 //! pour des noms qu'elle ne pourra de toute facon pas joindre via
 //! `net-proxy`.
 //!
-//! Parseur DNS volontairement minimal : assez pour lire le nom de la
-//! premiere question (`QDCOUNT` suppose == 1, cas normal d'un resolveur
-//! stub), pas un parseur RFC 1035 complet. Le message est ensuite relaye
-//! tel quel (octets bruts) vers l'upstream si autorise — net-proxy ne
-//! reconstruit jamais de reponse lui-meme, sauf le refus.
+//! Parseur DNS volontairement minimal : assez pour lire le nom et le type
+//! de l'unique question attendue, pas un parseur RFC 1035 complet. Le
+//! message est ensuite relaye tel quel (octets bruts) vers l'upstream si
+//! autorise — net-proxy ne reconstruit jamais de reponse lui-meme, sauf le
+//! refus.
+//!
+//! Filtrage applique, dans l'ordre :
+//! 1. `QDCOUNT` doit valoir exactement 1 — un resolveur stub normal
+//!    n'envoie jamais plus d'une question par message ; en accepter
+//!    plusieurs ouvrirait un contournement (nom autorise en premiere
+//!    question, nom interdit en deuxieme, silencieusement relaye avec).
+//! 2. Le type de la question ne doit pas etre `ANY` (255), `AXFR` (252) ou
+//!    `IXFR` (251) : trois types concus pour retourner bien plus qu'un
+//!    enregistrement, qui n'ont pas de raison d'etre poses par un
+//!    resolveur applicatif normal et permettraient de recuperer plus
+//!    d'information qu'un nom autorise individuellement ne devrait en
+//!    exposer (jusqu'a un transfert de zone entier).
+//! 3. Le nom doit correspondre a l'allowlist egress (`allowlist::is_allowed`,
+//!    meme logique que pour le proxy HTTP(S) — une seule politique).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,6 +38,14 @@ use crate::allowlist;
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_MESSAGE_SIZE: usize = 4096;
+
+/// Types de question a refuser inconditionnellement, meme pour un nom
+/// autorise (RFC 1035 §3.2.3 pour ANY, RFC 1035 §3.2.4/RFC 1995 pour les
+/// transferts de zone).
+const QTYPE_ANY: u16 = 255;
+const QTYPE_AXFR: u16 = 252;
+const QTYPE_IXFR: u16 = 251;
+const FORBIDDEN_QTYPES: [u16; 3] = [QTYPE_ANY, QTYPE_AXFR, QTYPE_IXFR];
 
 #[derive(Clone)]
 pub struct DnsConfig {
@@ -122,7 +144,7 @@ async fn handle_tcp_connection(
 
 /// Verifie l'allowlist puis relaie a l'upstream si autorise. `None`
 /// seulement en cas d'echec de l'upstream lui-meme (deja journalise) — un
-/// nom hors allowlist produit toujours une reponse (`REFUSED`), jamais
+/// nom ou type refuse produit toujours une reponse (`REFUSED`), jamais
 /// `None`.
 async fn handle_query(
     message: &[u8],
@@ -130,24 +152,35 @@ async fn handle_query(
     upstream: &str,
     peer: SocketAddr,
 ) -> Option<Vec<u8>> {
-    let name = match parse_question_name(message) {
-        Ok(name) => name,
+    let question = match parse_question(message) {
+        Ok(question) => question,
         Err(err) => {
             tracing::warn!(%peer, %err, "requete DNS malformee");
             return None;
         }
     };
 
-    if !allowlist::is_allowed(&name, allowlist) {
-        tracing::warn!(%peer, name, allowed = false, "DNS refuse (hors allowlist)");
+    if FORBIDDEN_QTYPES.contains(&question.qtype) {
+        tracing::warn!(
+            %peer,
+            name = question.name,
+            qtype = question.qtype,
+            allowed = false,
+            "DNS refuse (type de requete interdit)"
+        );
         return Some(refusal(message));
     }
 
-    tracing::info!(%peer, name, allowed = true, "DNS relaye");
+    if !allowlist::is_allowed(&question.name, allowlist) {
+        tracing::warn!(%peer, name = question.name, allowed = false, "DNS refuse (hors allowlist)");
+        return Some(refusal(message));
+    }
+
+    tracing::info!(%peer, name = question.name, allowed = true, "DNS relaye");
     match query_upstream(upstream, message).await {
         Ok(response) => Some(response),
         Err(err) => {
-            tracing::warn!(%peer, name, %err, "requete DNS vers l'upstream echouee");
+            tracing::warn!(%peer, name = question.name, %err, "requete DNS vers l'upstream echouee");
             None
         }
     }
@@ -185,15 +218,27 @@ fn refusal(message: &[u8]) -> Vec<u8> {
     response
 }
 
-/// Extrait le nom (en minuscules, notation pointee) de la premiere
-/// question d'un message DNS. Ne gere pas la compression (RFC 1035
-/// §4.1.4) : non pertinent ici, la section Question d'une requete n'en
-/// contient jamais (seules les sections Answer/Authority/Additional le
-/// peuvent, qu'on ne parse pas).
-fn parse_question_name(message: &[u8]) -> anyhow::Result<String> {
+struct Question {
+    name: String,
+    qtype: u16,
+}
+
+/// Extrait le nom (en minuscules, notation pointee) et le type de l'unique
+/// question attendue dans un message DNS — refuse tout message qui n'en
+/// declare pas exactement une (`QDCOUNT != 1`, voir le commentaire de tete
+/// du module). Ne gere pas la compression (RFC 1035 §4.1.4) : non
+/// pertinent ici, la section Question d'une requete n'en contient jamais
+/// (seules les sections Answer/Authority/Additional le peuvent, qu'on ne
+/// parse pas).
+fn parse_question(message: &[u8]) -> anyhow::Result<Question> {
     if message.len() < 12 {
         bail!("message DNS trop court pour un en-tete valide");
     }
+    let qdcount = u16::from_be_bytes([message[4], message[5]]);
+    if qdcount != 1 {
+        bail!("QDCOUNT={qdcount} inattendu (une seule question par requete attendue)");
+    }
+
     let mut labels = Vec::new();
     let mut offset = 12usize;
     loop {
@@ -216,14 +261,23 @@ fn parse_question_name(message: &[u8]) -> anyhow::Result<String> {
     if labels.is_empty() {
         bail!("QNAME vide");
     }
-    Ok(labels.join("."))
+
+    let qtype_bytes = message
+        .get(offset..offset + 2)
+        .context("QTYPE tronque")?;
+    let qtype = u16::from_be_bytes([qtype_bytes[0], qtype_bytes[1]]);
+
+    Ok(Question {
+        name: labels.join("."),
+        qtype,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn build_query(id: u16, name: &str) -> Vec<u8> {
+    fn build_query_with_type(id: u16, name: &str, qtype: u16) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(&id.to_be_bytes());
         msg.extend_from_slice(&[0x01, 0x00]); // flags: RD=1
@@ -234,29 +288,61 @@ mod tests {
             msg.extend_from_slice(label.as_bytes());
         }
         msg.push(0); // fin du QNAME
-        msg.extend_from_slice(&1u16.to_be_bytes()); // QTYPE = A
+        msg.extend_from_slice(&qtype.to_be_bytes());
         msg.extend_from_slice(&1u16.to_be_bytes()); // QCLASS = IN
+        msg
+    }
+
+    fn build_query(id: u16, name: &str) -> Vec<u8> {
+        build_query_with_type(id, name, 1) // QTYPE = A
+    }
+
+    fn build_query_with_qdcount(name: &str, qdcount: u16) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&[0x01, 0x00]);
+        msg.extend_from_slice(&qdcount.to_be_bytes());
+        msg.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        for label in name.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0);
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
         msg
     }
 
     #[test]
     fn parses_simple_name() {
         let query = build_query(0x1234, "github.com");
-        assert_eq!(parse_question_name(&query).unwrap(), "github.com");
+        assert_eq!(parse_question(&query).unwrap().name, "github.com");
     }
 
     #[test]
     fn parses_subdomain() {
         let query = build_query(1, "raw.githubusercontent.com");
         assert_eq!(
-            parse_question_name(&query).unwrap(),
+            parse_question(&query).unwrap().name,
             "raw.githubusercontent.com"
         );
     }
 
     #[test]
+    fn parses_qtype() {
+        let query = build_query_with_type(1, "github.com", 28); // AAAA
+        assert_eq!(parse_question(&query).unwrap().qtype, 28);
+    }
+
+    #[test]
     fn rejects_short_message() {
-        assert!(parse_question_name(&[0u8; 5]).is_err());
+        assert!(parse_question(&[0u8; 5]).is_err());
+    }
+
+    #[test]
+    fn rejects_qdcount_other_than_one() {
+        assert!(parse_question(&build_query_with_qdcount("github.com", 0)).is_err());
+        assert!(parse_question(&build_query_with_qdcount("github.com", 2)).is_err());
     }
 
     #[test]
@@ -323,6 +409,40 @@ mod tests {
         assert!(
             !touched.load(std::sync::atomic::Ordering::SeqCst),
             "l'upstream ne doit jamais recevoir une requete hors allowlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn forbidden_qtype_is_refused_even_for_an_allowed_name() {
+        let fake_upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = fake_upstream.local_addr().unwrap();
+        let touched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let touched_clone = Arc::clone(&touched);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 512];
+            if fake_upstream.recv_from(&mut buf).await.is_ok() {
+                touched_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        for qtype in FORBIDDEN_QTYPES {
+            let query = build_query_with_type(9, "github.com", qtype);
+            let allowlist = vec!["github.com".to_string()];
+            let response = handle_query(
+                &query,
+                &allowlist,
+                &upstream_addr.to_string(),
+                "127.0.0.1:1".parse().unwrap(),
+            )
+            .await
+            .unwrap_or_else(|| panic!("reponse REFUSED locale attendue pour qtype={qtype}"));
+            assert_eq!(response[3], 5, "RCODE doit etre REFUSED pour qtype={qtype}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !touched.load(std::sync::atomic::Ordering::SeqCst),
+            "l'upstream ne doit jamais recevoir une requete a type interdit"
         );
     }
 }
