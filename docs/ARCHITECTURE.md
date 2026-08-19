@@ -113,7 +113,7 @@ flowchart TB
 | Composant | Role |
 |---|---|
 | **vm-supervisor** (`crates/vm-supervisor`) | Demarre/arrete la microVM Firecracker **jailee** (chroot, cgroups) et gere le cycle boot/snapshot/restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas de client HTTP maison). Le jailer tourne avec des capabilities Linux dediees (`setcap`), pas root/sudo. |
-| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. Sert aussi de resolveur DNS pour la VM, avec la meme allowlist (un nom refuse recoit `REFUSED` sans jamais atteindre l'upstream). Peut lui-meme chainer vers un proxy HTTP parent impose par le reseau environnant, avec une liste `no_proxy` de destinations a joindre en direct. Dans l'autre sens, expose aussi le port-forward de la microVM vers l'exterieur (ex: VS Code Remote) selon un modele calque sur `kubectl port-forward` : net-proxy tient le role du kubelet (execute le forward, aupres de la microVM), `api-server` celui du coordinateur qui authentifie le client et relaie le flux — net-proxy lui-meme ne fait pas d'authentification. |
+| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. Sert aussi de resolveur DNS pour la VM, avec la meme allowlist (un nom refuse recoit `REFUSED` sans jamais atteindre l'upstream). Peut lui-meme chainer vers un proxy HTTP parent impose par le reseau environnant, avec une liste `no_proxy` de destinations a joindre en direct. Expose aussi deux alias internes toujours joignables en HTTP(S), hors allowlist — `identity-proxy` et `mcp-gateway` (`ATELIER_IDENTITY_PROXY_ADDR`/`ATELIER_MCP_GATEWAY_ADDR`) : ce ne sont pas de l'egress vers l'exterieur, la VM doit pouvoir les joindre quelle que soit la politique du Workshop. Dans l'autre sens, expose aussi le port-forward de la microVM vers l'exterieur (ex: VS Code Remote) selon un modele calque sur `kubectl port-forward` : net-proxy tient le role du kubelet (execute le forward, aupres de la microVM), `api-server` celui du coordinateur qui authentifie le client et relaie le flux — net-proxy lui-meme ne fait pas d'authentification. |
 | **identity-proxy** (`crates/identity-proxy`) | Injecte des credentials/tokens dans les appels sortants sans jamais exposer le secret brut a l'agent. Secrets stockes dans OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du pod parent (pas l'identite Kanidm — voir [Identite et secrets](#identite-et-secrets--kanidm--openbao)). |
 | **mcp-gateway** (`crates/mcp-gateway`) | Serveur MCP expose a l'agent (via vsock). Seul point d'entree pour que l'agent agisse sur le monde exterieur au-dela du reseau proxifie, et demande des reglages a l'atelier (elargir une allowlist, activer un simulateur, demander un credential). Point d'extension privilegie pour de nouveaux simulateurs (LocalStack pour AWS, mocks d'API, etc.). |
 
@@ -280,12 +280,16 @@ Kubernetes, un autre pod, ou un service de metadata cloud, en contournant
 `net-proxy` entierement. Cible retenue, deux composants distincts pour
 deux transports distincts :
 
-1. **`mcp-gateway` : isolation structurelle, pas de regle de pare-feu
-   necessaire.** Expose uniquement via `vsock` (`AF_VSOCK`, adressage
-   CID/port), pas sur le reseau IP de la VM. Rien de ce qui transite par
-   le tap reseau ne peut jamais l'atteindre, et rien d'externe au couple
-   hote/VM ne peut atteindre ce vsock — l'isolation est une consequence du
-   transport, pas d'une regle a maintenir.
+1. **`mcp-gateway` : isolation structurelle par vsock, plus un alias HTTP
+   optionnel via `net-proxy`.** Expose nativement via `vsock` (`AF_VSOCK`,
+   adressage CID/port), pas sur le reseau IP de la VM — rien de ce qui
+   transite par le tap reseau ne peut l'atteindre par ce chemin, et rien
+   d'externe au couple hote/VM ne peut atteindre ce vsock. `net-proxy`
+   expose en plus l'alias HTTP `mcp-gateway` (`ATELIER_MCP_GATEWAY_ADDR`,
+   `crates/net-proxy/src/internal.rs`) pour les clients MCP qui prefèrent
+   un transport HTTP/SSE standard au vsock — ce deuxieme chemin passe donc
+   par le meme port que `net-proxy` (voir point 2), pas par un port
+   supplementaire a autoriser separement.
 2. **`net-proxy` et `identity-proxy` : seules destinations IP autorisees,
    appliquees par pare-feu sur le device TAP.** La VM recoit une seule
    interface reseau (le TAP link-local `/30` deja implemente dans

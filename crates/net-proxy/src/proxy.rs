@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 
 use crate::allowlist;
 use crate::http::{self, RequestHead};
+use crate::internal::InternalRoutes;
 use crate::upstream::UpstreamProxy;
 
 const FORBIDDEN_RESPONSE: &[u8] =
@@ -23,6 +24,7 @@ pub struct EgressConfig {
     pub allowlist: Arc<Vec<String>>,
     pub upstream: Option<Arc<UpstreamProxy>>,
     pub no_proxy: Arc<Vec<String>>,
+    pub internal: Arc<InternalRoutes>,
 }
 
 pub async fn handle_connection(
@@ -44,6 +46,25 @@ pub async fn handle_connection(
             return Ok(());
         }
     };
+
+    // Alias internes (identity-proxy, mcp-gateway) : toujours joignables,
+    // sans passer par l'allowlist egress ni par un eventuel proxy parent —
+    // ce ne sont pas de l'egress vers l'exterieur, voir `crate::internal`.
+    if let Some((target_host, target_port)) = config.internal.resolve(&host) {
+        tracing::info!(
+            %peer,
+            alias = host,
+            target_host,
+            target_port,
+            method = %head.method,
+            "route interne (bypass allowlist)"
+        );
+        return if head.method.eq_ignore_ascii_case("CONNECT") {
+            tunnel(client, &target_host, target_port, peer, None, &[]).await
+        } else {
+            forward(client, &head, &target_host, target_port, peer, None, &[]).await
+        };
+    }
 
     if !allowlist::is_allowed(&host, &config.allowlist) {
         tracing::warn!(
@@ -68,29 +89,27 @@ pub async fn handle_connection(
     );
 
     if head.method.eq_ignore_ascii_case("CONNECT") {
-        tunnel(client, &host, port, peer, &config).await
+        tunnel(client, &host, port, peer, config.upstream.as_deref(), &config.no_proxy).await
     } else {
-        forward(client, &head, &host, port, peer, &config).await
+        forward(client, &head, &host, port, peer, config.upstream.as_deref(), &config.no_proxy).await
     }
 }
 
 /// `CONNECT` : etablit un tunnel TCP opaque (le contenu est TLS, net-proxy
 /// ne le dechiffre pas — seule la destination est controlee).
+///
+/// `upstream`/`no_proxy` sont `None`/vides pour une route interne
+/// (identity-proxy, mcp-gateway) : ces destinations sont toujours jointes
+/// en direct, jamais chainees via le proxy parent.
 async fn tunnel(
     mut client: BufReader<TcpStream>,
     host: &str,
     port: u16,
     peer: SocketAddr,
-    config: &EgressConfig,
+    upstream_proxy: Option<&UpstreamProxy>,
+    no_proxy: &[String],
 ) -> anyhow::Result<()> {
-    let mut upstream = match crate::upstream::connect(
-        host,
-        port,
-        config.upstream.as_deref(),
-        &config.no_proxy,
-    )
-    .await
-    {
+    let mut upstream = match crate::upstream::connect(host, port, upstream_proxy, no_proxy).await {
         Ok(stream) => stream,
         Err(err) => {
             tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");
@@ -120,16 +139,10 @@ async fn forward(
     host: &str,
     port: u16,
     peer: SocketAddr,
-    config: &EgressConfig,
+    upstream_proxy: Option<&UpstreamProxy>,
+    no_proxy: &[String],
 ) -> anyhow::Result<()> {
-    let mut upstream = match crate::upstream::connect(
-        host,
-        port,
-        config.upstream.as_deref(),
-        &config.no_proxy,
-    )
-    .await
-    {
+    let mut upstream = match crate::upstream::connect(host, port, upstream_proxy, no_proxy).await {
         Ok(stream) => stream,
         Err(err) => {
             tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");

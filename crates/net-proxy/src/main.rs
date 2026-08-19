@@ -18,11 +18,17 @@
 //! (`ATELIER_DNS_LISTEN_ADDR`, UDP+TCP) : meme allowlist que le proxy
 //! egress, une requete pour un nom hors allowlist recoit `REFUSED` sans
 //! jamais atteindre l'upstream (voir `crates/net-proxy/src/dns.rs`).
+//!
+//! Deux alias internes toujours joignables en HTTP(S) via ce meme proxy
+//! egress, hors allowlist : `identity-proxy` (`ATELIER_IDENTITY_PROXY_ADDR`)
+//! et `mcp-gateway` (`ATELIER_MCP_GATEWAY_ADDR`) — voir
+//! `crates/net-proxy/src/internal.rs`.
 
 mod allowlist;
 mod dns;
 mod forward;
 mod http;
+mod internal;
 mod portforward;
 mod proxy;
 mod upstream;
@@ -32,6 +38,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
+use internal::InternalRoutes;
 use proxy::EgressConfig;
 use upstream::UpstreamProxy;
 
@@ -54,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let allowlist: Arc<Vec<String>> = Arc::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST"));
     let no_proxy: Arc<Vec<String>> = Arc::new(upstream::no_proxy_from_env());
     let upstream_proxy = UpstreamProxy::from_env().map(Arc::new);
+    let internal_routes = Arc::new(InternalRoutes::from_env()?);
 
     if allowlist.is_empty() {
         tracing::warn!(
@@ -70,11 +78,17 @@ async fn main() -> anyhow::Result<()> {
             "proxy parent configure"
         );
     }
+    tracing::info!(
+        identity_proxy = internal_routes.resolve("identity-proxy").is_some(),
+        mcp_gateway = internal_routes.resolve("mcp-gateway").is_some(),
+        "routes internes (identity-proxy/mcp-gateway) configurees"
+    );
 
     let egress_config = EgressConfig {
         allowlist,
         upstream: upstream_proxy,
         no_proxy,
+        internal: internal_routes,
     };
 
     let control_router = portforward::router(portforward::PortForwardState {
