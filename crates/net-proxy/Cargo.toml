@@ -13,3 +13,10 @@ atelier-common = { path = "../common" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+axum = { workspace = true, features = ["ws"] }
+futures-util = "0.3"
+serde.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"

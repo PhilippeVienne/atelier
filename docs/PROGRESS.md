@@ -23,10 +23,11 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `image-builder` — publication PVC + patch status | Fonctionnel | Verifie manuellement (digest + `rootfs.ext4` presents dans le cache) |
 | `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
-| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` ne joint pas encore le registre de dev depuis l'interieur de kind, donc le cache a ete peuple a la main pour ce test — pas un bug de code, un trou reseau de l'environnement de dev (voir backlog) |
+| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Squelette | Auth JWT/Kanidm et endpoints CRUD/suspend/resume pas encore ecrits |
-| `net-proxy` | Non demarre | Container pas encore ajoute au pod parent |
+| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
+| `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
 | `identity-proxy` | Non demarre | Container pas encore ajoute au pod parent ; logique de proxy/injection pas ecrite |
 | `mcp-gateway` | Non demarre | — |
 | `dashboard` | Squelette Next.js | Pas encore branche sur `api-server` |
@@ -71,6 +72,56 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
    resolu par `privileged: true` en attendant un device plugin KVM dedie.
 9. **Depot GitHub prive** publie.
 
+## Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
+
+Investigation menee jusqu'au bout (cluster kind + registre + Kanidm reels,
+conformement au principe "pas de mocks" du projet) :
+
+- **Cause du trou reseau, confirmee** : le conteneur `atelier-registry-dev`
+  vit sur le reseau Docker `bridge` par defaut, le noeud kind sur le reseau
+  `kind` — deux reseaux Docker distincts, aucune route entre eux. Fix
+  verifie manuellement : `docker network connect kind atelier-registry-dev
+  --alias atelier-registry-dev` rend le registre joignable par IP depuis un
+  pod kind ; un `Service`/`EndpointSlice` Kubernetes statique pointant sur
+  cette IP donne un nom DNS stable en cluster (`atelier-registry-dev:5000`
+  depuis le namespace `default`). Verifie avec un pod `curl` jetable et via
+  un vrai Job `image-builder` (clone + build envbuilder + push registre +
+  `crane export` : tous reussis avec cette configuration).
+- **Blocage decouvert en testant reellement, pas encore leve** : le Job
+  `image-builder` echoue avant meme d'atteindre le registre
+  (`temp remount: bind mount ... operation not permitted`) tant que son
+  conteneur n'a pas de capacite de mount elevee. Cause : envbuilder remonte
+  *tous* les points de montage existants (PVC de cache, `emptyDir` d'outils,
+  token ServiceAccount) apres avoir vide le systeme de fichiers du
+  conteneur pour y extraire l'image cible — necessaire pour que ces volumes
+  restent utilisables apres le wipe, pas seulement pour le token SA.
+  `privileged: true` (comme dans le `docker run` manuel du README) leve le
+  blocage ; une version plus etroite (`securityContext.capabilities.add:
+  [SYS_ADMIN]` seul, toutes les autres capacites droppees) leve aussi le
+  blocage en test manuel.
+- **Pourquoi ce n'est pas active** : meme reduit a `SYS_ADMIN` seul, cette
+  capacite reste une des plus dangereuses qui existe (mount arbitraire,
+  plusieurs techniques d'evasion de conteneur connues) — et ici elle
+  s'appliquerait a un conteneur qui execute des instructions de build
+  (`RUN`, `postCreateCommand`, etc.) issues du **depot cible du Workshop**,
+  potentiellement non fiable, a la difference de `vm-supervisor` qui
+  n'execute que du code first-party (jailer/Firecracker) sous
+  `privileged: true`. Contrairement au blocage KVM de `vm-supervisor`
+  (device cgroup controller, pas de contournement plus etroit trouve), ici
+  le compromis n'a pas ete tranche : accorder cette capacite a du code non
+  fiable contredit le modele de securite du projet ("aucun acces direct au
+  reste du cluster" pour ce qui execute du contenu externe), donc le code
+  (RBAC `workshops/status` pour un ServiceAccount dedie `image-builder`,
+  `capabilities.add: [SYS_ADMIN]` sur le Job) n'a **pas** ete merge en
+  l'etat — revert delibere apres discussion.
+- **A trancher avant d'activer** : isoler le Job `image-builder` plus
+  fortement avant de lui donner cette capacite — `runtimeClass` gVisor/Kata
+  si disponible sur le cluster cible, `NetworkPolicy` limitant son egress
+  au registre + au depot git, node pool dedie avec taint pour borner le
+  rayon d'action d'une evasion, ou a plus long terme faire tourner le build
+  lui-meme dans une microVM plutot que dans un conteneur Kubernetes
+  directement privilegie.
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -103,17 +154,33 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 
 ## Prochaines etapes (par priorite)
 
-1. Cabler le reseau kind ↔ registre de dev pour que le pipeline
-   `image-builder` → cache → `vm-supervisor` tourne automatiquement de bout
-   en bout, sans peuplage manuel du PVC.
+1. Trancher l'isolation du Job `image-builder` (voir section dediee
+   ci-dessus) avant d'activer la capacite de mount dont il a besoin pour
+   fonctionner en cluster — le reseau kind ↔ registre lui-meme est deja
+   resolu et verifie (Service/EndpointSlice statique). Une fois tranche,
+   le pipeline `image-builder` → cache → `vm-supervisor` peut tourner
+   automatiquement de bout en bout, sans peuplage manuel du PVC.
 2. Canal de controle vsock entre `controller`/`vm-supervisor` pour que
    `suspend` declenche un vrai `snapshot/create` avant liberation du pod
    (aujourd'hui le pod est simplement supprime, sans snapshot).
-3. Ecrire `identity-proxy` (logique de proxy/injection de credentials) et
-   `net-proxy` (allowlist egress), les ajouter comme conteneurs du pod
-   parent.
+3. Ecrire `identity-proxy` (logique de proxy/injection de credentials) ;
+   ajouter `net-proxy` et `identity-proxy` comme conteneurs du pod parent,
+   et cabler l'allowlist de `net-proxy` (`ATELIER_EGRESS_ALLOWLIST`) depuis
+   `Workshop.spec.egress_allowlist` cote controller.
+   - Donner un TAP reseau a la VM de l'agent (aujourd'hui absent —
+     `vm-supervisor` boote sans interface reseau, cf. commentaire de tete
+     de `crates/firecracker/src/network.rs`) et poser les regles de
+     pare-feu qui restreignent la VM a `net-proxy`/`identity-proxy`
+     uniquement (mecanisme et regles `iptables` precises deja specifiees
+     dans `docs/ARCHITECTURE.md`, section "Isolation reseau de la
+     microVM") — ne pas reutiliser tel quel le `MASQUERADE` inconditionnel
+     de `setup_link_local_tap` (legitime seulement pour la VM "builder").
 4. `api-server` : validation JWT Kanidm reelle + endpoints CRUD et
-   suspend/resume.
+   suspend/resume, plus le role de coordinateur de port-forward (terminer
+   la connexion du client final, verifier qu'il est bien proprietaire du
+   `Workshop`, puis relayer vers le websocket `/portforward` de `net-proxy`
+   — cote net-proxy est deja ecrit, voir composant "port-forward"
+   ci-dessus).
 5. `mcp-gateway` et le premier simulateur (candidat : LocalStack pour AWS).
 6. Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
    `privileged: true`.

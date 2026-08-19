@@ -113,7 +113,7 @@ flowchart TB
 | Composant | Role |
 |---|---|
 | **vm-supervisor** (`crates/vm-supervisor`) | Demarre/arrete la microVM Firecracker **jailee** (chroot, cgroups) et gere le cycle boot/snapshot/restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas de client HTTP maison). Le jailer tourne avec des capabilities Linux dediees (`setcap`), pas root/sudo. |
-| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. |
+| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. Peut lui-meme chainer vers un proxy HTTP parent impose par le reseau environnant, avec une liste `no_proxy` de destinations a joindre en direct. Dans l'autre sens, expose aussi le port-forward de la microVM vers l'exterieur (ex: VS Code Remote) selon un modele calque sur `kubectl port-forward` : net-proxy tient le role du kubelet (execute le forward, aupres de la microVM), `api-server` celui du coordinateur qui authentifie le client et relaie le flux — net-proxy lui-meme ne fait pas d'authentification. |
 | **identity-proxy** (`crates/identity-proxy`) | Injecte des credentials/tokens dans les appels sortants sans jamais exposer le secret brut a l'agent. Secrets stockes dans OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du pod parent (pas l'identite Kanidm — voir [Identite et secrets](#identite-et-secrets--kanidm--openbao)). |
 | **mcp-gateway** (`crates/mcp-gateway`) | Serveur MCP expose a l'agent (via vsock). Seul point d'entree pour que l'agent agisse sur le monde exterieur au-dela du reseau proxifie, et demande des reglages a l'atelier (elargir une allowlist, activer un simulateur, demander un credential). Point d'extension privilegie pour de nouveaux simulateurs (LocalStack pour AWS, mocks d'API, etc.). |
 
@@ -269,6 +269,74 @@ en place.
   cgroups) plutot que par la seule isolation de conteneur d'un Pod.
 - Authentification externe : JWT emis par Kanidm, seule source de verite
   identite. Pas de gestion d'utilisateurs locale dans Atelier lui-meme.
+
+### Isolation reseau de la microVM : mecanisme concret
+
+L'affirmation ci-dessus ("aucun acces direct au reste du cluster") n'est
+vraie que si elle est appliquee au niveau paquet, pas seulement au niveau
+applicatif (allowlist de `net-proxy`) — sinon rien n'empeche la VM
+d'ouvrir une connexion TCP brute vers l'IP du pod (`eth0`), l'API server
+Kubernetes, un autre pod, ou un service de metadata cloud, en contournant
+`net-proxy` entierement. Cible retenue, deux composants distincts pour
+deux transports distincts :
+
+1. **`mcp-gateway` : isolation structurelle, pas de regle de pare-feu
+   necessaire.** Expose uniquement via `vsock` (`AF_VSOCK`, adressage
+   CID/port), pas sur le reseau IP de la VM. Rien de ce qui transite par
+   le tap reseau ne peut jamais l'atteindre, et rien d'externe au couple
+   hote/VM ne peut atteindre ce vsock — l'isolation est une consequence du
+   transport, pas d'une regle a maintenir.
+2. **`net-proxy` et `identity-proxy` : seules destinations IP autorisees,
+   appliquees par pare-feu sur le device TAP.** La VM recoit une seule
+   interface reseau (le TAP link-local `/30` deja implemente dans
+   `crates/firecracker/src/network.rs`, ex. hote `169.254.0.1`, guest
+   `169.254.0.2`) et une route par defaut vers l'IP hote. Comme tous les
+   conteneurs d'un meme pod partagent une seule et meme network namespace,
+   `net-proxy` et `identity-proxy` lies sur `0.0.0.0` sont deja joignables
+   depuis la VM a `169.254.0.1:<leur port>` sans aucun NAT ni forwarding —
+   c'est de la livraison locale dans la meme netns. **Il ne faut donc pas
+   reutiliser tel quel le `MASQUERADE` inconditionnel de
+   `setup_link_local_tap`** (legitime pour la microVM "builder" de
+   `image-builder`, qui a explicitement besoin de sortir vers un registre
+   OCI/depot git quelconque, elle-meme isolee autrement — voir
+   "Reseau kind ↔ registre" dans `PROGRESS.md`) : pour la VM de l'agent, la
+   sortie doit rester fermee par defaut.
+   - Ne pas poser de regle `MASQUERADE`/`FORWARD -j ACCEPT` vers `eth0`
+     pour ce TAP : sans route de sortie, un paquet vers une destination
+     autre que `169.254.0.1` est simplement injoignable.
+   - Poser explicitement, en defense en profondeur (le sysctl
+     `net.ipv4.ip_forward` est global au netns du pod — une autre
+     microVM du meme pod qui l'active ne doit pas rouvrir cette voie par
+     accident) :
+     ```
+     iptables -N atelier-vm-<id>
+     iptables -A atelier-vm-<id> -p tcp -d 169.254.0.1 --dport <port net-proxy>     -j ACCEPT
+     iptables -A atelier-vm-<id> -p tcp -d 169.254.0.1 --dport <port identity-proxy> -j ACCEPT
+     iptables -A atelier-vm-<id> -j DROP
+     iptables -A INPUT   -i <tap> -j atelier-vm-<id>
+     iptables -A FORWARD -i <tap> -j DROP
+     ```
+     (chaine dediee par VM, nettoyee au `teardown()`, symetrique a ce que
+     fait deja `NetworkSetup::teardown` pour la regle NAT de la VM
+     "builder"). Le port de controle de `net-proxy`
+     (`ATELIER_NET_PROXY_CONTROL_ADDR`, le websocket `/portforward`
+     destine a `api-server`) reste volontairement hors de cette liste : la
+     VM ne doit jamais pouvoir l'atteindre, seul `api-server` le peut,
+     depuis l'exterieur du pod.
+   - Consequence deliberee : pas de port 53 ouvert, donc pas de DNS pour
+     la VM. `net-proxy` est configure cote VM comme
+     `HTTP_PROXY`/`HTTPS_PROXY` (convention devcontainer standard) : c'est
+     lui qui resout les noms d'hote, pas la VM — un outil qui ignore ces
+     variables n'a simplement aucune route de sortie, ce qui est le
+     comportement voulu plutot qu'une lacune (ferme aussi le tunnel DNS
+     comme canal d'exfiltration).
+   - A trancher (ouvert, cf. TODO dans `crates/identity-proxy/src/main.rs`) :
+     si l'agent parle a `identity-proxy` en direct (necessite son port dans
+     la regle ci-dessus) ou si l'injection de credentials passe par
+     `net-proxy` lui-meme (auquel cas la VM n'a besoin que d'un seul port
+     autorise, surface de pare-feu plus simple a auditer). Le reste de ce
+     document suppose la premiere option, plus proche du schema actuel
+     ("Vue d'ensemble" ci-dessus).
 
 ## Allocation de ressources et scaling
 
