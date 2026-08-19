@@ -60,3 +60,63 @@ Notes :
 - `data/` (base + certs generes) est ignore par git, voir `.gitignore`.
 
 Pour tout arreter/reinitialiser : `docker rm -f atelier-kanidm-dev && rm -rf data/* && mkdir -p data`.
+
+## OAuth2 Resource Server + test de `atelier-api-server` contre un vrai flux
+
+`atelier-api-server` valide des JWT signes par un OAuth2 Resource Server
+Kanidm (`ATELIER_JWT_ISSUER`/`ATELIER_JWT_JWKS_URL`/`ATELIER_JWT_AUDIENCE`,
+voir `crates/api-server/src/auth.rs`). Setup, une seule fois :
+
+```sh
+# 1. Client OAuth2 public (PKCE) — le redirect_uri n'a pas besoin de
+#    repondre reellement, seule la redirection HTTP est utilisee.
+kanidm system oauth2 create-public atelier "Atelier" \
+  https://localhost:9443/callback --name idm_admin
+
+# 2. Portee "openid" accordee a tous les comptes (idm_all_persons) : sans
+#    ce mapping, /oauth2/authorise refuse la demande de scope.
+kanidm system oauth2 update-scope-map atelier idm_all_persons openid \
+  --name idm_admin
+
+# 3. Compte de test
+kanidm person create atelier-test-user "Atelier Test User" --name idm_admin
+docker exec atelier-kanidm-dev kanidmd recover-account \
+  -c /data/server.toml atelier-test-user
+# -> affiche un mot de passe genere, a reutiliser ci-dessous
+```
+
+Obtenir un vrai `access_token` (flux `authorization_code` + PKCE, scripte
+via `get-oauth2-token.sh` — voir ce fichier pour le detail de chaque etape,
+notamment pourquoi `kanidm login` seul ne suffit pas) :
+
+```sh
+./get-oauth2-token.sh atelier-test-user '<mot de passe recupere a l'etape 3>'
+```
+
+Lancer `atelier-api-server` contre ce Resource Server reel :
+
+```sh
+export ATELIER_JWT_ISSUER=https://localhost:8443/oauth2/openid/atelier
+export ATELIER_JWT_JWKS_URL=https://localhost:8443/oauth2/openid/atelier/public_key.jwk
+export ATELIER_JWT_AUDIENCE=atelier
+export ATELIER_JWT_CA_PATH="$(pwd)/data/ca.pem"   # CA auto-signee du Kanidm de dev
+cargo run -p atelier-api-server
+```
+
+Puis, avec l'`access_token` recupere plus haut :
+
+```sh
+curl -X POST http://localhost:8080/v1/workshops \
+  -H "Authorization: Bearer <access_token>" -H 'Content-Type: application/json' \
+  -d '{"name":"test","devcontainer":{"repo":"https://example.invalid/repo.git"},"resources":{"cpu":"500m","memory":"512Mi"}}'
+```
+
+`status.ownerSubject`/`spec.ownerSubject` du `Workshop` cree doit porter le
+`sub` du token (l'UUID Kanidm du compte), jamais une valeur du corps de la
+requete.
+
+Deja verifie reellement cette session : `HTTP 201`, `ownerSubject` egal a
+l'UUID Kanidm attendu. Voir `docs/PROGRESS.md` pour le detail du vrai bug
+trouve en testant ceci (`InvalidAudience` — invisible avec les tokens de
+test synthetiques du test d'integration, qui n'incluaient pas de claim
+`aud`, contrairement a un vrai token Kanidm qui en porte toujours une).

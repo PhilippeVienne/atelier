@@ -275,6 +275,7 @@ dependencies = [
  "anyhow",
  "atelier-common",
  "axum",
+ "futures-util",
  "http-body-util",
  "jsonwebtoken",
  "k8s-openapi",
@@ -283,6 +284,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tracing",
 ]

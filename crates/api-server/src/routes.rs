@@ -29,13 +29,14 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}", get(get_workshop).delete(delete_workshop))
         .route("/v1/workshops/{name}/suspend", post(suspend_workshop))
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
+        .route("/v1/workshops/{name}/portforward", get(crate::portforward::portforward))
         .layer(axum::middleware::from_fn_with_state(Arc::new(auth), require_auth))
         .with_state(state);
 
     Router::new().route("/healthz", get(|| async { "ok" })).merge(protected)
 }
 
-fn workshops_api(state: &AppState) -> Api<Workshop> {
+pub(crate) fn workshops_api(state: &AppState) -> Api<Workshop> {
     Api::namespaced(state.client.clone(), &state.namespace)
 }
 
@@ -43,7 +44,7 @@ fn workshops_api(state: &AppState) -> Api<Workshop> {
 /// doit etre le proprietaire enregistre du Workshop. Renvoie 404 (pas 403)
 /// pour un Workshop existant mais appartenant a quelqu'un d'autre : evite
 /// de confirmer a un client non autorise qu'un nom donne existe deja.
-fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
+pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
     if workshop.spec.owner_subject != user.0 {
         return Err(ApiError::not_found());
     }
@@ -187,7 +188,7 @@ fn validate_name(name: &str) -> Result<(), ApiError> {
     }
 }
 
-struct ApiError {
+pub struct ApiError {
     status: StatusCode,
     message: String,
 }
@@ -195,6 +196,10 @@ struct ApiError {
 impl ApiError {
     fn not_found() -> Self {
         Self { status: StatusCode::NOT_FOUND, message: "workshop introuvable".to_string() }
+    }
+
+    pub(crate) fn bad_request(message: &str) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: message.to_string() }
     }
 }
 

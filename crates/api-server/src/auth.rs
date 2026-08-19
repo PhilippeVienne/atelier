@@ -20,26 +20,61 @@ use std::sync::Arc;
 pub struct TrustedIssuer {
     pub issuer: String,
     pub jwks_url: String,
+    /// Valeur exacte attendue dans la claim `aud` (`ATELIER_JWT_AUDIENCE`,
+    /// typiquement le `client_id` de l'OAuth2 Resource Server Atelier cote
+    /// Kanidm). Requise, pas optionnelle : `jsonwebtoken` valide `aud` des
+    /// qu'elle est presente dans le token (`validate_aud: true` par
+    /// defaut) — un vrai token Kanidm en porte toujours une. Sans
+    /// audience configuree ici, `Validation::aud` resterait `None` et
+    /// **tout** token reel serait rejete (`InvalidAudience`), constate en
+    /// pratique en testant contre un vrai flux OAuth2 (voir
+    /// docs/PROGRESS.md) — pas visible avec des tokens de test qui
+    /// omettent simplement la claim `aud`.
+    pub audience: String,
+    /// Chemin vers un certificat CA supplementaire a faire confiance pour
+    /// recuperer le JWKS (`ATELIER_JWT_CA_PATH`) : necessaire pour un
+    /// Kanidm auto-heberge avec une CA privee (dev y compris — certificat
+    /// auto-signe). `reqwest` (backend `rustls-tls` de ce workspace) ne
+    /// consulte ni le magasin de confiance du systeme, ni `SSL_CERT_FILE` ;
+    /// sans ce chemin explicite, seules les CA publiques standard
+    /// (webpki-roots) sont acceptees.
+    pub ca_path: Option<String>,
 }
 
 impl TrustedIssuer {
     /// `ATELIER_JWT_ISSUER` : valeur exacte attendue dans la claim `iss` des
     /// JWT presentes. `ATELIER_JWT_JWKS_URL` : URL du jeu de cles publiques
     /// Kanidm (endpoint JWKS de l'OAuth2 Resource Server configure pour
-    /// Atelier). `Ok(None)` si `ATELIER_JWT_ISSUER` est absent : l'auth est
-    /// alors desactivee (toutes les requetes refusees par le middleware,
-    /// utile seulement pour demarrer le binaire en dev sans Kanidm).
+    /// Atelier). `ATELIER_JWT_AUDIENCE` : `client_id` attendu dans `aud`
+    /// (voir doc du champ `audience`). `Ok(None)` si `ATELIER_JWT_ISSUER`
+    /// est absent : l'auth est alors desactivee (toutes les requetes
+    /// refusees par le middleware, utile seulement pour demarrer le binaire
+    /// en dev sans Kanidm).
     pub fn from_env() -> Result<Option<Self>> {
         let Ok(issuer) = std::env::var("ATELIER_JWT_ISSUER") else {
             return Ok(None);
         };
         let jwks_url = std::env::var("ATELIER_JWT_JWKS_URL")
             .context("ATELIER_JWT_ISSUER est defini mais ATELIER_JWT_JWKS_URL est absent")?;
-        Ok(Some(Self { issuer, jwks_url }))
+        let audience = std::env::var("ATELIER_JWT_AUDIENCE")
+            .context("ATELIER_JWT_ISSUER est defini mais ATELIER_JWT_AUDIENCE est absent")?;
+        let ca_path = std::env::var("ATELIER_JWT_CA_PATH").ok();
+        Ok(Some(Self { issuer, jwks_url, audience, ca_path }))
     }
 
     pub async fn fetch_jwks(&self) -> Result<JwkSet> {
-        reqwest::get(&self.jwks_url)
+        let mut builder = reqwest::Client::builder();
+        if let Some(ca_path) = &self.ca_path {
+            let pem = std::fs::read(ca_path)
+                .with_context(|| format!("lecture de ATELIER_JWT_CA_PATH ({ca_path})"))?;
+            let cert = reqwest::Certificate::from_pem(&pem).context("certificat CA invalide (PEM attendu)")?;
+            builder = builder.add_root_certificate(cert);
+        }
+        let client = builder.build().context("construction du client HTTP pour le JWKS")?;
+
+        client
+            .get(&self.jwks_url)
+            .send()
             .await
             .context("requete de recuperation du JWKS")?
             .error_for_status()
@@ -54,7 +89,7 @@ impl TrustedIssuer {
 /// configure) fait refuser systematiquement toute requete authentifiee :
 /// evite de demarrer silencieusement en mode "tout est autorise".
 pub enum AuthState {
-    Configured { issuer: String, jwks: JwkSet },
+    Configured { issuer: String, audience: String, jwks: JwkSet },
     Disabled,
 }
 
@@ -63,8 +98,8 @@ impl AuthState {
         match TrustedIssuer::from_env()? {
             Some(trusted) => {
                 let jwks = trusted.fetch_jwks().await?;
-                tracing::info!(issuer = %trusted.issuer, keys = jwks.keys.len(), "JWKS Kanidm charge");
-                Ok(AuthState::Configured { issuer: trusted.issuer, jwks })
+                tracing::info!(issuer = %trusted.issuer, audience = %trusted.audience, keys = jwks.keys.len(), "JWKS Kanidm charge");
+                Ok(AuthState::Configured { issuer: trusted.issuer, audience: trusted.audience, jwks })
             }
             None => {
                 tracing::warn!(
@@ -91,7 +126,7 @@ struct Claims {
 }
 
 pub async fn require_auth(State(auth): State<Arc<AuthState>>, mut req: Request, next: Next) -> Response {
-    let AuthState::Configured { issuer, jwks } = auth.as_ref() else {
+    let AuthState::Configured { issuer, audience, jwks } = auth.as_ref() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "authentification non configuree").into_response();
     };
 
@@ -104,19 +139,19 @@ pub async fn require_auth(State(auth): State<Arc<AuthState>>, mut req: Request, 
         return (StatusCode::UNAUTHORIZED, "en-tete Authorization: Bearer <jwt> requis").into_response();
     };
 
-    match validate_token(token, issuer, jwks) {
+    match validate_token(token, issuer, audience, jwks) {
         Ok(sub) => {
             req.extensions_mut().insert(AuthenticatedUser(sub));
             next.run(req).await
         }
         Err(err) => {
-            tracing::warn!(%err, "JWT refuse");
+            tracing::warn!(?err, "JWT refuse");
             (StatusCode::UNAUTHORIZED, "JWT invalide").into_response()
         }
     }
 }
 
-fn validate_token(token: &str, issuer: &str, jwks: &JwkSet) -> Result<String> {
+fn validate_token(token: &str, issuer: &str, audience: &str, jwks: &JwkSet) -> Result<String> {
     let header = decode_header(token).context("en-tete JWT invalide")?;
     let kid = header.kid.context("JWT sans champ kid, impossible de choisir la cle")?;
     let jwk = jwks.find(&kid).context("kid absent du JWKS Kanidm charge au demarrage")?;
@@ -126,6 +161,12 @@ fn validate_token(token: &str, issuer: &str, jwks: &JwkSet) -> Result<String> {
 
     let mut validation = Validation::new(algorithm);
     validation.set_issuer(&[issuer]);
+    // `jsonwebtoken` valide `aud` des qu'elle est presente dans le token
+    // (`validate_aud: true` par defaut) — sans ceci, tout token reel
+    // (qui porte toujours un `aud`, contrairement aux tokens de test) se
+    // ferait rejeter en `InvalidAudience`. Voir doc de
+    // `TrustedIssuer::audience`.
+    validation.set_audience(&[audience]);
 
     let data = decode::<Claims>(token, &decoding_key, &validation)
         .context("signature ou claims JWT invalides")?;

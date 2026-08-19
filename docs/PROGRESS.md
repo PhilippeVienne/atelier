@@ -28,9 +28,9 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
-| `api-server` | Fonctionnel | JWT valide reellement (RS256, cle generee via `openssl`, JWKS charge au demarrage — pas encore teste contre un vrai flux OAuth2 Kanidm, aucun n'est configure dans l'instance de dev) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) |
+| `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) |
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation le mois dernier (`crates/net-proxy/Dockerfile`), deploye a la fois comme sidecar du Job `image-builder` et desormais comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (3/3 conteneurs `Running`, alias `identity-proxy` actif, chainage obligatoire confirme) |
-| `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
+| `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Non demarre | — |
@@ -87,6 +87,31 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
     contre kind, vrai routeur axum (appele via `tower::ServiceExt::oneshot`,
     pas de mock) — create/get/list/suspend/resume/delete et isolation entre
     deux sujets JWT distincts, tous verifies contre le cluster reel.
+11. **`api-server` contre un vrai flux OAuth2 Kanidm, puis coordinateur de
+    port-forward** : un Resource Server OAuth2 public a ete cree dans le
+    Kanidm de dev (`deploy/dev/kanidm/README.md`, section dediee) et un
+    script reutilisable (`deploy/dev/kanidm/get-oauth2-token.sh`) automatise
+    le flux complet (PKCE S256, `/oauth2/authorise` + `/permit` +
+    `/oauth2/token`) pour obtenir un vrai `access_token`. Faire tourner
+    `api-server` contre ce flux reel (au lieu des JWT synthetiques des
+    tests) a revele deux bugs invisibles jusque-la : `Validation::new()` de
+    `jsonwebtoken` active `validate_aud` par defaut, et aucune audience
+    n'etait configuree — tous les vrais tokens etaient donc rejetes
+    (`InvalidAudience`) alors que les JWT synthetiques (sans `aud`)
+    passaient ; et `reqwest`/rustls ne fait pas confiance a la CA
+    auto-signee du Kanidm de dev, ni au trust store systeme. Corriges via
+    deux nouvelles variables d'environnement, `ATELIER_JWT_AUDIENCE`
+    (obligatoire des qu'un issuer est configure) et `ATELIER_JWT_CA_PATH`
+    (optionnelle). Cote port-forward : nouvel endpoint
+    `GET /v1/workshops/{name}/portforward`
+    (`crates/api-server/src/portforward.rs`) qui authentifie le client,
+    verifie qu'il est proprietaire du Workshop, puis relaie sa connexion
+    websocket vers l'endpoint `/portforward` de `net-proxy` (deja ecrit,
+    voir composant "port-forward" ci-dessus) — sur le modele
+    `kubectl port-forward` (`net-proxy` = kubelet, `api-server` =
+    coordinateur). Teste de bout en bout (`crates/api-server/tests/routes.rs`) :
+    vrai binaire `net-proxy`, vrai serveur TCP cible, vrai `Workshop`+`Pod`
+    sur kind, vrai client websocket a travers `api-server`.
 
 ## Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
 
@@ -672,6 +697,27 @@ precedente) — cette partie de la session l'a implemente et valide.
   cette session) et le symptome (`lancement de ip: No such file or
   directory`, ou pire un `CrashLoopBackOff` sans message clair au premier
   coup d'oeil) ne pointe pas immediatement vers la cause.
+- `jsonwebtoken::Validation::new()` active `validate_aud: true` par defaut :
+  sans `set_audience(...)` explicite, n'importe quel token portant un `aud`
+  (le cas de tout token OAuth2 reel emis par Kanidm) est rejete en
+  `InvalidAudience` — invisible avec des JWT de test synthetiques qui
+  n'incluent jamais `aud`. A ne decouvrir qu'en testant contre un vrai flux
+  OAuth2, jamais avec des tokens fabriques a la main pour les tests.
+- `reqwest` compile avec la feature `rustls-tls` ignore le trust store
+  systeme et `SSL_CERT_FILE` : contre un service TLS a CA auto-signee (ex:
+  Kanidm de dev), il faut construire un `Client` avec
+  `.add_root_certificate(reqwest::Certificate::from_pem(...))` explicitement
+  — un simple `reqwest::get()` echoue toujours, meme si `curl`/le systeme
+  font confiance a cette CA.
+- Donner a un `Pod` de test un vrai conteneur planifiable (ex:
+  `registry.k8s.io/pause:3.9`) fait qu'un vrai kubelet le prend en charge et
+  **ecrase** tout `status.podIP` patche manuellement par son adresse CNI
+  reelle des que le conteneur demarre — y compris apres un premier
+  `patch_status` reussi (course avec la reconciliation continue du
+  kubelet). Pour un test qui a seulement besoin de controler `status.podIP`
+  sans faire tourner de vrai conteneur, fixer `spec.nodeName` sur un nom de
+  noeud inexistant : le Pod reste `Pending` a jamais (aucun kubelet ne le
+  reclame), et le patch de statut manuel n'est plus jamais ecrase.
 
 ## Prochaines etapes (par priorite)
 
@@ -705,16 +751,12 @@ precedente) — cette partie de la session l'a implemente et valide.
    `net-proxy`) dans l'image produite par `image-builder`, probablement via
    `/etc/environment` ecrit pendant le build (mecanisme exact a trouver cote
    `envbuilder` — non recherche cette session).
-4. `api-server` : CRUD/suspend/resume et validation JWT sont ecrits et
-   testes reellement (voir tableau et resume chronologique ci-dessus) ; reste
-   a faire : configurer un vrai OAuth2 Resource Server cote Kanidm (aucun
-   n'existe encore dans l'instance de dev, seulement des service accounts —
-   voir `deploy/dev/kanidm/README.md`) pour valider `ATELIER_JWT_ISSUER`/
-   `ATELIER_JWT_JWKS_URL` contre un vrai flux, et le role de coordinateur de
-   port-forward (terminer la connexion du client final, verifier qu'il est
-   bien proprietaire du `Workshop`, puis relayer vers le websocket
-   `/portforward` de `net-proxy` — cote net-proxy est deja ecrit, voir
-   composant "port-forward" ci-dessus).
+4. ~~`api-server` : valider contre un vrai flux OAuth2 Kanidm, et role de
+   coordinateur de port-forward~~ — **fait cette session**, voir point 11
+   du resume chronologique ci-dessus. Resource Server OAuth2 reel configure
+   dans Kanidm de dev, deux bugs reels trouves et corriges
+   (`ATELIER_JWT_AUDIENCE`, `ATELIER_JWT_CA_PATH`), endpoint
+   `/v1/workshops/{name}/portforward` ecrit et teste de bout en bout.
 5. `mcp-gateway` et le premier simulateur (candidat : LocalStack pour AWS).
 6. Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
    `privileged: true`.
