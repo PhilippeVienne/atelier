@@ -1,5 +1,10 @@
 //! Injecte des identites/tokens (ex: credentials cloud, tokens d'API) dans
-//! les appels sortants de l'agent, sans jamais exposer le secret brut a la VM.
+//! les appels sortants de l'agent, sans jamais exposer le secret brut a la
+//! VM : un proxy HTTP explicite (comme `net-proxy`), configure comme
+//! `HTTP_PROXY`/`HTTPS_PROXY` cote microVM pour les hotes qui ont besoin
+//! d'une identite injectee, qui relaie ensuite vers `net-proxy`
+//! (`ATELIER_NET_PROXY_ADDR`) — identity-proxy ne fait jamais lui-meme
+//! l'arbitrage allowlist, seulement l'injection.
 //!
 //! Les secrets destines aux environnements (pas ceux du cluster Kubernetes
 //! sous-jacent, qui restent geres par les mecanismes k8s standards) sont
@@ -16,104 +21,82 @@
 //! services externes) : identity-proxy est le seul composant a y avoir
 //! acces, l'agent dans la microVM ne le voit jamais en clair.
 
-use anyhow::Context;
+mod http;
+mod proxy;
+mod rules;
+mod secrets;
 
-const DEFAULT_SA_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use tokio::net::TcpListener;
+use tokio::sync::RwLock;
+
+use secrets::OpenBaoClient;
+
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3129";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = atelier_common::telemetry::init("atelier-identity-proxy");
-    tracing::info!("atelier-identity-proxy starting");
 
-    let Ok(openbao_addr) = std::env::var("OPENBAO_ADDR") else {
-        tracing::warn!("OPENBAO_ADDR absent, identity-proxy demarre sans acces aux secrets");
-        return Ok(());
-    };
-    let workshop_name =
-        std::env::var("ATELIER_WORKSHOP_NAME").context("ATELIER_WORKSHOP_NAME manquant")?;
-    let sa_token_path = std::env::var("ATELIER_K8S_SA_TOKEN_PATH")
-        .unwrap_or_else(|_| DEFAULT_SA_TOKEN_PATH.to_string());
+    let listen_addr = std::env::var("ATELIER_IDENTITY_PROXY_LISTEN_ADDR")
+        .unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
+    let next_hop: Option<Arc<str>> = std::env::var("ATELIER_NET_PROXY_ADDR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(Into::into);
 
-    let client_token = openbao_login(&openbao_addr, &workshop_name, &sa_token_path).await?;
-    let keys = list_workshop_secret_keys(&openbao_addr, &client_token, &workshop_name).await?;
-    tracing::info!(count = keys.len(), ?keys, "secrets disponibles pour ce workshop");
+    let rules = Arc::new(rules::from_env()?);
+    let secret_cache: secrets::SecretCache = Arc::new(RwLock::new(HashMap::new()));
 
-    // TODO: serveur proxy HTTP(S) qui intercepte les appels sortants de
-    // l'agent et y injecte les credentials a la volee (via net-proxy ?)
-    // TODO: rafraichir client_token avant expiration (ttl=15m cote OpenBao)
-    Ok(())
-}
-
-/// Authentification aupres d'OpenBao via la methode Kubernetes : envoie le
-/// token du ServiceAccount projete dans ce pod, recoit un client token
-/// OpenBao scope par le role `workshop-<name>` (policies provisionnees par
-/// le controller).
-async fn openbao_login(
-    openbao_addr: &str,
-    workshop_name: &str,
-    sa_token_path: &str,
-) -> anyhow::Result<String> {
-    let jwt = tokio::fs::read_to_string(sa_token_path)
-        .await
-        .with_context(|| format!("lecture du token ServiceAccount ({sa_token_path})"))?;
-
-    let http = reqwest::Client::new();
-    let response: serde_json::Value = http
-        .post(format!("{openbao_addr}/v1/auth/kubernetes/login"))
-        .json(&serde_json::json!({
-            "jwt": jwt.trim(),
-            "role": format!("workshop-{workshop_name}"),
-        }))
-        .send()
-        .await
-        .context("requete de login OpenBao")?
-        .error_for_status()
-        .context("login OpenBao refuse")?
-        .json()
-        .await
-        .context("reponse de login OpenBao invalide")?;
-
-    response["auth"]["client_token"]
-        .as_str()
-        .map(str::to_string)
-        .context("client_token absent de la reponse de login OpenBao")
-}
-
-/// Liste les cles de secrets disponibles pour ce Workshop (sans jamais
-/// journaliser les valeurs).
-async fn list_workshop_secret_keys(
-    openbao_addr: &str,
-    client_token: &str,
-    workshop_name: &str,
-) -> anyhow::Result<Vec<String>> {
-    let http = reqwest::Client::new();
-    let response = http
-        .get(format!(
-            "{openbao_addr}/v1/secret/metadata/workshops/{workshop_name}?list=true"
-        ))
-        .header("X-Vault-Token", client_token)
-        .send()
-        .await
-        .context("requete de listing des secrets OpenBao")?;
-
-    // Aucun secret encore cree pour ce Workshop : ce n'est pas une erreur.
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(Vec::new());
+    if rules.is_empty() {
+        tracing::warn!(
+            "ATELIER_IDENTITY_INJECTION_RULES absente ou vide : identity-proxy relaie sans jamais injecter"
+        );
+    } else {
+        tracing::info!(count = rules.len(), "regles d'injection chargees");
+    }
+    match &next_hop {
+        Some(addr) => tracing::info!(net_proxy = %addr, "atelier-identity-proxy demarre"),
+        None => tracing::warn!(
+            "ATELIER_NET_PROXY_ADDR absente : connexions directes a la destination (dev/test uniquement)"
+        ),
     }
 
-    let body: serde_json::Value = response
-        .error_for_status()
-        .context("listing des secrets OpenBao refuse")?
-        .json()
-        .await
-        .context("reponse de listing OpenBao invalide")?;
+    if let Ok(openbao_addr) = std::env::var("OPENBAO_ADDR") {
+        use anyhow::Context;
+        let workshop_name =
+            std::env::var("ATELIER_WORKSHOP_NAME").context("ATELIER_WORKSHOP_NAME manquant")?;
+        let client = OpenBaoClient::from_env(openbao_addr, workshop_name);
+        let rules_for_refresh = (*rules).clone();
+        let cache_for_refresh = Arc::clone(&secret_cache);
+        tokio::spawn(secrets::refresh_loop(
+            client,
+            rules_for_refresh,
+            cache_for_refresh,
+        ));
+    } else {
+        tracing::warn!("OPENBAO_ADDR absent, identity-proxy demarre sans acces aux secrets");
+    }
 
-    Ok(body["data"]["keys"]
-        .as_array()
-        .map(|keys| {
-            keys.iter()
-                .filter_map(|k| k.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default())
+    let config = proxy::ProxyConfig {
+        rules,
+        secrets: secret_cache,
+        next_hop,
+    };
+
+    let listener = TcpListener::bind(&listen_addr).await?;
+    tracing::info!(%listen_addr, "proxy d'identite en ecoute");
+
+    loop {
+        let (socket, peer): (_, SocketAddr) = listener.accept().await?;
+        let config = config.clone();
+        tokio::spawn(async move {
+            if let Err(err) = proxy::handle_connection(socket, peer, config).await {
+                tracing::warn!(%peer, %err, "connexion terminee en erreur");
+            }
+        });
+    }
 }

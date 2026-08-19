@@ -32,7 +32,7 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
-| `identity-proxy` | Non demarre | Container pas encore ajoute au pod parent ; logique de proxy/injection pas ecrite |
+| `identity-proxy` | Fonctionnel (composant seul) | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`ATELIER_IDENTITY_INJECTION_RULES`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Teste reellement : bout-en-bout sur de vraies sockets TCP (injection verifiee sur ce que recoit la "destination"). Container pas encore ajoute au pod parent, regles pas encore alimentees depuis `Workshop.spec` par le controller |
 | `mcp-gateway` | Non demarre | — |
 | `dashboard` | Squelette Next.js | Pas encore branche sur `api-server` |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
@@ -208,22 +208,42 @@ conversation) :
 - Compiler un binaire avec une image `rust:*-bookworm` puis le faire tourner
   dans `debian:bookworm-slim` casse sur un mismatch de version glibc ; il
   faut un build multi-stage avec la meme base pour build et run.
+- `ip tuntap add <nom> mode tap` echoue avec un message trompeur
+  (`argument "<nom>" is wrong: "mode"/"dev"/"name" not a valid ifname`,
+  quel que soit l'ordre des arguments) des que `<nom>` depasse 15
+  caracteres (IFNAMSIZ Linux = 16 octets, terminateur nul inclus) — le
+  message ne mentionne jamais la longueur, seulement un mot-cle de la
+  commande elle-meme, ce qui egare completement le diagnostic.
+- Pour tester du code necessitant `CAP_NET_ADMIN` (creation de TAP,
+  configuration d'IP) sans root ni sudo interactif :
+  `unshare --net --map-root-user -- <commande>` donne un espace de noms
+  reseau isole avec toutes les capacites necessaires, sans mot de passe.
+  Insuffisant en revanche pour un test qui a aussi besoin d'une vraie route
+  de sortie vers Internet (le namespace isole n'a que `lo`) — cf. section
+  "Builder microVM".
 
 ## Prochaines etapes (par priorite)
 
-1. Trancher l'isolation du Job `image-builder` (voir section dediee
-   ci-dessus) avant d'activer la capacite de mount dont il a besoin pour
-   fonctionner en cluster — le reseau kind ↔ registre lui-meme est deja
-   resolu et verifie (Service/EndpointSlice statique). Une fois tranche,
-   le pipeline `image-builder` → cache → `vm-supervisor` peut tourner
-   automatiquement de bout en bout, sans peuplage manuel du PVC.
+1. Finir de valider la microVM "builder" (section dediee ci-dessus) —
+   boot complet + `envbuilder` + push registre via `net-proxy`, sur une
+   machine avec un vrai `CAP_NET_ADMIN` — puis la brancher dans
+   `image-builder`/`reconcile.rs` a la place de l'invocation directe
+   d'`envbuilder`. Le reseau kind ↔ registre lui-meme est deja resolu et
+   verifie (Service/EndpointSlice statique). Une fois branche, le pipeline
+   `image-builder` → cache → `vm-supervisor` peut tourner automatiquement
+   de bout en bout, sans peuplage manuel du PVC.
 2. Canal de controle vsock entre `controller`/`vm-supervisor` pour que
    `suspend` declenche un vrai `snapshot/create` avant liberation du pod
    (aujourd'hui le pod est simplement supprime, sans snapshot).
-3. Ecrire `identity-proxy` (logique de proxy/injection de credentials) ;
-   ajouter `net-proxy` et `identity-proxy` comme conteneurs du pod parent,
-   et cabler l'allowlist de `net-proxy` (`ATELIER_EGRESS_ALLOWLIST`) depuis
-   `Workshop.spec.egress_allowlist` cote controller.
+3. `identity-proxy` (logique de proxy/injection de credentials) est
+   maintenant ecrit et teste en composant seul (voir tableau ci-dessus) ;
+   reste a faire : ajouter `net-proxy` et `identity-proxy` comme conteneurs
+   du pod parent, cabler l'allowlist de `net-proxy`
+   (`ATELIER_EGRESS_ALLOWLIST`) et les regles d'injection d'`identity-proxy`
+   (`ATELIER_IDENTITY_INJECTION_RULES`) depuis `Workshop.spec` cote
+   controller, et trancher le TODO ouvert dans `docs/ARCHITECTURE.md`
+   (l'agent parle-t-il a `identity-proxy` en direct, port TAP dedie, ou
+   l'injection passe-t-elle par `net-proxy` lui-meme).
    - Donner un TAP reseau a la VM de l'agent (aujourd'hui absent —
      `vm-supervisor` boote sans interface reseau) en reutilisant
      `crates/firecracker::network::setup_link_local_tap` (lien

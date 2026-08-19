@@ -6,7 +6,9 @@ un pod Kubernetes, avec un tooling dedie (proxy reseau, injection d'identite,
 passerelle MCP) qui mediatise tous ses acces au monde exterieur.
 
 Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le detail des
-composants et du modele de securite.
+composants et du modele de securite, et [docs/PROGRESS.md](docs/PROGRESS.md)
+pour l'etat d'avancement courant (composant par composant, contre de la
+vraie infrastructure, pas de mocks).
 
 ## Structure du depot
 
@@ -15,8 +17,10 @@ composants et du modele de securite.
 - `crates/api-server` — API externe (auth JWT, CRUD de `Workshop`)
 - `crates/image-builder` — devcontainer.json → rootfs Firecracker (cache content-addressed)
 - `crates/vm-supervisor` — cycle de vie de la microVM Firecracker (pod parent)
-- `crates/net-proxy` — proxy de sortie reseau avec allowlist (pod parent)
-- `crates/identity-proxy` — injection de credentials (pod parent)
+- `crates/firecracker` — lib partagee jailer/boot/snapshot-restore + reseau TAP link-local, utilisee par `vm-supervisor` et `builder-vm-init`
+- `crates/builder-vm-init` — init de la microVM jetable qui isole `envbuilder` (pipeline `image-builder`)
+- `crates/net-proxy` — proxy de sortie reseau avec allowlist (egress HTTP/CONNECT, resolveur DNS, port-forward kubelet-style) (pod parent)
+- `crates/identity-proxy` — injection de credentials OpenBao dans les appels sortants de l'agent (pod parent)
 - `crates/mcp-gateway` — serveur MCP expose a l'agent (pod parent)
 - `crds/` — manifestes CRD generes (`cargo run -p atelier-controller --bin crdgen`)
 - `dashboard/` — dashboard Next.js (admin + utilisateur final)
