@@ -10,12 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 atelier-common = { path = "../common" }
+atelier-firecracker = { path = "../firecracker" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-fctools = { version = "0.7.0-alpha.2", features = ["vm", "jailed-vmm-executor", "unrestricted-vmm-executor", "tokio-runtime", "nix-syscall-backend", "direct-process-spawner"] }
-
-[dev-dependencies]
-nix = { version = "0.31.3", features = ["user"] }

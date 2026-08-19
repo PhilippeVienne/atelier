@@ -21,7 +21,7 @@
 //! lui-meme (boot jaile, snapshot, restore) est reel et teste, voir
 //! `crates/vm-supervisor/tests/vm.rs`.
 
-use atelier_vm_supervisor::vm::{Vm, VmConfig};
+use atelier_firecracker::vm::{Vm, VmConfig};
 use std::path::PathBuf;
 
 #[tokio::main]

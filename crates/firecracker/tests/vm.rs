@@ -9,7 +9,7 @@
 //!
 //! Sans ces variables, le test est silencieusement ignore.
 
-use atelier_vm_supervisor::vm::{Vm, VmConfig};
+use atelier_firecracker::vm::{Vm, VmConfig};
 use std::path::PathBuf;
 
 struct TestFixtures {
