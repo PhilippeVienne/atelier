@@ -25,10 +25,10 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
 | `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
-| `crates/builder-vm-init` (guest init de la microVM "builder") | Ecrit, pas encore teste en boot reel | Compile, image Docker construite, convertie en `rootfs.ext4` bootable via le pipeline crane+mke2fs deja valide — boot+reseau+envbuilder+push pas encore verifies faute d'acces root reel en session (voir "Builder microVM" ci-dessous) |
+| `crates/builder-vm-init` (guest init de la microVM "builder") | Ecrit, boot complet toujours bloque | Compile, image Docker construite, convertie en `rootfs.ext4` bootable ; boot isole (rootfs seul, rootfs+reseau sans init custom) valide reellement, mais le boot complet (avec `envbuilder`) reste bloque avant meme d'atteindre `net-proxy` — cause pas encore identifiee, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
-| `api-server` | Squelette | Auth JWT/Kanidm et endpoints CRUD/suspend/resume pas encore ecrits |
+| `api-server` | Fonctionnel | JWT valide reellement (RS256, cle generee via `openssl`, JWKS charge au demarrage — pas encore teste contre un vrai flux OAuth2 Kanidm, aucun n'est configure dans l'instance de dev) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) |
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
@@ -75,6 +75,18 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
    controller de Kubernetes/containerd, pas d'un probleme de capabilities —
    resolu par `privileged: true` en attendant un device plugin KVM dedie.
 9. **Depot GitHub prive** publie.
+10. **`api-server`** : validation JWT reelle (RS256, JWKS charge au
+    demarrage depuis `ATELIER_JWT_JWKS_URL`, algorithme derive du JWK quand
+    `alg` est absent) et endpoints CRUD + suspend/resume sur `Workshop` via
+    `kube::Api`, avec `owner_subject` toujours derive du sujet JWT
+    authentifie (jamais du corps de la requete, pour eviter qu'un client
+    usurpe un proprietaire) et un `404` (pas `403`) pour un Workshop
+    appartenant a quelqu'un d'autre (evite de confirmer son existence).
+    Teste reellement (`crates/api-server/tests/routes.rs`) : vraie crypto
+    (cle RSA `openssl`, JWKS derive de cette cle), vrai `kube::Client`
+    contre kind, vrai routeur axum (appele via `tower::ServiceExt::oneshot`,
+    pas de mock) — create/get/list/suspend/resume/delete et isolation entre
+    deux sujets JWT distincts, tous verifies contre le cluster reel.
 
 ## Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
 
@@ -162,22 +174,61 @@ conversation) :
   `HTTP_PROXY`/`HTTPS_PROXY` pour `envbuilder`. Plus simple (zero
   `iptables`/`ip_forward` cote hote) et plus coherent avec le modele de
   securite existant.
-- **Ce qui n'est pas encore valide** : le boot complet (TAP + guest +
-  `envbuilder` + push registre via `net-proxy`) necessite `CAP_NET_ADMIN`
-  dans le **vrai** espace de noms reseau de la machine — un `unshare --net`
-  isole n'a pas de route de sortie, donc `net-proxy` ne pourrait pas
-  atteindre Internet depuis le meme namespace que le TAP. Cette session n'a
-  qu'un acces sudo scope au seul binaire `jailer` (pas de sudo generaliste
-  non-interactif), donc cette derniere etape (test complet ecrit et pret,
-  `crates/firecracker/tests/builder_vm.rs`) reste a executer sur une machine
-  avec un acces root reel — marche a suivre dans
-  `deploy/dev/builder-vm/README.md`.
-- **Phase suivante (hors perimetre de cette session)** : une fois le boot
-  complet valide, brancher ce composant dans `image-builder`/`reconcile.rs`
-  a la place de l'invocation directe d'`envbuilder`, et passer le Job
-  `image-builder` en `privileged: true` + `/dev/kvm` (exerce par notre
-  jailer, jamais par le contenu du depot cible) pour clore l'item 1 de la
-  roadmap.
+- **`CAP_NET_ADMIN` finalement obtenu, deux voies** : la premiere tentative
+  (`setcap cap_net_admin+eip` sur une copie de `ip`, meme pattern que
+  `jailer`) a echoue silencieusement — le process de l'agent tournait dans
+  un contexte qui ignore les capabilities de fichier sur le **vrai** netns
+  de la machine (confirme par un `RTNETLINK answers: Operation not
+  permitted` meme sur une simple modification de MTU de `lo`, capability
+  posee ou pas). Contournement qui fonctionne : `docker run --privileged
+  --device=/dev/net/tun --device=/dev/kvm` — un conteneur Docker recoit un
+  **vrai** netns isole avec `CAP_NET_ADMIN` effectif *et* une sortie
+  Internet reelle (NAT Docker par defaut), ce qui manquait a `unshare --net`
+  seul. C'est aussi l'environnement le plus proche de la cible reelle (pod
+  `privileged: true`).
+- **Piege glibc en cross-environnement** : premiere execution dans ce
+  conteneur `rust:1-bookworm` avec le depot hote monte en volume ratee en
+  silence — `cargo build` a reutilise un `atelier-net-proxy` deja compile
+  **sur l'hote** (Ubuntu 26.04, glibc 2.43) trouve dans `target/debug/`
+  partage via le montage, incompatible avec la glibc du conteneur (Debian
+  bookworm, 2.36) : `GLIBC_2.38' not found`. `cargo` ne detecte pas ce genre
+  d'incompatibilite (le fingerprint ne suit pas la version glibc de
+  l'environnement) — un `CARGO_TARGET_DIR` dedie au conteneur est
+  necessaire des qu'un repertoire `target/` hote est monte dedans.
+- **Bug reel trouve et corrige en testant : les pipes stdout/stderr de
+  Firecracker devaient etre draines** — sans lecteur cote hote, un pipe
+  Unix a un buffer fini (~64 Kio) ; une fois plein, l'ecriture du guest sur
+  sa console serie (`console=ttyS0`) bloque indefiniment, gelant tout le
+  guest bien avant qu'il atteigne le reseau. `Vm::boot`/`Vm::restore`
+  appellent desormais `take_pipes()` et draine en continu stdout/stderr
+  vers `tracing::debug!` (`crates/firecracker/src/vm.rs`). Corrige un vrai
+  bug latent (n'importe quelle VM produisant plus de 64 Kio de sortie
+  console l'aurait touche), **mais n'a pas resolu le blocage du boot complet
+  de la builder VM** — meme symptome observe apres le correctif (process de
+  test a 99.9% CPU en continu, jamais de sortie de `Vm::boot_with_network`,
+  aucune requete n'atteint jamais `net-proxy`).
+- **Diagnostic pousse, cause du blocage principal toujours pas identifiee** :
+  isole methodiquement par elimination — boot avec reseau + petit rootfs de
+  test (`vm-supervisor`) : OK, rapide. Boot du rootfs "builder" (726 Mo)
+  seul, sans reseau : OK. Boot du rootfs "builder" avec reseau mais sans
+  `init=` custom (donc sans jamais executer `envbuilder`) : OK. Seule la
+  combinaison complete (rootfs builder + reseau + `atelier-builder-vm-init`
+  qui execute reellement `envbuilder`) bloque, avant meme d'emettre une
+  seule requete vers `net-proxy` — donc probablement encore avant ou pendant
+  la configuration reseau du guest (`configure_network`) ou tres tot dans
+  l'invocation d'`envbuilder`, pas dans le clone/build lui-meme. Sans canal
+  de controle (vsock) ni console capturee de maniere exploitable en dehors
+  du `tracing::debug!` (invisible sans subscriber configure dans le test),
+  la suite du diagnostic demande de capturer la console autrement (fichier
+  plutot que `tracing`, ou logger explicitement chaque etape de
+  `atelier-builder-vm-init` avant de shell out vers `ip`/`envbuilder`).
+- **Phase suivante (hors perimetre de cette session)** : finir ce diagnostic
+  (marche a suivre avec conteneur `--privileged` dans
+  `deploy/dev/builder-vm/README.md`, a mettre a jour avec cette procedure),
+  puis brancher ce composant dans `image-builder`/`reconcile.rs` a la place
+  de l'invocation directe d'`envbuilder`, et passer le Job `image-builder`
+  en `privileged: true` + `/dev/kvm` (exerce par notre jailer, jamais par le
+  contenu du depot cible) pour clore l'item 1 de la roadmap.
 
 ## Lecons retenues (a ne pas re-decouvrir)
 
@@ -221,6 +272,28 @@ conversation) :
   Insuffisant en revanche pour un test qui a aussi besoin d'une vraie route
   de sortie vers Internet (le namespace isole n'a que `lo`) — cf. section
   "Builder microVM".
+- `setcap cap_net_admin+eip` sur un binaire ne suffit pas toujours : dans un
+  environnement d'agent sandboxe, meme une copie dediee du binaire avec la
+  capability posee peut echouer en `Operation not permitted` sur le **vrai**
+  netns (confirme via `getcap` correct + `strace` montrant un simple appel
+  RTNETLINK refuse) — la sandbox elle-meme filtre l'operation independamment
+  des capabilities Linux. `docker run --privileged` (nouveau netns isole
+  avec `CAP_NET_ADMIN` effectif + sortie Internet via le NAT Docker par
+  defaut) contourne ce blocage, la ou `unshare --net` seul n'a pas de route
+  de sortie.
+- axum 0.8 a change la syntaxe des parametres de route : `:nom` (ancienne
+  syntaxe) panique au demarrage avec un message qui suggere `{nom}` — pas
+  une erreur de compilation, une panique runtime au premier `Router::route`
+  concerne.
+- `jsonwebtoken` 11 exige d'activer explicitement une feature de fournisseur
+  crypto (`rust_crypto` ou `aws_lc_rs`) ; sans ca, toute operation JWK
+  panique au runtime avec un message qui explique le probleme (pas d'erreur
+  de compilation) — `rust_crypto` evite une dependance a un compilateur C.
+- `jsonwebtoken::jwk::Jwk::from_encoding_key(&EncodingKey, Algorithm)`
+  derive directement les parametres publics (n/e pour RSA, x/y pour EC)
+  depuis une cle privee : pratique pour construire un JWKS de test reel
+  (vraie paire de cles, vraie signature) sans dupliquer la logique
+  d'encodage/decodage a la main.
 
 ## Prochaines etapes (par priorite)
 
@@ -250,12 +323,16 @@ conversation) :
      point-a-point vers `net-proxy`, pas de NAT/acces direct a Internet —
      voir section "Builder microVM" ci-dessus pour le detail de ce choix,
      applicable tel quel a la VM de l'agent).
-4. `api-server` : validation JWT Kanidm reelle + endpoints CRUD et
-   suspend/resume, plus le role de coordinateur de port-forward (terminer
-   la connexion du client final, verifier qu'il est bien proprietaire du
-   `Workshop`, puis relayer vers le websocket `/portforward` de `net-proxy`
-   — cote net-proxy est deja ecrit, voir composant "port-forward"
-   ci-dessus).
+4. `api-server` : CRUD/suspend/resume et validation JWT sont ecrits et
+   testes reellement (voir tableau et resume chronologique ci-dessus) ; reste
+   a faire : configurer un vrai OAuth2 Resource Server cote Kanidm (aucun
+   n'existe encore dans l'instance de dev, seulement des service accounts —
+   voir `deploy/dev/kanidm/README.md`) pour valider `ATELIER_JWT_ISSUER`/
+   `ATELIER_JWT_JWKS_URL` contre un vrai flux, et le role de coordinateur de
+   port-forward (terminer la connexion du client final, verifier qu'il est
+   bien proprietaire du `Workshop`, puis relayer vers le websocket
+   `/portforward` de `net-proxy` — cote net-proxy est deja ecrit, voir
+   composant "port-forward" ci-dessus).
 5. `mcp-gateway` et le premier simulateur (candidat : LocalStack pour AWS).
 6. Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
    `privileged: true`.

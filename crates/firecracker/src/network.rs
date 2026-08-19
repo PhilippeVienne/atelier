@@ -64,9 +64,10 @@ pub async fn setup_link_local_tap(tap_name: &str, subnet_index: u16) -> Result<N
     let host_ip = subnet.get_host_ip(0).context("IP hote du sous-reseau")?;
     let guest_ip = subnet.get_host_ip(1).context("IP guest du sous-reseau")?;
 
-    run("ip", &["tuntap", "add", tap_name, "mode", "tap"]).await?;
+    let ip_bin = ip_bin();
+    run(&ip_bin, &["tuntap", "add", tap_name, "mode", "tap"]).await?;
     run(
-        "ip",
+        &ip_bin,
         &[
             "addr",
             "add",
@@ -76,7 +77,7 @@ pub async fn setup_link_local_tap(tap_name: &str, subnet_index: u16) -> Result<N
         ],
     )
     .await?;
-    run("ip", &["link", "set", tap_name, "up"]).await?;
+    run(&ip_bin, &["link", "set", tap_name, "up"]).await?;
 
     // Adresse MAC deterministe a partir de l'index de sous-reseau (prefixe
     // localement administre `06:00`) : evite toute collision entre VMs
@@ -103,8 +104,17 @@ impl NetworkSetup {
     /// deja disparu (ex: pod en cours de terminaison) — a appeler une fois
     /// la VM eteinte, en compagnon de [`crate::vm::Vm::shutdown`].
     pub async fn teardown(&self) {
-        let _ = run("ip", &["tuntap", "del", &self.tap_name, "mode", "tap"]).await;
+        let _ = run(&ip_bin(), &["tuntap", "del", &self.tap_name, "mode", "tap"]).await;
     }
+}
+
+/// Chemin du binaire `ip` a utiliser. Sur un poste de dev sans root, une
+/// copie dediee de `ip` avec `CAP_NET_ADMIN` positionnee via `setcap`
+/// (meme pattern que `jailer`, voir docs/PROGRESS.md) evite d'avoir besoin
+/// de `sudo` : `ATELIER_IP_BIN=/usr/local/bin/atelier-ip`. En pod parent
+/// reel (deja `privileged: true`), le `ip` systeme suffit (defaut).
+fn ip_bin() -> String {
+    std::env::var("ATELIER_IP_BIN").unwrap_or_else(|_| "ip".to_string())
 }
 
 async fn run(bin: &str, args: &[&str]) -> Result<()> {

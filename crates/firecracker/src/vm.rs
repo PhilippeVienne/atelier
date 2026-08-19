@@ -44,6 +44,8 @@ use fctools::vmm::resource::system::ResourceSystem;
 use fctools::vmm::resource::{MovedResourceType, ResourceType};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 /// Certaines erreurs de `fctools` (`VmError`, `VmApiError`, `VmShutdownError`)
 /// n'implementent pas `Sync`, requis par `anyhow::Context`. Elles
@@ -107,6 +109,34 @@ impl VmConfig {
             jailer_args,
             FlatVirtualPathResolver,
         ))
+    }
+}
+
+/// Draine en continu la console serie du guest (stdout/stderr du process
+/// Firecracker, relies au `ttyS0` du guest via `console=ttyS0`) vers les
+/// logs `tracing`. **Necessaire, pas juste utile** : un pipe Unix a un
+/// buffer fini (64 Kio en pratique) ; si rien ne le lit, une ecriture du
+/// guest au-dela de cette limite **bloque indefiniment tout le guest**, pas
+/// seulement la sortie console — constate en pratique (une microVM avec un
+/// vrai volume de sortie, ex: `envbuilder` qui clone puis construit une
+/// image, se figeait sans jamais atteindre le reseau, alors que des boots
+/// courts avec peu de sortie fonctionnaient tous). Ignore les erreurs de
+/// lecture (pipe ferme a l'extinction de la VM, cas normal).
+fn drain_console_pipes(inner: &mut FcVm) {
+    let Ok(pipes) = inner.take_pipes() else {
+        return;
+    };
+    tokio::spawn(drain_lines("stdout", pipes.stdout.compat()));
+    tokio::spawn(drain_lines("stderr", pipes.stderr.compat()));
+}
+
+async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(stream_name: &'static str, reader: R) {
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => tracing::debug!(console = stream_name, %line, "sortie console du guest"),
+            Ok(None) | Err(_) => break,
+        }
     }
 }
 
@@ -225,6 +255,8 @@ impl Vm {
             .await
             .map_err(to_anyhow("demarrage de la microVM"))?;
 
+        drain_console_pipes(&mut inner);
+
         Ok(Self { inner })
     }
 
@@ -259,6 +291,8 @@ impl Vm {
             .start(Duration::from_secs(5))
             .await
             .map_err(to_anyhow("restauration (snapshot/load) de la microVM"))?;
+
+        drain_console_pipes(&mut inner);
 
         Ok(Self { inner })
     }

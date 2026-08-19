@@ -18,3 +18,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+reqwest.workspace = true
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+
+[dev-dependencies]
+tower = "0.5"
+http-body-util = "0.1"

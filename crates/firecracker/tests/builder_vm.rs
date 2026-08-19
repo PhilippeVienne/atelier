@@ -115,9 +115,11 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         boot_args,
     };
 
+    eprintln!("[diag] avant boot_with_network, t={:?}", std::time::Instant::now());
     let mut vm = Vm::boot_with_network(&config, &fixtures.kernel_path, &fixtures.rootfs_path, &network)
         .await
         .expect("le boot jaile de la microVM builder doit reussir");
+    eprintln!("[diag] apres boot_with_network (VM demarree)");
 
     // La VM s'eteint d'elle-meme (reboot(RB_POWER_OFF) dans
     // atelier-builder-vm-init) une fois envbuilder termine : on attend
@@ -125,15 +127,28 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
     // memes, le clone+build+push pouvant prendre plusieurs dizaines de
     // secondes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let mut iter = 0u32;
     loop {
         assert!(
             tokio::time::Instant::now() < deadline,
             "la microVM builder ne s'est pas eteinte a temps (build trop long ou echec silencieux)"
         );
         match vm.is_running().await {
-            Ok(true) => tokio::time::sleep(Duration::from_secs(2)).await,
-            Ok(false) => break,
-            Err(_) => break, // process eteint : get_info() echoue, c'est attendu
+            Ok(true) => {
+                iter += 1;
+                if iter % 5 == 0 {
+                    eprintln!("[diag] toujours en cours, iter={iter}");
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await
+            }
+            Ok(false) => {
+                eprintln!("[diag] is_running() = false, VM eteinte");
+                break;
+            }
+            Err(err) => {
+                eprintln!("[diag] is_running() erreur (attendu si process eteint): {err:#}");
+                break;
+            }
         }
     }
 
