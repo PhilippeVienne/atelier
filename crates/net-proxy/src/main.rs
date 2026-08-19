@@ -23,6 +23,17 @@
 //! egress, hors allowlist : `identity-proxy` (`ATELIER_IDENTITY_PROXY_ADDR`)
 //! et `mcp-gateway` (`ATELIER_MCP_GATEWAY_ADDR`) — voir
 //! `crates/net-proxy/src/internal.rs`.
+//!
+//! Decision de design : net-proxy est le **seul** point d'entree reseau
+//! joignable par la VM (voir le pare-feu TAP dans `docs/ARCHITECTURE.md`,
+//! section "Isolation reseau de la microVM") — la VM ne configure jamais
+//! `identity-proxy` directement comme `HTTP_PROXY`. Consequence : si
+//! `ATELIER_IDENTITY_PROXY_ADDR` est configure, net-proxy y chaine
+//! *tout* l'egress autorise (pas seulement l'alias `identity-proxy`
+//! adresse explicitement par nom) — c'est identity-proxy, en aval, qui
+//! decide au cas par cas d'injecter un credential ou de relayer tel quel.
+//! Ce chainage remplace alors le proxy parent externe
+//! (`ATELIER_UPSTREAM_PROXY`) pour la duree du saut.
 
 mod allowlist;
 mod dns;
@@ -62,6 +73,18 @@ async fn main() -> anyhow::Result<()> {
     let no_proxy: Arc<Vec<String>> = Arc::new(upstream::no_proxy_from_env());
     let upstream_proxy = UpstreamProxy::from_env().map(Arc::new);
     let internal_routes = Arc::new(InternalRoutes::from_env()?);
+    // Meme variable que l'alias interne "identity-proxy" (`internal_routes`) :
+    // ici pour le chainage obligatoire de tout l'egress autorise, pas pour
+    // l'adressage explicite par nom — voir `EgressConfig::identity_proxy`.
+    let identity_proxy = std::env::var("ATELIER_IDENTITY_PROXY_ADDR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|addr| {
+            Arc::new(UpstreamProxy {
+                addr,
+                auth_header: None,
+            })
+        });
 
     if allowlist.is_empty() {
         tracing::warn!(
@@ -79,8 +102,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     tracing::info!(
-        identity_proxy = internal_routes.resolve("identity-proxy").is_some(),
-        mcp_gateway = internal_routes.resolve("mcp-gateway").is_some(),
+        identity_proxy_alias = internal_routes.resolve("identity-proxy").is_some(),
+        mcp_gateway_alias = internal_routes.resolve("mcp-gateway").is_some(),
+        identity_proxy_mandatory_hop = identity_proxy.is_some(),
         "routes internes (identity-proxy/mcp-gateway) configurees"
     );
 
@@ -89,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         upstream: upstream_proxy,
         no_proxy,
         internal: internal_routes,
+        identity_proxy,
     };
 
     let control_router = portforward::router(portforward::PortForwardState {

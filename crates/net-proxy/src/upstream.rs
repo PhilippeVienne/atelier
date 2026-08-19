@@ -41,6 +41,22 @@ impl UpstreamProxy {
             auth_header,
         })
     }
+
+    /// Composantes hote/port de `addr`, pour un appelant qui doit se
+    /// connecter directement a ce pair sans passer par le handshake
+    /// `CONNECT` (ex: net-proxy relayant une requete HTTP en clair vers
+    /// identity-proxy plutot que vers la destination finale — voir
+    /// `crate::proxy`).
+    pub fn host(&self) -> &str {
+        self.addr.rsplit_once(':').map_or(&self.addr, |(h, _)| h)
+    }
+
+    pub fn port(&self) -> u16 {
+        self.addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok())
+            .unwrap_or(0)
+    }
 }
 
 pub fn no_proxy_from_env() -> Vec<String> {

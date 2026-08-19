@@ -1,9 +1,10 @@
-//! Traitement d'une connexion cliente (l'agent, via son
-//! `HTTP_PROXY`/`HTTPS_PROXY` pointant sur identity-proxy) : injecte un
-//! credential si une regle correspond a la destination, puis relaie vers
-//! `net-proxy` — identity-proxy ne decide jamais lui-meme de l'allowlist
-//! egress, ce role reste a net-proxy (separation des responsabilites :
-//! "quoi" vs "avec quelle identite").
+//! Traitement d'une connexion cliente — jamais la VM directement,
+//! toujours `net-proxy` qui chaine ici tout l'egress qu'il a deja juge
+//! autorise (voir le commentaire de tete de `main.rs`) : injecte un
+//! credential si une regle correspond a la destination, puis se connecte
+//! directement a la destination — identity-proxy ne decide jamais
+//! lui-meme de l'allowlist egress, ce role reste a net-proxy en amont
+//! (separation des responsabilites : "quoi" vs "avec quelle identite").
 //!
 //! Limite connue (voir `docs/ARCHITECTURE.md`, section isolation reseau,
 //! TODO ouvert) : un `CONNECT` (HTTPS) est un tunnel TCP opaque, le contenu
@@ -16,7 +17,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::http::{self, RequestHead};
@@ -30,9 +31,6 @@ const BAD_GATEWAY_RESPONSE: &[u8] =
 pub struct ProxyConfig {
     pub rules: Arc<Vec<InjectionRule>>,
     pub secrets: SecretCache,
-    /// `host:port` de `net-proxy`, seul chemin de sortie reseau autorise
-    /// pour la microVM. Absent : connexion directe (dev/test uniquement).
-    pub next_hop: Option<Arc<str>>,
 }
 
 pub async fn handle_connection(
@@ -76,12 +74,12 @@ async fn tunnel(
     host: &str,
     port: u16,
     peer: SocketAddr,
-    config: &ProxyConfig,
+    _config: &ProxyConfig,
 ) -> anyhow::Result<()> {
-    let mut upstream = match connect_next_hop(host, port, config.next_hop.as_deref()).await {
+    let mut upstream = match TcpStream::connect((host, port)).await {
         Ok(stream) => stream,
         Err(err) => {
-            tracing::warn!(%peer, host, port, %err, "connexion au saut suivant echouee");
+            tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");
             let _ = client.write_all(BAD_GATEWAY_RESPONSE).await;
             return Ok(());
         }
@@ -108,10 +106,10 @@ async fn forward(
     peer: SocketAddr,
     config: &ProxyConfig,
 ) -> anyhow::Result<()> {
-    let mut upstream = match connect_next_hop(host, port, config.next_hop.as_deref()).await {
+    let mut upstream = match TcpStream::connect((host, port)).await {
         Ok(stream) => stream,
         Err(err) => {
-            tracing::warn!(%peer, host, port, %err, "connexion au saut suivant echouee");
+            tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");
             let _ = client.write_all(BAD_GATEWAY_RESPONSE).await;
             return Ok(());
         }
@@ -137,77 +135,13 @@ async fn forward(
     upstream
         .write_all(&raw)
         .await
-        .context("envoi de la requete au saut suivant")?;
+        .context("envoi de la requete a la destination")?;
 
     let (sent, received) = tokio::io::copy_bidirectional(&mut client, &mut upstream)
         .await
         .unwrap_or((0, 0));
     tracing::debug!(%peer, host, port, sent, received, "relai HTTP ferme");
     Ok(())
-}
-
-/// Rejoint `net-proxy` (via un tunnel `CONNECT`, quel que soit le protocole
-/// d'origine — HTTP en clair inclus, pour beneficier de son allowlist et de
-/// son eventuel chainage vers un proxy parent) si configure, sinon se
-/// connecte directement a la destination (dev/test uniquement : en
-/// production la VM ne peut de toute facon joindre qu'identity-proxy et
-/// net-proxy, voir le pare-feu TAP dans `docs/ARCHITECTURE.md`).
-async fn connect_next_hop(
-    host: &str,
-    port: u16,
-    next_hop: Option<&str>,
-) -> anyhow::Result<TcpStream> {
-    match next_hop {
-        Some(addr) => connect_via_connect_tunnel(addr, host, port)
-            .await
-            .with_context(|| format!("connexion via net-proxy ({addr})")),
-        None => TcpStream::connect((host, port))
-            .await
-            .with_context(|| format!("connexion directe a {host}:{port}")),
-    }
-}
-
-async fn connect_via_connect_tunnel(
-    proxy_addr: &str,
-    host: &str,
-    port: u16,
-) -> anyhow::Result<TcpStream> {
-    let stream = TcpStream::connect(proxy_addr)
-        .await
-        .context("connexion TCP a net-proxy")?;
-    let mut reader = BufReader::new(stream);
-
-    let request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nProxy-Connection: keep-alive\r\n\r\n");
-    reader
-        .write_all(request.as_bytes())
-        .await
-        .context("envoi du CONNECT a net-proxy")?;
-
-    let mut status_line = String::new();
-    reader
-        .read_line(&mut status_line)
-        .await
-        .context("lecture de la reponse CONNECT de net-proxy")?;
-    let ok = status_line
-        .split_whitespace()
-        .nth(1)
-        .map(|code| code.starts_with('2'))
-        .unwrap_or(false);
-    if !ok {
-        anyhow::bail!("net-proxy a refuse le CONNECT: {}", status_line.trim());
-    }
-
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).await? == 0 {
-            anyhow::bail!("net-proxy a ferme la connexion avant la fin de la reponse CONNECT");
-        }
-        if line == "\r\n" {
-            break;
-        }
-    }
-
-    Ok(reader.into_inner())
 }
 
 #[cfg(test)]
@@ -250,7 +184,6 @@ mod tests {
         let config = ProxyConfig {
             rules: Arc::new(vec![rule]),
             secrets: Arc::new(RwLock::new(secrets)),
-            next_hop: None,
         };
 
         let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
