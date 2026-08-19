@@ -13,8 +13,14 @@
 //! - le serveur de controle (`ATELIER_NET_PROXY_CONTROL_ADDR`) expose
 //!   `/portforward`, destine uniquement a `api-server` (jamais a un client
 //!   final direct — voir `crates/net-proxy/src/portforward.rs`).
+//!
+//! net-proxy sert aussi de resolveur DNS pour la microVM
+//! (`ATELIER_DNS_LISTEN_ADDR`, UDP+TCP) : meme allowlist que le proxy
+//! egress, une requete pour un nom hors allowlist recoit `REFUSED` sans
+//! jamais atteindre l'upstream (voir `crates/net-proxy/src/dns.rs`).
 
 mod allowlist;
+mod dns;
 mod forward;
 mod http;
 mod portforward;
@@ -31,6 +37,7 @@ use upstream::UpstreamProxy;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3128";
 const DEFAULT_CONTROL_ADDR: &str = "0.0.0.0:9000";
+const DEFAULT_DNS_LISTEN_ADDR: &str = "0.0.0.0:53";
 const DEFAULT_VM_ADDR: &str = "127.0.0.1";
 
 #[tokio::main]
@@ -78,6 +85,21 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(err) = axum::serve(control_listener, control_router).await {
             tracing::error!(%err, "serveur de controle arrete en erreur");
+        }
+    });
+
+    let dns_listen_addr = std::env::var("ATELIER_DNS_LISTEN_ADDR")
+        .unwrap_or_else(|_| DEFAULT_DNS_LISTEN_ADDR.to_string());
+    let dns_upstream =
+        std::env::var("ATELIER_DNS_UPSTREAM").unwrap_or_else(|_| dns::default_upstream());
+    let dns_config = dns::DnsConfig {
+        listen_addr: dns_listen_addr,
+        upstream: dns_upstream,
+        allowlist: Arc::clone(&egress_config.allowlist),
+    };
+    tokio::spawn(async move {
+        if let Err(err) = dns::run(dns_config).await {
+            tracing::error!(%err, "proxy DNS arrete en erreur");
         }
     });
 

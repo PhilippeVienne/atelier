@@ -113,7 +113,7 @@ flowchart TB
 | Composant | Role |
 |---|---|
 | **vm-supervisor** (`crates/vm-supervisor`) | Demarre/arrete la microVM Firecracker **jailee** (chroot, cgroups) et gere le cycle boot/snapshot/restore, via [`fctools`](https://docs.rs/fctools) (SDK Rust, pas de client HTTP maison). Le jailer tourne avec des capabilities Linux dediees (`setcap`), pas root/sudo. |
-| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. Peut lui-meme chainer vers un proxy HTTP parent impose par le reseau environnant, avec une liste `no_proxy` de destinations a joindre en direct. Dans l'autre sens, expose aussi le port-forward de la microVM vers l'exterieur (ex: VS Code Remote) selon un modele calque sur `kubectl port-forward` : net-proxy tient le role du kubelet (execute le forward, aupres de la microVM), `api-server` celui du coordinateur qui authentifie le client et relaie le flux — net-proxy lui-meme ne fait pas d'authentification. |
+| **net-proxy** (`crates/net-proxy`) | Seul chemin de sortie reseau autorise pour la microVM ; n'autorise que les domaines listes dans `Workshop.spec.egress_allowlist`, journalise chaque appel. Sert aussi de resolveur DNS pour la VM, avec la meme allowlist (un nom refuse recoit `REFUSED` sans jamais atteindre l'upstream). Peut lui-meme chainer vers un proxy HTTP parent impose par le reseau environnant, avec une liste `no_proxy` de destinations a joindre en direct. Dans l'autre sens, expose aussi le port-forward de la microVM vers l'exterieur (ex: VS Code Remote) selon un modele calque sur `kubectl port-forward` : net-proxy tient le role du kubelet (execute le forward, aupres de la microVM), `api-server` celui du coordinateur qui authentifie le client et relaie le flux — net-proxy lui-meme ne fait pas d'authentification. |
 | **identity-proxy** (`crates/identity-proxy`) | Injecte des credentials/tokens dans les appels sortants sans jamais exposer le secret brut a l'agent. Secrets stockes dans OpenBao, recuperes en s'authentifiant avec le ServiceAccount Kubernetes du pod parent (pas l'identite Kanidm — voir [Identite et secrets](#identite-et-secrets--kanidm--openbao)). |
 | **mcp-gateway** (`crates/mcp-gateway`) | Serveur MCP expose a l'agent (via vsock). Seul point d'entree pour que l'agent agisse sur le monde exterieur au-dela du reseau proxifie, et demande des reglages a l'atelier (elargir une allowlist, activer un simulateur, demander un credential). Point d'extension privilegie pour de nouveaux simulateurs (LocalStack pour AWS, mocks d'API, etc.). |
 
@@ -312,6 +312,8 @@ deux transports distincts :
      iptables -N atelier-vm-<id>
      iptables -A atelier-vm-<id> -p tcp -d 169.254.0.1 --dport <port net-proxy>     -j ACCEPT
      iptables -A atelier-vm-<id> -p tcp -d 169.254.0.1 --dport <port identity-proxy> -j ACCEPT
+     iptables -A atelier-vm-<id> -p udp -d 169.254.0.1 --dport 53                    -j ACCEPT
+     iptables -A atelier-vm-<id> -p tcp -d 169.254.0.1 --dport 53                    -j ACCEPT
      iptables -A atelier-vm-<id> -j DROP
      iptables -A INPUT   -i <tap> -j atelier-vm-<id>
      iptables -A FORWARD -i <tap> -j DROP
@@ -323,13 +325,17 @@ deux transports distincts :
      destine a `api-server`) reste volontairement hors de cette liste : la
      VM ne doit jamais pouvoir l'atteindre, seul `api-server` le peut,
      depuis l'exterieur du pod.
-   - Consequence deliberee : pas de port 53 ouvert, donc pas de DNS pour
-     la VM. `net-proxy` est configure cote VM comme
-     `HTTP_PROXY`/`HTTPS_PROXY` (convention devcontainer standard) : c'est
-     lui qui resout les noms d'hote, pas la VM — un outil qui ignore ces
-     variables n'a simplement aucune route de sortie, ce qui est le
-     comportement voulu plutot qu'une lacune (ferme aussi le tunnel DNS
-     comme canal d'exfiltration).
+   - **DNS** : `net-proxy` sert aussi de resolveur pour la VM (port 53,
+     UDP+TCP, `crates/net-proxy/src/dns.rs`), avec la **meme allowlist**
+     que le proxy egress — une seule source de verite pour la politique,
+     appliquee au niveau du nom demande plutot qu'a la seule destination
+     IP de la connexion applicative. Une requete pour un nom hors
+     allowlist recoit `REFUSED` immediatement, sans jamais etre transmise
+     a l'upstream DNS : le DNS ne doit pas devenir un canal de decouverte
+     ou d'exfiltration pour des noms que la VM ne pourra de toute facon
+     pas joindre via le proxy egress. Implemente et teste (parsing du nom
+     de la question, relai brut vers l'upstream si autorise, refus local
+     sinon — voir les tests de `dns.rs`).
    - A trancher (ouvert, cf. TODO dans `crates/identity-proxy/src/main.rs`) :
      si l'agent parle a `identity-proxy` en direct (necessite son port dans
      la regle ci-dessus) ou si l'injection de credentials passe par

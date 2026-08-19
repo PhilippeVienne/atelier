@@ -23,11 +23,15 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `image-builder` — publication PVC + patch status | Fonctionnel | Verifie manuellement (digest + `rootfs.ext4` presents dans le cache) |
 | `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
+| `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
+| `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
+| `crates/builder-vm-init` (guest init de la microVM "builder") | Ecrit, pas encore teste en boot reel | Compile, image Docker construite, convertie en `rootfs.ext4` bootable via le pipeline crane+mke2fs deja valide — boot+reseau+envbuilder+push pas encore verifies faute d'acces root reel en session (voir "Builder microVM" ci-dessous) |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Squelette | Auth JWT/Kanidm et endpoints CRUD/suspend/resume pas encore ecrits |
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
+| `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Non demarre | Container pas encore ajoute au pod parent ; logique de proxy/injection pas ecrite |
 | `mcp-gateway` | Non demarre | — |
 | `dashboard` | Squelette Next.js | Pas encore branche sur `api-server` |
@@ -114,13 +118,66 @@ conformement au principe "pas de mocks" du projet) :
   (RBAC `workshops/status` pour un ServiceAccount dedie `image-builder`,
   `capabilities.add: [SYS_ADMIN]` sur le Job) n'a **pas** ete merge en
   l'etat — revert delibere apres discussion.
-- **A trancher avant d'activer** : isoler le Job `image-builder` plus
-  fortement avant de lui donner cette capacite — `runtimeClass` gVisor/Kata
-  si disponible sur le cluster cible, `NetworkPolicy` limitant son egress
-  au registre + au depot git, node pool dedie avec taint pour borner le
-  rayon d'action d'une evasion, ou a plus long terme faire tourner le build
-  lui-meme dans une microVM plutot que dans un conteneur Kubernetes
-  directement privilegie.
+- **Direction retenue** : plutot que d'isoler le conteneur K8s du Job
+  (gVisor/Kata/NetworkPolicy), faire tourner `envbuilder` a l'interieur
+  d'une **microVM Firecracker jetable**, en reutilisant le plumbing
+  jailer/`fctools` deja ecrit et valide pour `vm-supervisor` — voir section
+  "Builder microVM" ci-dessous. Decision explicite : le rootfs *de la
+  builder VM elle-meme* (notre propre `Dockerfile`, contenu first-party)
+  peut etre construit dans un environnement moins contraint (`docker build`
+  classique) — la protection ne vise que le contenu du **depot cible du
+  Workshop**, execute a l'interieur de la VM une fois demarree, pas ce
+  rootfs.
+
+## Builder microVM : isoler `envbuilder` d'une microVM jetable
+
+Composants nouveaux cette session (plan complet dans l'historique de
+conversation) :
+
+- **`crates/firecracker`** : le wrapper `fctools` (jailer, boot,
+  snapshot/restore) precedemment prive de `vm-supervisor`, extrait en lib
+  partagee — `vm-supervisor` en depend desormais sans changement de
+  comportement (meme test reel boot/snapshot/restore, toujours vert apres
+  le refactor). Ajout d'un module `network` (nouveau) : cree un device TAP
+  + un sous-reseau link-local `/30` point-a-point entre l'hote et le guest
+  — teste reellement (`crates/firecracker/tests/network.rs`, via `unshare
+  --net --map-root-user`, sans besoin de root reel pour ce test-la).
+- **`crates/builder-vm-init`** : init minimal (PID 1 du guest, pas de
+  systemd) qui monte `/proc`/`/sys`, configure `eth0` avec l'IP link-local
+  recue via les `boot_args` du kernel (`atelier.<clef>=<valeur>`, pas de
+  MMDS), lance `envbuilder` avec `HTTP_PROXY`/`HTTPS_PROXY` pointant sur
+  `net-proxy` (**pas** d'acces reseau direct/NAT vers Internet — voir plus
+  bas), puis eteint la VM. Compile, image Docker construite, convertie en
+  `rootfs.ext4` bootable via le meme pipeline crane-export + `mke2fs` que
+  `image-builder` (deja valide cette session) — voir
+  `deploy/dev/builder-vm/README.md`.
+- **Reseau via `net-proxy`, pas NAT brut** : premiere version de
+  `crates/firecracker::network` posait un NAT (`iptables MASQUERADE`) vers
+  la sortie normale du pod. Remis en cause en cours de session : `net-proxy`
+  (deja "Fonctionnel", allowlist de domaines + tunnel `CONNECT`) doit rester
+  le **seul** chemin de sortie reseau pour une microVM, agent ou builder —
+  pas de raison d'en faire une exception pour cette derniere. Design revu :
+  le guest n'a qu'un lien point-a-point vers `net-proxy` (directement
+  joignable, pas de route par defaut necessaire), configure comme
+  `HTTP_PROXY`/`HTTPS_PROXY` pour `envbuilder`. Plus simple (zero
+  `iptables`/`ip_forward` cote hote) et plus coherent avec le modele de
+  securite existant.
+- **Ce qui n'est pas encore valide** : le boot complet (TAP + guest +
+  `envbuilder` + push registre via `net-proxy`) necessite `CAP_NET_ADMIN`
+  dans le **vrai** espace de noms reseau de la machine — un `unshare --net`
+  isole n'a pas de route de sortie, donc `net-proxy` ne pourrait pas
+  atteindre Internet depuis le meme namespace que le TAP. Cette session n'a
+  qu'un acces sudo scope au seul binaire `jailer` (pas de sudo generaliste
+  non-interactif), donc cette derniere etape (test complet ecrit et pret,
+  `crates/firecracker/tests/builder_vm.rs`) reste a executer sur une machine
+  avec un acces root reel — marche a suivre dans
+  `deploy/dev/builder-vm/README.md`.
+- **Phase suivante (hors perimetre de cette session)** : une fois le boot
+  complet valide, brancher ce composant dans `image-builder`/`reconcile.rs`
+  a la place de l'invocation directe d'`envbuilder`, et passer le Job
+  `image-builder` en `privileged: true` + `/dev/kvm` (exerce par notre
+  jailer, jamais par le contenu du depot cible) pour clore l'item 1 de la
+  roadmap.
 
 ## Lecons retenues (a ne pas re-decouvrir)
 
@@ -168,13 +225,11 @@ conformement au principe "pas de mocks" du projet) :
    et cabler l'allowlist de `net-proxy` (`ATELIER_EGRESS_ALLOWLIST`) depuis
    `Workshop.spec.egress_allowlist` cote controller.
    - Donner un TAP reseau a la VM de l'agent (aujourd'hui absent —
-     `vm-supervisor` boote sans interface reseau, cf. commentaire de tete
-     de `crates/firecracker/src/network.rs`) et poser les regles de
-     pare-feu qui restreignent la VM a `net-proxy`/`identity-proxy`
-     uniquement (mecanisme et regles `iptables` precises deja specifiees
-     dans `docs/ARCHITECTURE.md`, section "Isolation reseau de la
-     microVM") — ne pas reutiliser tel quel le `MASQUERADE` inconditionnel
-     de `setup_link_local_tap` (legitime seulement pour la VM "builder").
+     `vm-supervisor` boote sans interface reseau) en reutilisant
+     `crates/firecracker::network::setup_link_local_tap` (lien
+     point-a-point vers `net-proxy`, pas de NAT/acces direct a Internet —
+     voir section "Builder microVM" ci-dessus pour le detail de ce choix,
+     applicable tel quel a la VM de l'agent).
 4. `api-server` : validation JWT Kanidm reelle + endpoints CRUD et
    suspend/resume, plus le role de coordinateur de port-forward (terminer
    la connexion du client final, verifier qu'il est bien proprietaire du
