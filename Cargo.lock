@@ -366,6 +366,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atelier-common",
+ "atelier-firecracker",
  "k8s-openapi",
  "kube",
  "serde",

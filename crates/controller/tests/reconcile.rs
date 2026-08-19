@@ -151,7 +151,19 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
         .init_containers
         .as_ref()
         .expect("le job doit avoir un initContainer pour preparer crane");
-    assert_eq!(init_containers[0].name, "copy-tools");
+    assert!(
+        init_containers.iter().any(|c| c.name == "copy-tools"),
+        "le job doit avoir un initContainer copy-tools"
+    );
+
+    // `net-proxy` est un sidecar natif (initContainer avec
+    // `restartPolicy: Always`, cf. reconcile.rs) : sans ca, le Job ne se
+    // terminerait jamais puisque net-proxy ne sort jamais de lui-meme.
+    let net_proxy = init_containers
+        .iter()
+        .find(|c| c.name == "net-proxy")
+        .expect("le job doit avoir un sidecar net-proxy pour l'egress de la microVM builder");
+    assert_eq!(net_proxy.restart_policy.as_deref(), Some("Always"));
 
     // Le PVC de cache est partage entre tous les Workshops du namespace : on
     // ne le supprime pas en fin de test (d'autres tests, potentiellement en

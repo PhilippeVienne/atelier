@@ -104,8 +104,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         identity_proxy_alias = internal_routes.resolve("identity-proxy").is_some(),
         mcp_gateway_alias = internal_routes.resolve("mcp-gateway").is_some(),
+        registry_alias = internal_routes.resolve("registry").is_some(),
         identity_proxy_mandatory_hop = identity_proxy.is_some(),
-        "routes internes (identity-proxy/mcp-gateway) configurees"
+        "routes internes (identity-proxy/mcp-gateway/registry) configurees"
     );
 
     let egress_config = EgressConfig {

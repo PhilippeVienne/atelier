@@ -19,17 +19,17 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `controller` — provisioning OpenBao | Fonctionnel | Test reel contre un OpenBao en conteneur (policy KV data+metadata) |
 | `controller` — cycle suspend/resume | Fonctionnel (pod only) | Test reel : pod libere puis recree, entite Kanidm/role OpenBao preserves |
 | `controller` — cleanup a la suppression | Fonctionnel | Finalizer `atelier.dev/cleanup`, verifie via test reel |
-| `image-builder` — pipeline devcontainer → ext4 | Fonctionnel | Build reel via envbuilder + push registre + `crane export` + `mke2fs` sur un vrai depot (`vscode-remote-try-python`) |
-| `image-builder` — publication PVC + patch status | Fonctionnel | Verifie manuellement (digest + `rootfs.ext4` presents dans le cache) |
+| `image-builder` — pipeline devcontainer → ext4 | Fonctionnel | `envbuilder` tourne desormais dans la microVM "builder" (plus d'invocation directe dans le conteneur du Job), suivi de `crane export` + `mke2fs` cote hote — build reel de bout en bout sur un vrai depot (`vscode-remote-try-python`), voir "Builder microVM" ci-dessous |
+| `image-builder` — publication PVC + patch status | Fonctionnel | Verifie via un vrai Job Kubernetes en cluster (RBAC dedie, voir ci-dessous) : `status.imageDigest` patche automatiquement, plus besoin d'intervention manuelle |
 | `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
 | `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
-| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (en 2 temps) | Demontre de bout en bout ; le Job `image-builder` reel en cluster reste bloque avant l'etape finale (voir "Reseau kind ↔ registre" ci-dessous), donc le cache a ete peuple a la main pour ce test — la microVM "builder" (ci-dessus) resout maintenant le blocage technique, reste a la brancher dans `image-builder`/`reconcile.rs` |
+| Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Fonctionnel | JWT valide reellement (RS256, cle generee via `openssl`, JWKS charge au demarrage — pas encore teste contre un vrai flux OAuth2 Kanidm, aucun n'est configure dans l'instance de dev) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) |
-| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel (composant seul) | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Teste reellement : allow/deny en HTTP et CONNECT, chainage via un second net-proxy en guise de proxy parent, bypass no_proxy verifie. Container pas encore ajoute au pod parent, allowlist pas encore alimentee depuis `Workshop.spec.egress_allowlist` par le controller |
+| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation cette session (`crates/net-proxy/Dockerfile`) et premier deploiement reel : sidecar natif (`initContainer` `restartPolicy: Always`) du Job `image-builder`, allowlist alimentee depuis `Workshop.spec.egress_allowlist`, verifie contre un vrai Job en cluster. Toujours pas ajoute au **pod parent** de l'agent (item 3 de la roadmap, distinct) |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel (composant seul) | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`ATELIER_IDENTITY_INJECTION_RULES`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Teste reellement : bout-en-bout sur de vraies sockets TCP (injection verifiee sur ce que recoit la "destination"). Container pas encore ajoute au pod parent, regles pas encore alimentees depuis `Workshop.spec` par le controller |
@@ -140,6 +140,10 @@ conformement au principe "pas de mocks" du projet) :
   classique) — la protection ne vise que le contenu du **depot cible du
   Workshop**, execute a l'interieur de la VM une fois demarree, pas ce
   rootfs.
+- **Resolu** : la microVM "builder" est desormais ecrite, validee et
+  branchee dans `image-builder`/`reconcile.rs` — voir section "Builder
+  microVM" ci-dessous, sous-section "Branchee dans `image-builder`/
+  `reconcile.rs`". Le Job `image-builder` n'a plus besoin de `SYS_ADMIN`.
 
 ## Builder microVM : isoler `envbuilder` d'une microVM jetable
 
@@ -275,11 +279,78 @@ manifest` confirmant que l'image attendue est bien presente
 (`cargo test -p atelier-firecracker --test builder_vm`, 35s, voir
 `deploy/dev/builder-vm/README.md`).
 
-**Phase suivante** : brancher ce composant dans `image-builder`/
-`reconcile.rs` a la place de l'invocation directe d'`envbuilder`, et passer
-le Job `image-builder` en `privileged: true` + `/dev/kvm` (exerce par notre
-jailer, jamais par le contenu du depot cible) pour clore l'item 1 de la
-roadmap.
+### Branchee dans `image-builder`/`reconcile.rs` : boucle complete automatique
+
+Composant desormais utilise reellement par le Job `image-builder`, plus
+seulement valide en isolation :
+
+- **`crates/image-builder`** : `build_and_push()` (invocation directe
+  d'`envbuilder`) remplace par `build_via_microvm()`, qui reprend le meme
+  cycle boot/attente-extinction que `tests/builder_vm.rs`. Le rootfs de la
+  microVM builder n'est plus un fichier pre-dimensionne fourni a la main :
+  un rootfs de base (contenu minimal, marge reduite) est baque dans l'image
+  `image-builder` elle-meme au build Docker (voir plus bas), puis copie et
+  agrandi (`truncate` + `resize2fs`, marge par defaut 4096 Mio) a chaque
+  build reel — `resolve_builder_rootfs()`. `ATELIER_BUILDER_VM_ROOTFS_PATH`
+  reste disponible pour court-circuiter ce mecanisme en test manuel.
+- **`crates/image-builder/Dockerfile`** : reecrit en build multi-etapes.
+  Le contenu guest de la microVM builder (identique a
+  `crates/builder-vm-init/Dockerfile`) est construit dans un stage
+  intermediaire puis **aplati directement en rootfs.ext4** via
+  `COPY --from=<stage> /` + `mke2fs` — sans passer par un registre OCI
+  intermediaire ni `crane export` (contrairement a la procedure manuelle de
+  `deploy/dev/builder-vm/README.md`) : un stage Docker multi-etapes fait
+  deja ce travail de aplatissement localement. Simplification decouverte en
+  ecrivant ce Dockerfile, pas anticipee au depart.
+- **Alias `registry` de `net-proxy`** (`crates/net-proxy::internal`,
+  troisieme alias interne apres `identity-proxy`/`mcp-gateway`) : la
+  microVM builder doit joindre le registre interne (ou `envbuilder` pousse
+  l'image), un detail d'implementation que l'utilisateur ne doit pas avoir
+  a ajouter a `Workshop.spec.egress_allowlist` (decision explicite,
+  discutee en session : cette allowlist reste reservee a l'usage — package
+  managers du devcontainer compris — que l'utilisateur choisit
+  explicitement d'autoriser). `ATELIER_REGISTRY_ALIAS_ADDR` (cote
+  `net-proxy`) et `ATELIER_BUILDER_REGISTRY_ALIAS` (cote `image-builder`,
+  cable par le controller) ferment la boucle.
+- **`net-proxy` conteneurise pour la premiere fois** (`crates/net-proxy/Dockerfile`,
+  n'existait pas avant cette session — jusqu'ici teste uniquement via
+  `cargo run`/tests d'integration reels) et deploye comme **sidecar natif**
+  du Job `image-builder` (`initContainer` avec `restartPolicy: Always`,
+  K8s >= 1.28/1.29, KEP-753) : un simple `containers[]` long-vivant
+  empecherait le Job de jamais se terminer (un `Job` n'est marque termine
+  que quand tous ses `containers[]`, pas ses sidecars natifs, ont fini).
+  Verifie reellement contre kind (K8s 1.34).
+- **RBAC dedie** (`ensure_image_build_rbac` : `ServiceAccount` + `Role` +
+  `RoleBinding` par Job, scopes au Workshop precis via `resourceNames`) :
+  bloque depuis la session precedente par le compromis `SYS_ADMIN`
+  (voir plus haut, "Reseau kind ↔ registre") — plus necessaire puisque
+  `envbuilder` ne tourne plus dans le conteneur du Job. Un
+  `Role`/`RoleBinding` orphelin issu d'un test manuel anterieur trainait
+  sur le cluster de dev, non gere par le code (nettoye).
+- **Valide de bout en bout contre un vrai cluster kind** : `kubectl apply`
+  d'un `Workshop` reel (`vscode-remote-try-python`, `egressAllowlist:
+  ["*"]`) declenche tout le pipeline sans aucune intervention manuelle —
+  Job `image-builder` `Complete` (1/1, ~100s), `status.imageDigest`
+  renseigne, le controller enchaine automatiquement sur le pod parent,
+  `vm-supervisor` boote reellement la microVM avec le rootfs construit
+  ("microVM running"). Premiere fois que cette boucle complete tourne sans
+  peuplage manuel du PVC de cache.
+- **Bugs trouves en testant ce chemin (distincts des cinq de la section
+  precedente, specifiques a l'integration K8s)** :
+  - `iproute2` (`ip`) absent de l'image finale `image-builder` (present
+    dans le stage guest, oublie dans le stage final) — `Vm::boot_with_network`
+    echoue a la creation du TAP avec une erreur `No such file or directory`
+    trompeuse (ressemble a un probleme de binaire Firecracker/jailer, pas
+    de `ip`).
+  - L'image `atelier-net-proxy:dev` rechargee dans kind AVANT l'ajout du
+    code de l'alias `registry` a produit un echec silencieux et rapide (VM
+    eteinte en 3s, `crane export` en erreur `MANIFEST_UNKNOWN`) : toujours
+    reconstruire ET recharger (`kind load docker-image`) une image avant de
+    re-tester en cluster, une image perimee ne donne aucun signal
+    explicite qu'elle est perimee.
+  - Un `Workshop` de test sans `egressAllowlist` bloque tout l'egress de la
+    microVM builder (allowlist vide = tout refuse, comportement voulu) —
+    piege facile en testant manuellement, pas un bug.
 
 ## Lecons retenues (a ne pas re-decouvrir)
 
@@ -398,16 +469,37 @@ roadmap.
   `reboot(RebootMode::RB_AUTOBOOT)` (reboot standard, pas power-off) qu'il
   faut appeler : il declenche un reset via le controleur clavier i8042 que
   Firecracker intercepte lui-meme comme signal de fin de VM.
+- Un `Job` Kubernetes n'est marque termine que lorsque tous ses
+  `containers[]` (pas ses `initContainers[]`, sidecars natifs compris) ont
+  fini avec succes : un sidecar long-vivant (ex: `net-proxy`, jamais de code
+  de sortie) doit etre declare comme `initContainer` avec
+  `restartPolicy: "Always"` (K8s >= 1.28/1.29, KEP-753 "sidecar containers")
+  et non dans `containers[]`, sous peine d'un `Job` qui reste `Running`
+  indefiniment meme apres la fin reelle du conteneur principal.
+- `COPY --from=<stage> /` dans un `Dockerfile` multi-etapes aplatit
+  l'integralite du filesystem de ce stage sans passer par un registre OCI :
+  equivalent local a `crane export` + `tar xf` (utilise ailleurs dans ce
+  projet pour aplatir une image deja poussee), mais inutile ici puisque le
+  contenu est deja disponible localement dans le build multi-etapes —
+  simplifie significativement la construction d'un rootfs bootable a partir
+  d'un stage Docker intermediaire (voir `crates/image-builder/Dockerfile`).
+- Une image Docker rechargee dans `kind` (`kind load docker-image`) ne
+  signale jamais qu'elle est perimee : reconstruire le code sans reconstruire
+  ET recharger l'image dans le cluster produit des echecs silencieux et
+  deroutants (le nouveau code n'est simplement jamais execute). Toujours
+  verifier `docker images <nom>` / refaire `kind load` apres tout changement
+  de code affectant une image utilisee en cluster.
 
 ## Prochaines etapes (par priorite)
 
-1. Brancher la microVM "builder" (`crates/builder-vm-init`, desormais
-   validee de bout en bout — voir section "Builder microVM" ci-dessus) dans
-   `image-builder`/`reconcile.rs`, a la place de l'invocation directe
-   d'`envbuilder`. Le reseau kind ↔ registre lui-meme est deja resolu et
-   verifie (Service/EndpointSlice statique). Une fois branche, le pipeline
-   `image-builder` → cache → `vm-supervisor` peut tourner automatiquement
-   de bout en bout, sans peuplage manuel du PVC.
+1. ~~Brancher la microVM "builder" dans `image-builder`/`reconcile.rs`~~ —
+   **fait cette session**, voir "Builder microVM" ci-dessus. Le pipeline
+   complet `image-builder` (microVM) → cache → `vm-supervisor` tourne
+   automatiquement de bout en bout, verifie contre kind reel, sans peuplage
+   manuel du PVC. Reste ouvert dans ce voisinage : le registre interne
+   (`ctx.registry_addr`) n'est joignable par la microVM builder que via
+   l'alias `registry` de `net-proxy`, pas encore par la VM de l'agent
+   (n'a pas de reseau du tout aujourd'hui, voir point 3).
 2. Canal de controle vsock entre `controller`/`vm-supervisor` pour que
    `suspend` declenche un vrai `snapshot/create` avant liberation du pod
    (aujourd'hui le pod est simplement supprime, sans snapshot).

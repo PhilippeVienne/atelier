@@ -7,6 +7,7 @@ use k8s_openapi::api::core::v1::{
     PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, SecurityContext,
     ServiceAccount, Volume, VolumeMount,
 };
+use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -21,6 +22,7 @@ const FIELD_MANAGER: &str = "atelier-controller";
 // TODO: rendre configurable (registre interne) une fois l'image publiee.
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
 const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
+const NET_PROXY_IMAGE: &str = "atelier-net-proxy:dev";
 /// Bloque la suppression effective d'un Workshop tant que
 /// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
 /// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
@@ -259,6 +261,75 @@ async fn resolve_kanidm_entity(
     }
 }
 
+/// ServiceAccount + Role + RoleBinding dedies au Job `image-builder` d'un
+/// Workshop, scopes a ce Workshop precis via `resourceNames` (pas d'acces
+/// au statut d'un autre Workshop du meme namespace). Idempotent, owned par
+/// le Workshop (nettoye automatiquement par le garbage collector standard).
+async fn ensure_image_build_rbac(
+    ctx: &ReconcileCtx,
+    ns: &str,
+    job_name: &str,
+    workshop_name: &str,
+    owner_ref: &k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
+) -> anyhow::Result<()> {
+    let service_accounts: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), ns);
+    let roles: Api<Role> = Api::namespaced(ctx.client.clone(), ns);
+    let role_bindings: Api<RoleBinding> = Api::namespaced(ctx.client.clone(), ns);
+
+    let metadata = ObjectMeta {
+        name: Some(job_name.to_string()),
+        namespace: Some(ns.to_string()),
+        owner_references: Some(vec![owner_ref.clone()]),
+        labels: Some(BTreeMap::from([(
+            "atelier.dev/workshop".to_string(),
+            workshop_name.to_string(),
+        )])),
+        ..Default::default()
+    };
+
+    let service_account = ServiceAccount {
+        metadata: metadata.clone(),
+        ..Default::default()
+    };
+    service_accounts
+        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&service_account))
+        .await?;
+
+    let role = Role {
+        metadata: metadata.clone(),
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec!["atelier.dev".to_string()]),
+            resources: Some(vec!["workshops/status".to_string()]),
+            resource_names: Some(vec![workshop_name.to_string()]),
+            verbs: vec!["get".to_string(), "patch".to_string()],
+            ..Default::default()
+        }]),
+    };
+    roles
+        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&role))
+        .await?;
+
+    let role_binding = RoleBinding {
+        metadata,
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "Role".to_string(),
+            name: job_name.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: job_name.to_string(),
+            namespace: Some(ns.to_string()),
+            ..Default::default()
+        }]),
+    };
+    role_bindings
+        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&role_binding))
+        .await?;
+
+    Ok(())
+}
+
 #[tracing::instrument(skip_all)]
 async fn ensure_image_build_job(
     ctx: &ReconcileCtx,
@@ -278,6 +349,24 @@ async fn ensure_image_build_job(
     let owner_ref = workshop
         .controller_owner_ref(&())
         .expect("Workshop a un namespace, owner_ref toujours disponible");
+
+    // ServiceAccount + RBAC dedies (Role/RoleBinding scopes a ce seul
+    // Workshop via `resourceNames`, pas au ServiceAccount `default`) :
+    // `image-builder` doit patcher `status.imageDigest` sur SON Workshop a
+    // la fin du build. Auparavant bloque par un compromis different (le Job
+    // demandait aussi `capabilities.add: [SYS_ADMIN]` pour qu'envbuilder
+    // tourne dans ce conteneur — refuse pour du code executant le contenu
+    // du depot cible, voir docs/PROGRESS.md, "Reseau kind ↔ registre").
+    // Cette capacite n'est plus necessaire : `envbuilder` tourne desormais
+    // dans la microVM builder, pas dans ce conteneur.
+    ensure_image_build_rbac(ctx, ns, &job_name, name, &owner_ref).await?;
+
+    let net_proxy_port: u16 = 3128;
+    let registry_port = ctx
+        .registry_addr
+        .rsplit_once(':')
+        .and_then(|(_, p)| p.parse::<u16>().ok())
+        .unwrap_or(5000);
 
     let env = vec![
         env_var("ATELIER_DEVCONTAINER_REPO", &workshop.spec.devcontainer.repo),
@@ -301,6 +390,15 @@ async fn ensure_image_build_job(
         // (constate en pratique). D'ou l'initContainer qui le copie dans
         // un emptyDir monte a part.
         env_var("ATELIER_CRANE_BIN", "/tools/crane"),
+        // Reference d'image donnee au guest via l'alias `registry` du
+        // net-proxy sidecar de ce pod (voir plus bas), pas l'adresse reelle
+        // du registre : resout vers la meme destination (net-proxy ignore
+        // le port du cote client pour un alias interne, seul le host
+        // importe) sans que l'utilisateur ait besoin de l'ajouter a
+        // `Workshop.spec.egress_allowlist` (voir `crates/net-proxy::internal`
+        // et `image_ref_for_guest` dans `crates/image-builder/src/main.rs`).
+        env_var("ATELIER_BUILDER_REGISTRY_ALIAS", &format!("registry:{registry_port}")),
+        env_var("ATELIER_BUILDER_NET_PROXY_PORT", &net_proxy_port.to_string()),
     ];
 
     let cache_volume = Volume {
@@ -326,6 +424,43 @@ async fn ensure_image_build_job(
         mount_path: "/tools".to_string(),
         ..Default::default()
     };
+    let kvm_volume = Volume {
+        name: "kvm".to_string(),
+        host_path: Some(HostPathVolumeSource {
+            path: "/dev/kvm".to_string(),
+            type_: Some("CharDevice".to_string()),
+        }),
+        ..Default::default()
+    };
+    let tun_volume = Volume {
+        name: "tun".to_string(),
+        host_path: Some(HostPathVolumeSource {
+            path: "/dev/net/tun".to_string(),
+            type_: Some("CharDevice".to_string()),
+        }),
+        ..Default::default()
+    };
+    let kvm_mount = VolumeMount {
+        name: "kvm".to_string(),
+        mount_path: "/dev/kvm".to_string(),
+        ..Default::default()
+    };
+    let tun_mount = VolumeMount {
+        name: "tun".to_string(),
+        mount_path: "/dev/net/tun".to_string(),
+        ..Default::default()
+    };
+
+    // Allowlist d'egress de la microVM builder (net-proxy sidecar) :
+    // reutilise telle quelle `Workshop.spec.egress_allowlist`, pensee au
+    // depart pour l'usage runtime de l'agent, pas pour les besoins de build
+    // (gestionnaires de paquets du devcontainer) — decision explicite :
+    // l'utilisateur doit y inclure ses propres registres de paquets si son
+    // devcontainer en a besoin. Le registre interne, lui, n'a pas besoin d'y
+    // figurer : il est joignable via l'alias `registry` de net-proxy (hors
+    // allowlist, voir `ATELIER_REGISTRY_ALIAS_ADDR` plus bas et
+    // `crates/net-proxy::internal`).
+    let egress_allowlist = workshop.spec.egress_allowlist.join(",");
 
     let job = Job {
         metadata: ObjectMeta {
@@ -343,23 +478,61 @@ async fn ensure_image_build_job(
             template: PodTemplateSpec {
                 spec: Some(PodSpec {
                     restart_policy: Some("Never".into()),
-                    volumes: Some(vec![cache_volume, tools_volume]),
-                    init_containers: Some(vec![Container {
-                        name: "copy-tools".into(),
-                        image: Some(IMAGE_BUILDER_IMAGE.into()),
-                        command: Some(vec![
-                            "cp".to_string(),
-                            "/usr/local/bin/crane".to_string(),
-                            "/tools/crane".to_string(),
-                        ]),
-                        volume_mounts: Some(vec![tools_mount.clone()]),
-                        ..Default::default()
-                    }]),
+                    service_account_name: Some(job_name.clone()),
+                    volumes: Some(vec![cache_volume, tools_volume, kvm_volume, tun_volume]),
+                    // `net-proxy` est un "sidecar natif" (initContainer avec
+                    // `restartPolicy: Always`, K8s >= 1.28/1.29, KEP-753) et
+                    // non un simple `containers[]` : il tourne indefiniment
+                    // (jamais de code de sortie 0), et un Job n'est marque
+                    // termine que quand TOUS ses `containers[]` (pas les
+                    // sidecars) ont fini — sans ca, ce Job resterait
+                    // "Running" pour toujours meme apres la fin reelle
+                    // d'`image-builder`. Demarre avant les init containers
+                    // suivants et le conteneur principal (K8s attend qu'il
+                    // ait demarre avant de continuer), et termine
+                    // automatiquement une fois `image-builder` fini.
+                    init_containers: Some(vec![
+                        Container {
+                            name: "net-proxy".into(),
+                            image: Some(NET_PROXY_IMAGE.into()),
+                            restart_policy: Some("Always".into()),
+                            env: Some(vec![
+                                env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
+                                env_var("ATELIER_NET_PROXY_LISTEN_ADDR", &format!("0.0.0.0:{net_proxy_port}")),
+                                // Alias interne hors allowlist : voir
+                                // `crates/net-proxy::internal` et le
+                                // commentaire sur `egress_allowlist`
+                                // ci-dessus.
+                                env_var("ATELIER_REGISTRY_ALIAS_ADDR", &ctx.registry_addr),
+                            ]),
+                            ..Default::default()
+                        },
+                        Container {
+                            name: "copy-tools".into(),
+                            image: Some(IMAGE_BUILDER_IMAGE.into()),
+                            command: Some(vec![
+                                "cp".to_string(),
+                                "/usr/local/bin/crane".to_string(),
+                                "/tools/crane".to_string(),
+                            ]),
+                            volume_mounts: Some(vec![tools_mount.clone()]),
+                            ..Default::default()
+                        },
+                    ]),
                     containers: vec![Container {
                         name: "image-builder".into(),
                         image: Some(IMAGE_BUILDER_IMAGE.into()),
                         env: Some(env),
-                        volume_mounts: Some(vec![cache_mount, tools_mount]),
+                        volume_mounts: Some(vec![cache_mount, tools_mount, kvm_mount, tun_mount]),
+                        // Requis pour /dev/kvm (device cgroup controller) et
+                        // pour CAP_NET_ADMIN (creation du TAP de la microVM
+                        // builder) — meme raisonnement que `vm-supervisor`
+                        // (`ensure_parent_pod`), pas de device plugin KVM
+                        // dedie pour l'instant.
+                        security_context: Some(SecurityContext {
+                            privileged: Some(true),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     }],
                     ..Default::default()

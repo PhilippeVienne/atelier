@@ -3,14 +3,25 @@
 //! devcontainer.json a `envbuilder` (github.com/coder/envbuilder) plutot que
 //! de la reimplementer.
 //!
-//! Pipeline reel (verifie manuellement de bout en bout avant d'ecrire ce
-//! code — boot Firecracker reussi sur le resultat) :
+//! Pipeline reel (valide de bout en bout, voir `docs/PROGRESS.md` section
+//! "Builder microVM") :
 //! 1. `envbuilder` clone le repo, resout le devcontainer.json, construit
 //!    l'image et la **pousse comme image OCI standard** vers un registre
-//!    (`ENVBUILDER_PUSH_IMAGE`/`ENVBUILDER_CACHE_REPO`). Envbuilder ne
-//!    produit *pas* de dossier d'export propre : il construit "en place"
-//!    sur son propre `/`, donc la seule sortie exploitable est cette image
-//!    poussee au registre.
+//!    (`ENVBUILDER_PUSH_IMAGE`/`ENVBUILDER_CACHE_REPO`) — pas dans **ce**
+//!    conteneur, mais a l'interieur d'une **microVM Firecracker jetable**
+//!    (`crates/builder-vm-init`), demarree par ce process via
+//!    `atelier_firecracker::vm::Vm::boot_with_network`. Isolation
+//!    deliberee : envbuilder remonte tous les points de montage existants
+//!    apres avoir vide le systeme de fichiers de son propre conteneur pour
+//!    y extraire l'image cible, ce qui necessite `CAP_SYS_ADMIN` — capacite
+//!    qu'on refuse d'accorder a un process qui execute des instructions de
+//!    build (`RUN`, `postCreateCommand`) issues du **depot cible du
+//!    Workshop**, potentiellement non fiable. Dans son propre noyau
+//!    (microVM), ce remount est sans risque, equivalent a n'importe quel
+//!    process root sur une machine dediee. Le seul chemin de sortie reseau
+//!    de cette microVM est un `net-proxy` sidecar du meme pod (allowlist
+//!    `Workshop.spec.egress_allowlist`), jamais un acces direct/NAT — voir
+//!    `crates/firecracker::network` et `crates/builder-vm-init`.
 //! 2. `crane export` (github.com/google/go-containerregistry) aplatit
 //!    cette image OCI en tarball (pas de client OCI ecrit a la main : deux
 //!    outils externes bien etablis, comme `envbuilder` lui-meme).
@@ -22,10 +33,14 @@
 
 use anyhow::{ensure, Context, Result};
 use atelier_common::{patch_workshop_status, DevcontainerSource};
+use atelier_firecracker::network::setup_link_local_tap;
+use atelier_firecracker::vm::{Vm, VmConfig};
 use kube::Client;
 use sha2::{Digest, Sha256};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 
 #[tokio::main]
@@ -50,17 +65,15 @@ async fn main() -> Result<()> {
         .unwrap_or(false);
     let cache_dir = std::env::var("ATELIER_IMAGE_CACHE_DIR")
         .context("ATELIER_IMAGE_CACHE_DIR manquant (montage du PVC de cache)")?;
-    let envbuilder_bin =
-        std::env::var("ATELIER_ENVBUILDER_BIN").unwrap_or_else(|_| "envbuilder".to_string());
     let crane_bin = std::env::var("ATELIER_CRANE_BIN").unwrap_or_else(|_| "crane".to_string());
 
     let image_ref = format!("{registry_addr}/atelier-workshops/{workshop_name}:latest");
 
-    tracing::info!(repo = %source.repo, revision = %source.revision, %image_ref, "building devcontainer via envbuilder");
-    build_and_push(&envbuilder_bin, &source, &image_ref, registry_insecure).await?;
-
     let work_dir = PathBuf::from("/var/tmp/atelier-image-builder-work");
     tokio::fs::create_dir_all(&work_dir).await?;
+
+    tracing::info!(repo = %source.repo, revision = %source.revision, %image_ref, "building devcontainer via envbuilder (microVM builder)");
+    build_via_microvm(&source, &image_ref, registry_insecure, &work_dir).await?;
 
     tracing::info!(%image_ref, "exporting image filesystem");
     let rootfs_dir = export_image_filesystem(&crane_bin, &image_ref, &work_dir, registry_insecure).await?;
@@ -90,66 +103,291 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Invoque `envbuilder` pour resoudre le devcontainer.json et pousser
-/// l'image resultante (build + `postCreateCommand` etc. deja executes)
-/// vers `image_ref`. Envbuilder pousse toujours l'image finale au tag
-/// `:latest` du repo qu'on lui donne, quel que soit le tag qu'on demande
-/// nous-memes ensuite pour l'export — d'ou l'usage systematique de
-/// `:latest` comme `image_ref`.
-async fn build_and_push(
-    envbuilder_bin: &str,
+/// Construit et pousse l'image devcontainer en demarrant la microVM
+/// "builder" (`crates/builder-vm-init`), qui execute `envbuilder` dans son
+/// propre noyau plutot que dans ce conteneur (voir commentaire de module).
+/// `image_ref` est l'adresse **cote hote** (celle que ce process utilisera
+/// ensuite pour `crane export`) ; le guest recoit une reference construite a
+/// partir de l'IP hote du lien point-a-point si `image_ref` pointe sur
+/// `localhost`/loopback (voir [`image_ref_for_guest`]).
+async fn build_via_microvm(
     source: &DevcontainerSource,
     image_ref: &str,
     registry_insecure: bool,
+    work_dir: &Path,
 ) -> Result<()> {
-    let cache_repo = image_ref
-        .rsplit_once(':')
-        .map(|(repo, _tag)| repo)
-        .unwrap_or(image_ref);
-
-    // La revision est portee par la syntaxe `<url>#<ref>` d'envbuilder,
-    // pas par une variable separee (verifie manuellement : `#main` est
-    // bien interprete comme la branche a cloner).
-    let git_url = if source.revision.is_empty() || source.revision == "HEAD" {
-        source.repo.clone()
-    } else {
-        format!("{}#{}", source.repo, source.revision)
-    };
-
     // `WorkshopSpec.devcontainer.config_path` est le chemin complet relatif
     // au depot (convention utilisateur, ex: ".devcontainer/devcontainer.json"),
-    // mais `--devcontainer-json-path` d'envbuilder est relatif a
-    // `--devcontainer-dir` (qui vaut deja ".devcontainer" par defaut) : les
-    // passer tels quels double le chemin
+    // mais `ENVBUILDER_DEVCONTAINER_JSON_PATH` est relatif a
+    // `ENVBUILDER_DEVCONTAINER_DIR` (qui vaut deja ".devcontainer" par
+    // defaut) : les passer tels quels double le chemin
     // (".devcontainer/.devcontainer/devcontainer.json", constate en
-    // pratique). Il faut donc scinder repertoire et nom de fichier.
+    // pratique dans `crates/builder-vm-init`). Il faut donc scinder
+    // repertoire et nom de fichier.
     let config_path = Path::new(&source.config_path);
     let devcontainer_dir = config_path.parent().filter(|p| !p.as_os_str().is_empty());
     let devcontainer_json_filename = config_path
         .file_name()
+        .and_then(|f| f.to_str())
         .context("chemin config_path invalide (pas de nom de fichier)")?;
 
-    let mut cmd = Command::new(envbuilder_bin);
-    cmd.env("ENVBUILDER_GIT_URL", git_url)
-        .env("ENVBUILDER_DEVCONTAINER_JSON_PATH", devcontainer_json_filename)
-        .env("ENVBUILDER_PUSH_IMAGE", "true")
-        .env("ENVBUILDER_CACHE_REPO", cache_repo)
-        .env("ENVBUILDER_EXIT_ON_BUILD_FAILURE", "true")
-        .env("ENVBUILDER_INIT_COMMAND", "/bin/true")
-        .env("ENVBUILDER_INSECURE", registry_insecure.to_string())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    if let Some(devcontainer_dir) = devcontainer_dir {
-        cmd.env("ENVBUILDER_DEVCONTAINER_DIR", devcontainer_dir);
+    // Nom de jail/TAP court et deterministe (hash des variables d'identite
+    // du build) : `sockaddr_un.sun_path` est limite a 108 octets sur Linux
+    // et IFNAMSIZ a 15 caracteres pour un nom d'interface — un nom de jail
+    // trop long fait echouer le boot en silence (voir docs/PROGRESS.md,
+    // "Lecons retenues"). Un Job = un pod = un netns dedie, donc pas besoin
+    // d'unicite globale, seulement de brievete.
+    let mut hasher = Sha256::new();
+    hasher.update(source.repo.as_bytes());
+    hasher.update(source.revision.as_bytes());
+    hasher.update(image_ref.as_bytes());
+    let digest = hasher.finalize();
+    let short_id: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    let jail_id = format!("ib{short_id}");
+    let tap_name = format!("ib{short_id}");
+
+    let firecracker_bin = env_path("ATELIER_BUILDER_FIRECRACKER_BIN", "firecracker");
+    let jailer_bin = env_path("ATELIER_BUILDER_JAILER_BIN", "jailer");
+    let kernel_path = env_path("ATELIER_BUILDER_VM_KERNEL_PATH", "");
+    ensure!(
+        !kernel_path.as_os_str().is_empty(),
+        "ATELIER_BUILDER_VM_KERNEL_PATH est requis"
+    );
+    let builder_rootfs_path = resolve_builder_rootfs(work_dir).await?;
+    let chroot_base_dir = env_path("ATELIER_BUILDER_VM_CHROOT_BASE_DIR", "/srv/builder-jailer");
+    let net_proxy_port =
+        std::env::var("ATELIER_BUILDER_NET_PROXY_PORT").unwrap_or_else(|_| "3128".to_string());
+    let vcpu_count: u8 = std::env::var("ATELIER_BUILDER_VM_VCPU_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let mem_mib: usize = std::env::var("ATELIER_BUILDER_VM_MEM_MIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2048);
+    let boot_timeout_secs: u64 = std::env::var("ATELIER_BUILDER_VM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1800);
+
+    let network = setup_link_local_tap(&tap_name, 1)
+        .await
+        .context("creation du TAP pour la microVM builder (CAP_NET_ADMIN requis)")?;
+
+    let builder_rootfs_path_cleanup = builder_rootfs_path.clone();
+    let result = run_builder_vm(RunBuilderVmArgs {
+        firecracker_bin,
+        jailer_bin,
+        kernel_path,
+        builder_rootfs_path,
+        chroot_base_dir,
+        jail_id,
+        source,
+        devcontainer_dir: devcontainer_dir.and_then(|p| p.to_str()),
+        devcontainer_json_filename,
+        image_ref: &image_ref_for_guest(image_ref, network.host_ip),
+        registry_insecure,
+        net_proxy_port: &net_proxy_port,
+        vcpu_count,
+        mem_mib,
+        boot_timeout_secs,
+        network: &network,
+    })
+    .await;
+
+    network.teardown().await;
+    tokio::fs::remove_file(&builder_rootfs_path_cleanup).await.ok();
+    result
+}
+
+/// Fournit un rootfs.ext4 pour la microVM builder, avec assez de marge pour
+/// un vrai build devcontainer (paquets apt/pip/npm) : le rootfs baque dans
+/// l'image `image-builder` (`ATELIER_BUILDER_VM_ROOTFS_BASE_PATH`, voir
+/// `Dockerfile`) ne contient que le contenu de base
+/// (`atelier-builder-vm-init` + `envbuilder`) avec une marge minimale — un
+/// `rootfs.ext4` de cette taille tel quel echoue en "no space left on
+/// device" en plein build (constate en pratique, voir docs/PROGRESS.md).
+/// Copie donc ce rootfs de base dans le repertoire de travail puis
+/// l'agrandit (`truncate` + `resize2fs`) avant chaque build.
+///
+/// `ATELIER_BUILDER_VM_ROOTFS_PATH`, s'il est defini, court-circuite tout
+/// ca et est utilise tel quel (deja pre-dimensionne) — pratique pour du
+/// test manuel (voir `deploy/dev/builder-vm/README.md`), sans devoir
+/// reconstruire l'image `image-builder` a chaque fois.
+async fn resolve_builder_rootfs(work_dir: &Path) -> Result<PathBuf> {
+    if let Ok(explicit) = std::env::var("ATELIER_BUILDER_VM_ROOTFS_PATH") {
+        return Ok(explicit.into());
     }
 
-    let status = cmd
+    let base_path = env_path("ATELIER_BUILDER_VM_ROOTFS_BASE_PATH", "");
+    ensure!(
+        !base_path.as_os_str().is_empty(),
+        "ATELIER_BUILDER_VM_ROOTFS_PATH ou ATELIER_BUILDER_VM_ROOTFS_BASE_PATH est requis"
+    );
+    let margin_mb: u64 = std::env::var("ATELIER_BUILDER_VM_ROOTFS_MARGIN_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4096);
+
+    let rootfs_path = work_dir.join("builder-vm-rootfs.ext4");
+    tokio::fs::copy(&base_path, &rootfs_path)
+        .await
+        .with_context(|| format!("copie du rootfs de base de la microVM builder ({base_path:?})"))?;
+
+    let base_size_mb = tokio::fs::metadata(&rootfs_path).await?.len() / 1024 / 1024;
+    let status = Command::new("truncate")
+        .arg("-s")
+        .arg(format!("{}M", base_size_mb + margin_mb))
+        .arg(&rootfs_path)
         .status()
         .await
-        .with_context(|| format!("lancement du binaire envbuilder ({envbuilder_bin})"))?;
+        .context("agrandissement du fichier rootfs de la microVM builder")?;
+    ensure!(status.success(), "truncate a echoue avec le statut {status}");
 
-    ensure!(status.success(), "envbuilder a echoue avec le statut {status}");
+    let status = Command::new("resize2fs")
+        .arg(&rootfs_path)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .context("lancement de resize2fs")?;
+    ensure!(status.success(), "resize2fs a echoue avec le statut {status}");
+
+    Ok(rootfs_path)
+}
+
+struct RunBuilderVmArgs<'a> {
+    firecracker_bin: PathBuf,
+    jailer_bin: PathBuf,
+    kernel_path: PathBuf,
+    builder_rootfs_path: PathBuf,
+    chroot_base_dir: PathBuf,
+    jail_id: String,
+    source: &'a DevcontainerSource,
+    devcontainer_dir: Option<&'a str>,
+    devcontainer_json_filename: &'a str,
+    image_ref: &'a str,
+    registry_insecure: bool,
+    net_proxy_port: &'a str,
+    vcpu_count: u8,
+    mem_mib: usize,
+    boot_timeout_secs: u64,
+    network: &'a atelier_firecracker::network::NetworkSetup,
+}
+
+async fn run_builder_vm(args: RunBuilderVmArgs<'_>) -> Result<()> {
+    let git_url = if args.source.revision.is_empty() || args.source.revision == "HEAD" {
+        args.source.repo.clone()
+    } else {
+        format!("{}#{}", args.source.repo, args.source.revision)
+    };
+
+    let mut boot_args = format!(
+        "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/atelier-builder-vm-init \
+         atelier.repo={git_url} \
+         atelier.devcontainer_json_filename={} \
+         atelier.image_ref={} \
+         atelier.registry_insecure={} \
+         atelier.guest_ip={} atelier.host_ip={} atelier.prefix={} \
+         atelier.net_proxy_port={}",
+        args.devcontainer_json_filename,
+        args.image_ref,
+        args.registry_insecure,
+        args.network.guest_ip,
+        args.network.host_ip,
+        args.network.network_length,
+        args.net_proxy_port,
+    );
+    if let Some(devcontainer_dir) = args.devcontainer_dir {
+        boot_args.push_str(&format!(" atelier.devcontainer_dir={devcontainer_dir}"));
+    }
+
+    let config = VmConfig {
+        firecracker_bin: args.firecracker_bin,
+        jailer_bin: args.jailer_bin,
+        snapshot_editor_bin: "/bin/true".into(),
+        chroot_base_dir: args.chroot_base_dir,
+        jail_id: args.jail_id,
+        uid: 0,
+        gid: 0,
+        vcpu_count: args.vcpu_count,
+        mem_mib: args.mem_mib,
+        boot_args,
+    };
+
+    tracing::info!("booting builder microVM");
+    let mut vm = Vm::boot_with_network(&config, &args.kernel_path, &args.builder_rootfs_path, args.network)
+        .await
+        .context("boot de la microVM builder")?;
+
+    // La VM s'eteint d'elle-meme (reboot(RB_AUTOBOOT) dans
+    // atelier-builder-vm-init) une fois envbuilder termine : pas de canal de
+    // controle vsock dans ce MVP, donc on attend qu'is_running() devienne
+    // faux plutot que d'appeler shutdown() nous-memes.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(args.boot_timeout_secs);
+    loop {
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "la microVM builder ne s'est pas eteinte a temps (build trop long ou echec silencieux)"
+        );
+        match vm.is_running().await {
+            Ok(true) => tokio::time::sleep(Duration::from_secs(2)).await,
+            Ok(false) => break,
+            Err(err) => {
+                tracing::warn!(%err, "impossible d'interroger l'etat de la microVM builder (VM probablement eteinte)");
+                break;
+            }
+        }
+    }
+    tracing::info!("builder microVM exited");
     Ok(())
+}
+
+/// Construit la reference d'image passee au guest. Deux strategies :
+///
+/// - si `ATELIER_BUILDER_REGISTRY_ALIAS` (ex: `registry:5000`) est defini
+///   (production : le controller le cable sur le net-proxy sidecar du Job,
+///   voir `crates/net-proxy::internal` et `crates/controller/src/reconcile.rs`),
+///   on l'utilise tel quel — l'alias `registry` de net-proxy resout vers le
+///   vrai registre **sans** que l'utilisateur ait besoin de l'ajouter a
+///   `Workshop.spec.egress_allowlist` (detail d'implementation interne, pas
+///   de l'egress au sens du modele de securite du Workshop) ;
+/// - sinon (test manuel sans net-proxy sidecar, cf.
+///   `deploy/dev/builder-vm/README.md`), on retombe sur une heuristique :
+///   `envbuilder` (client HTTP Go) exclut inconditionnellement `localhost`
+///   et les IP loopback du proxy configure via `HTTP_PROXY`/`HTTPS_PROXY`
+///   (`golang.org/x/net/http/httpproxy`), meme sans `NO_PROXY` — comportement
+///   non desactivable depuis l'environnement. Le guest n'a pas de route par
+///   defaut (voir `crates/builder-vm-init::configure_network`), donc une
+///   reference d'image en `localhost:<port>/...` y echoue toujours en
+///   "network is unreachable" ; on la reecrit alors avec l'IP hote du lien
+///   point-a-point (sinon, nom DNS reel, on la laisse telle quelle).
+fn image_ref_for_guest(image_ref: &str, host_ip: Ipv4Addr) -> String {
+    let Some((host_port, path)) = image_ref.split_once('/') else {
+        return image_ref.to_string();
+    };
+    if let Ok(alias) = std::env::var("ATELIER_BUILDER_REGISTRY_ALIAS") {
+        if !alias.trim().is_empty() {
+            return format!("{alias}/{path}");
+        }
+    }
+    let (host, port) = match host_port.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (host_port, None),
+    };
+    let is_loopback =
+        host == "localhost" || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    if !is_loopback {
+        return image_ref.to_string();
+    }
+    match port {
+        Some(port) => format!("{host_ip}:{port}/{path}"),
+        None => format!("{host_ip}/{path}"),
+    }
+}
+
+fn env_path(var: &str, default: &str) -> PathBuf {
+    std::env::var(var).unwrap_or_else(|_| default.to_string()).into()
 }
 
 /// Aplatit l'image poussee en tarball (`crane export`) et l'extrait dans un

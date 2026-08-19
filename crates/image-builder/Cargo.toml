@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 atelier-common = { path = "../common" }
+atelier-firecracker = { path = "../firecracker" }
 tokio.workspace = true
 kube.workspace = true
 k8s-openapi.workspace = true
