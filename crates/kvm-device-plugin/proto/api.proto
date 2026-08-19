@@ -1,0 +1,83 @@
+// Vendore d'un sous-ensemble stable de
+// k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1/api.proto : la partie du
+// protocole reellement utilisee par ce plugin (pas de negociation
+// d'allocation preferee, pas de topologie NUMA).
+
+syntax = "proto3";
+
+package v1beta1;
+
+message Empty {}
+
+// Service annonce par le kubelet lui-meme (kubelet.sock) : un plugin qui
+// vient de creer son propre socket d'ecoute s'y enregistre une seule fois.
+service Registration {
+  rpc Register(RegisterRequest) returns (Empty) {}
+}
+
+message RegisterRequest {
+  string version = 1;
+  string endpoint = 2;
+  string resource_name = 3;
+  DevicePluginOptions options = 4;
+}
+
+message DevicePluginOptions {
+  bool pre_start_required = 1;
+  bool get_preferred_allocation_available = 2;
+}
+
+// Service annonce par le plugin lui-meme, sur son propre socket : c'est le
+// kubelet qui compose ce socket une fois le Register() ci-dessus reussi.
+service DevicePlugin {
+  rpc GetDevicePluginOptions(Empty) returns (DevicePluginOptions) {}
+  rpc ListAndWatch(Empty) returns (stream ListAndWatchResponse) {}
+  rpc Allocate(AllocateRequest) returns (AllocateResponse) {}
+  rpc PreStartContainer(PreStartContainerRequest) returns (PreStartContainerResponse) {}
+}
+
+message Device {
+  string id = 1;
+  string health = 2;
+}
+
+message ListAndWatchResponse {
+  repeated Device devices = 1;
+}
+
+message AllocateRequest {
+  repeated ContainerAllocateRequest container_requests = 1;
+}
+
+message ContainerAllocateRequest {
+  repeated string device_ids = 1;
+}
+
+message AllocateResponse {
+  repeated ContainerAllocateResponse container_responses = 1;
+}
+
+message ContainerAllocateResponse {
+  map<string, string> envs = 1;
+  repeated Mount mounts = 2;
+  repeated DeviceSpec devices = 3;
+  map<string, string> annotations = 4;
+}
+
+message DeviceSpec {
+  string container_path = 1;
+  string host_path = 2;
+  string permissions = 3;
+}
+
+message Mount {
+  string container_path = 1;
+  string host_path = 2;
+  bool read_only = 3;
+}
+
+message PreStartContainerRequest {
+  repeated string device_ids = 1;
+}
+
+message PreStartContainerResponse {}

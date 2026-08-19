@@ -4,22 +4,29 @@ Le pod parent (conteneur `vm-supervisor`) pilote une microVM Firecracker
 **jailee** (cf. `crates/vm-supervisor/src/vm.rs`). Ca demande un acces reel
 a `/dev/kvm` depuis un pod Kubernetes, ce qui n'est pas trivial.
 
-## Pourquoi le pod tourne en `privileged: true`
+## Plus de `privileged: true` : device plugin `/dev/kvm`
 
-Constate en testant reellement (voir `docs/ARCHITECTURE.md`) : monter
-`/dev/kvm` via `hostPath` dans un pod **non privilegie** donne
+Constate d'abord en testant reellement (voir `docs/ARCHITECTURE.md`) :
+monter `/dev/kvm` via `hostPath` dans un pod **non privilegie** donnait
 `Operation not permitted` a l'ouverture du device, meme avec les bonnes
-permissions de fichier et les capabilities `SYS_ADMIN`/`SYS_RESOURCE`
-ajoutees explicitement. La cause est le **device cgroup controller** de
-Kubernetes/containerd, qui bloque par defaut l'acces aux devices non
-allowlistes independamment des permissions du fichier — `privileged: true`
-contourne ce filtre.
+permissions de fichier — le **device cgroup controller** de
+Kubernetes/containerd bloque par defaut l'acces aux devices non
+allowlistes independamment des permissions du fichier.
 
-Alternative propre pour la suite (pas implementee) : un **device plugin**
-Kubernetes dedie a `/dev/kvm` (comme il en existe pour les GPU), qui
-allowlist precisement ce device sans avoir besoin d'un pod entierement
-privilegie. A envisager avant toute utilisation en dehors d'un cluster de
-developpement de confiance.
+Resolu par `crates/kvm-device-plugin` (voir
+`deploy/dev/kvm-device-plugin/README.md`) : un device plugin Kubernetes qui
+annonce `/dev/kvm` (et `/dev/net/tun`) comme ressource allouable
+(`atelier.dev/kvm`), ce qui fait explicitement allowlister ces devices par
+le kubelet pour le conteneur qui la demande via `resources.limits` — sans
+pod privilegie. Il reste necessaire d'ajouter explicitement les
+capabilities `NET_ADMIN` (creation du TAP), `SYS_ADMIN` et `SYS_RESOURCE`
+(le jailer en a besoin pour elever ses capabilities de fichier a l'exec,
+posees via `setcap` dans ce Dockerfile) — le reste des capabilities du
+`setcap` (`SYS_CHROOT`, `SETUID`, `SETGID`, `MKNOD`, `DAC_OVERRIDE`) fait
+deja partie de l'ensemble par defaut containerd/Docker. Voir
+`crates/controller/src/reconcile.rs::firecracker_security_context` et
+`::kvm_device_resources`, verifie contre un vrai pod sur kind (boot
+Firecracker reel, `Running`, aucune capability hors de cette liste).
 
 ## Construire et charger l'image dans kind
 

@@ -11,6 +11,7 @@ members = [
     "crates/identity-proxy",
     "crates/mcp-gateway",
     "crates/image-builder",
+    "crates/kvm-device-plugin",
 ]
 
 [workspace.package]

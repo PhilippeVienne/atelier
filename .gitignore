@@ -1,5 +1,9 @@
 /target
 
+# Chemin local vers protoc (machine de dev sans apt/sudo), voir
+# crates/kvm-device-plugin
+/.cargo/config.toml
+
 # Node / Next.js
 dashboard/node_modules
 dashboard/.next

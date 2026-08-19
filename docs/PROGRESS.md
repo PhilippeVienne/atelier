@@ -21,7 +21,8 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `controller` — cleanup a la suppression | Fonctionnel | Finalizer `atelier.dev/cleanup`, verifie via test reel |
 | `image-builder` — pipeline devcontainer → ext4 | Fonctionnel | `envbuilder` tourne desormais dans la microVM "builder" (plus d'invocation directe dans le conteneur du Job), suivi de `crane export` + `mke2fs` cote hote — build reel de bout en bout sur un vrai depot (`vscode-remote-try-python`), voir "Builder microVM" ci-dessous |
 | `image-builder` — publication PVC + patch status | Fonctionnel | Verifie via un vrai Job Kubernetes en cluster (RBAC dedie, voir ci-dessous) : `status.imageDigest` patche automatiquement, plus besoin d'intervention manuelle |
-| `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
+| `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors pod et dans un pod Kubernetes **non privilegie** (`atelier.dev/kvm` via `kvm-device-plugin` + `NET_ADMIN`/`SYS_ADMIN`/`SYS_RESOURCE`, voir composant `kvm-device-plugin` ci-dessous) |
+| `kvm-device-plugin` | Fonctionnel | Device plugin Kubernetes (API kubelet v1beta1) pour `/dev/kvm`+`/dev/net/tun` : DaemonSet qui annonce la ressource allouable `atelier.dev/kvm`, permettant a `vm-supervisor`/`image-builder` de tourner sans `securityContext.privileged: true`. Verifie reellement contre kind : `kubectl describe node` liste `atelier.dev/kvm: 32`, un pod non privilegie qui la demande ouvre reellement `/dev/kvm` (`exec 3<>/dev/kvm` reussit), et un vrai boot Firecracker aboutit (`microVM running`) dans un pod portant uniquement `NET_ADMIN`+`SYS_ADMIN`+`SYS_RESOURCE`, sans `privileged` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel (cross-process) | `Vm::restore_persisted` (nouveau) restaure une microVM depuis un snapshot **sans** avoir besoin de l'objet `Vm` d'origine vivant — contrairement a `Vm::restore` (fctools), qui a besoin d'une VM source dans le meme process. Teste reellement : VM source completement eteinte et son jail detruit avant la restauration dans un tout nouveau `Vm` (`crates/firecracker/tests/vm.rs`), puis en conditions reelles via le canal de controle HTTP (nouveau process, nouveau pod, cf. ci-dessous) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
 | `crates/firecracker::network` (TAP link-local) | Fonctionnel | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root), plus `restrict_to_net_proxy` (regles iptables de defense en profondeur, voir `docs/architecture/network-security.md`) — testees reellement (contenu exact des regles verifie via `iptables -S`). Desormais utilise par `vm-supervisor` (VM de l'agent), pas seulement la microVM "builder" |
@@ -112,6 +113,24 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
     coordinateur). Teste de bout en bout (`crates/api-server/tests/routes.rs`) :
     vrai binaire `net-proxy`, vrai serveur TCP cible, vrai `Workshop`+`Pod`
     sur kind, vrai client websocket a travers `api-server`.
+12. **Device plugin Kubernetes pour `/dev/kvm`** (`crates/kvm-device-plugin`) :
+    implemente l'API kubelet v1beta1 (proto vendore, `tonic`/`tonic-prost-build`)
+    pour sortir `vm-supervisor`/`image-builder` de `privileged: true`.
+    Deploye en DaemonSet (`deploy/dev/kvm-device-plugin/`), teste contre kind
+    reel a trois niveaux : (1) `kubectl describe node` liste bien
+    `atelier.dev/kvm: 32` une fois le plugin `Running` et enregistre aupres
+    du kubelet ; (2) un pod non privilegie demandant cette ressource ouvre
+    reellement `/dev/kvm` (pas juste visible, `exec 3<>/dev/kvm` reussit —
+    preuve que le device cgroup est bien configure par le kubelet) ; (3) un
+    vrai pod `vm-supervisor` avec exactement la spec desormais generee par
+    `reconcile.rs` (`resources.limits.atelier.dev/kvm=1`, capabilities
+    `NET_ADMIN`/`SYS_ADMIN`/`SYS_RESOURCE`, **aucun** `privileged`) boote
+    reellement Firecracker (`microVM running`). Au passage, decouverte que
+    `NET_ADMIN` seul suffit a creer le TAP mais pas a spawner le process
+    jailer (`Operation not permitted`) : `SYS_ADMIN`/`SYS_RESOURCE`
+    manquants, necessaires pour que les capabilities de fichier posees par
+    `setcap` sur le binaire `jailer` soient elevables a l'exec (voir
+    "Lecons retenues"). `image-builder` beneficie du meme mecanisme.
 
 ## Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
 
@@ -718,6 +737,38 @@ precedente) — cette partie de la session l'a implemente et valide.
   sans faire tourner de vrai conteneur, fixer `spec.nodeName` sur un nom de
   noeud inexistant : le Pod reste `Pending` a jamais (aucun kubelet ne le
   reclame), et le patch de statut manuel n'est plus jamais ecrase.
+- `tonic-build` 0.14 a deplace toute la generation de code liee a `prost`
+  vers un crate separe, `tonic-prost-build` (`tonic_build::configure()`
+  n'existe plus) — cote runtime, le crate correspondant est
+  `tonic-prost` (pas seulement `prost`). `tonic-prost-build` (comme
+  `prost-build`) invoque le binaire externe `protoc` au moment du build ;
+  sur une machine sans `apt`/`sudo`, un binaire precompile
+  (github.com/protocolbuffers/protobuf/releases) pointe via la variable
+  d'environnement `PROTOC` (`.cargo/config.toml` local, non commite car
+  specifique a la machine) fonctionne tout aussi bien.
+- Un `DaemonSet` qui bind-mounte tout `/dev` de l'hote (au lieu de devices
+  individuels) casse le mount par defaut de kubelet sur
+  `/dev/termination-log` (`CrashLoopBackOff` immediat, "read-only file
+  system" au moment de creer ce point de montage) : toujours monter les
+  devices necessaires individuellement (`hostPath` par device, type
+  `CharDevice`), jamais `/dev` entier.
+- Pour un device plugin Kubernetes (`/dev/kvm` ici), `securityContext.capabilities.add: [NET_ADMIN]`
+  suffit a creer un TAP (`ip tuntap add`) mais **pas** a spawner un process
+  dont les capabilities effectives viennent de `setcap` sur son binaire
+  (ex: `jailer`, cf. Dockerfile `vm-supervisor`) : celui-ci echoue en
+  "Operation not permitted" au spawn si `SYS_ADMIN`/`SYS_RESOURCE` ne sont
+  pas *aussi* explicitement ajoutees au conteneur — les capabilities de
+  fichier ne peuvent etre elevees a l'exec que si elles font deja partie du
+  bounding set du conteneur, l'ensemble par defaut containerd/Docker
+  (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`, `SETGID`, `SYS_CHROOT`,
+  `MKNOD`, etc.) ne les couvrant pas. Un restart de pod qui echoue *apres*
+  la creation du TAP mais *avant* que Firecracker demarre laisse ce TAP
+  vivant dans le netns du pod (partage entre redemarrages d'un meme pod,
+  contrairement a un nouveau pod) : le redemarrage suivant echoue alors en
+  `EBUSY` sur la creation du TAP, masquant completement l'erreur d'origine
+  (`SYS_ADMIN` manquant) derriere un symptome different — a diagnostiquer
+  avec `restartPolicy: Never` pour capturer le tout premier essai sans
+  bruit de redemarrage.
 
 ## Prochaines etapes (par priorite)
 
@@ -758,8 +809,12 @@ precedente) — cette partie de la session l'a implemente et valide.
    (`ATELIER_JWT_AUDIENCE`, `ATELIER_JWT_CA_PATH`), endpoint
    `/v1/workshops/{name}/portforward` ecrit et teste de bout en bout.
 5. `mcp-gateway` et le premier simulateur (candidat : LocalStack pour AWS).
-6. Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
-   `privileged: true`.
+6. ~~Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
+   `privileged: true`~~ — **fait cette session**, voir point 12 du resume
+   chronologique ci-dessus. `vm-supervisor` et `image-builder` tournent
+   desormais sans `privileged: true`, verifie contre kind reel (boot
+   Firecracker reussi dans un pod portant uniquement `NET_ADMIN`/`SYS_ADMIN`/
+   `SYS_RESOURCE` + la ressource `atelier.dev/kvm`).
 7. Offload/reload du cache d'images vers S3 (prevu des la conception,
    explicitement differe).
 8. Stack d'observabilite complet : collector OTLP + backend de stockage +

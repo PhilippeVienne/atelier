@@ -3,10 +3,11 @@ use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStat
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, HostPathVolumeSource,
-    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, SecurityContext,
-    ServiceAccount, Volume, VolumeMount,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, PersistentVolumeClaimVolumeSource, Pod,
+    PodSpec, PodTemplateSpec, ResourceRequirements, SecurityContext, ServiceAccount, Volume,
+    VolumeMount,
 };
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
@@ -30,6 +31,59 @@ const IDENTITY_PROXY_IMAGE: &str = "atelier-identity-proxy:dev";
 /// elles sont recuperees par le garbage collector standard via leurs owner
 /// references.
 const CLEANUP_FINALIZER: &str = "atelier.dev/cleanup";
+/// Ressource allouable annoncee par `atelier-kvm-device-plugin`
+/// (`crates/kvm-device-plugin`, DaemonSet `kube-system`) : demander 1 unite
+/// donne acces a `/dev/kvm` ET `/dev/net/tun` (alloues ensemble par ce
+/// plugin) sans `securityContext.privileged: true` — voir
+/// `kvm_device_resources()` ci-dessous et `docs/PROGRESS.md`.
+const KVM_DEVICE_PLUGIN_RESOURCE: &str = "atelier.dev/kvm";
+
+/// `resources.limits` a poser sur tout conteneur ayant besoin de
+/// `/dev/kvm`/`/dev/net/tun` : remplace l'ancien `privileged: true` +
+/// volumes `hostPath`, desormais inutiles (le kubelet configure lui-meme le
+/// device cgroup du conteneur d'apres les `DeviceSpec` renvoyes par
+/// `Allocate()` du device plugin).
+fn kvm_device_resources() -> ResourceRequirements {
+    ResourceRequirements {
+        limits: Some(BTreeMap::from([(
+            KVM_DEVICE_PLUGIN_RESOURCE.to_string(),
+            Quantity("1".to_string()),
+        )])),
+        ..Default::default()
+    }
+}
+
+/// `securityContext` pour un conteneur qui lance `jailer`/Firecracker
+/// (`crates/firecracker`) et cree un TAP + regles iptables
+/// (`crates/firecracker::network`), une fois `/dev/kvm`/`/dev/net/tun`
+/// obtenus via le device plugin plutot que `privileged: true`. Determine
+/// empiriquement contre kind reel (pas seulement d'apres la doc jailer) :
+/// - `NET_ADMIN` : creation du TAP (`ip tuntap add`) — suffisant a lui
+///   seul pour cette etape, testee isolement.
+/// - `SYS_ADMIN`, `SYS_RESOURCE` : necessaires pour que le jailer (capabilities
+///   de fichier posees via `setcap` dans le Dockerfile — voir
+///   `crates/vm-supervisor/Dockerfile`) puisse effectivement les elever a
+///   l'exec ; sans elles, `Vm::boot_with_network` echoue en "Operation not
+///   permitted" au moment de spawner le process jailer, alors meme que la
+///   creation du TAP juste avant a reussi (les file capabilities ne
+///   peuvent etre elevees que si elles font deja partie du "bounding set"
+///   du conteneur). Le reste des capacites listees dans le `setcap` du
+///   Dockerfile (`SYS_CHROOT`, `SETUID`, `SETGID`, `MKNOD`,
+///   `DAC_OVERRIDE`) fait deja partie de l'ensemble par defaut
+///   containerd/Docker, pas besoin de les ajouter explicitement.
+fn firecracker_security_context() -> SecurityContext {
+    SecurityContext {
+        capabilities: Some(Capabilities {
+            add: Some(vec![
+                "NET_ADMIN".to_string(),
+                "SYS_ADMIN".to_string(),
+                "SYS_RESOURCE".to_string(),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum ReconcileError {
@@ -478,33 +532,6 @@ async fn ensure_image_build_job(
         mount_path: "/tools".to_string(),
         ..Default::default()
     };
-    let kvm_volume = Volume {
-        name: "kvm".to_string(),
-        host_path: Some(HostPathVolumeSource {
-            path: "/dev/kvm".to_string(),
-            type_: Some("CharDevice".to_string()),
-        }),
-        ..Default::default()
-    };
-    let tun_volume = Volume {
-        name: "tun".to_string(),
-        host_path: Some(HostPathVolumeSource {
-            path: "/dev/net/tun".to_string(),
-            type_: Some("CharDevice".to_string()),
-        }),
-        ..Default::default()
-    };
-    let kvm_mount = VolumeMount {
-        name: "kvm".to_string(),
-        mount_path: "/dev/kvm".to_string(),
-        ..Default::default()
-    };
-    let tun_mount = VolumeMount {
-        name: "tun".to_string(),
-        mount_path: "/dev/net/tun".to_string(),
-        ..Default::default()
-    };
-
     // Allowlist d'egress de la microVM builder (net-proxy sidecar) :
     // reutilise telle quelle `Workshop.spec.egress_allowlist`, pensee au
     // depart pour l'usage runtime de l'agent, pas pour les besoins de build
@@ -533,7 +560,7 @@ async fn ensure_image_build_job(
                 spec: Some(PodSpec {
                     restart_policy: Some("Never".into()),
                     service_account_name: Some(job_name.clone()),
-                    volumes: Some(vec![cache_volume, tools_volume, kvm_volume, tun_volume]),
+                    volumes: Some(vec![cache_volume, tools_volume]),
                     // `net-proxy` est un "sidecar natif" (initContainer avec
                     // `restartPolicy: Always`, K8s >= 1.28/1.29, KEP-753) et
                     // non un simple `containers[]` : il tourne indefiniment
@@ -577,16 +604,14 @@ async fn ensure_image_build_job(
                         name: "image-builder".into(),
                         image: Some(IMAGE_BUILDER_IMAGE.into()),
                         env: Some(env),
-                        volume_mounts: Some(vec![cache_mount, tools_mount, kvm_mount, tun_mount]),
-                        // Requis pour /dev/kvm (device cgroup controller) et
-                        // pour CAP_NET_ADMIN (creation du TAP de la microVM
-                        // builder) — meme raisonnement que `vm-supervisor`
-                        // (`ensure_parent_pod`), pas de device plugin KVM
-                        // dedie pour l'instant.
-                        security_context: Some(SecurityContext {
-                            privileged: Some(true),
-                            ..Default::default()
-                        }),
+                        volume_mounts: Some(vec![cache_mount, tools_mount]),
+                        // /dev/kvm et /dev/net/tun alloues via le device
+                        // plugin (`atelier.dev/kvm`, voir
+                        // `kvm_device_resources`), CAP_NET_ADMIN pour la
+                        // creation du TAP de la microVM builder — plus de
+                        // pod privilegie.
+                        resources: Some(kvm_device_resources()),
+                        security_context: Some(firecracker_security_context()),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -698,17 +723,6 @@ async fn ensure_parent_pod(
         read_only: Some(false),
         ..Default::default()
     };
-    let kvm_mount = VolumeMount {
-        name: "kvm".to_string(),
-        mount_path: "/dev/kvm".to_string(),
-        ..Default::default()
-    };
-    let tun_mount = VolumeMount {
-        name: "tun".to_string(),
-        mount_path: "/dev/net/tun".to_string(),
-        ..Default::default()
-    };
-
     // Allowlist d'egress *runtime* de l'agent (contrairement a celle de la
     // microVM builder, ci-dessus dans `ensure_image_build_job`) : c'est ici
     // le sens original de `Workshop.spec.egress_allowlist`.
@@ -743,32 +757,14 @@ async fn ensure_parent_pod(
             // TODO: mcp-gateway reste a ajouter comme conteneur
             // supplementaire de ce pod (expose a l'agent via vsock, voir
             // docs/ARCHITECTURE.md).
-            volumes: Some(vec![
-                Volume {
-                    name: "cache".to_string(),
-                    persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
-                        claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
-                        read_only: Some(false),
-                    }),
-                    ..Default::default()
-                },
-                Volume {
-                    name: "kvm".to_string(),
-                    host_path: Some(HostPathVolumeSource {
-                        path: "/dev/kvm".to_string(),
-                        type_: Some("CharDevice".to_string()),
-                    }),
-                    ..Default::default()
-                },
-                Volume {
-                    name: "tun".to_string(),
-                    host_path: Some(HostPathVolumeSource {
-                        path: "/dev/net/tun".to_string(),
-                        type_: Some("CharDevice".to_string()),
-                    }),
-                    ..Default::default()
-                },
-            ]),
+            volumes: Some(vec![Volume {
+                name: "cache".to_string(),
+                persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                    claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
+                    read_only: Some(false),
+                }),
+                ..Default::default()
+            }]),
             containers: vec![
                 Container {
                     name: "vm-supervisor".into(),
@@ -778,18 +774,14 @@ async fn ensure_parent_pod(
                         env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
                         env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
                     ]),
-                    volume_mounts: Some(vec![cache_mount, kvm_mount, tun_mount]),
-                    // Requis pour l'acces a /dev/kvm (le cgroup device
-                    // controller bloque l'ouverture du device meme avec les
-                    // bonnes permissions de fichier sans ceci — constate en
-                    // pratique, cf. deploy/dev/vm-supervisor/README.md) et
-                    // pour CAP_NET_ADMIN (creation du TAP + regles iptables
-                    // de la microVM de l'agent). Pas de device plugin KVM
-                    // dedie pour l'instant.
-                    security_context: Some(SecurityContext {
-                        privileged: Some(true),
-                        ..Default::default()
-                    }),
+                    volume_mounts: Some(vec![cache_mount]),
+                    // /dev/kvm et /dev/net/tun alloues via le device plugin
+                    // (`atelier.dev/kvm`, voir `kvm_device_resources`),
+                    // CAP_NET_ADMIN pour la creation du TAP + regles
+                    // iptables de la microVM de l'agent — plus de pod
+                    // privilegie.
+                    resources: Some(kvm_device_resources()),
+                    security_context: Some(firecracker_security_context()),
                     ..Default::default()
                 },
                 Container {

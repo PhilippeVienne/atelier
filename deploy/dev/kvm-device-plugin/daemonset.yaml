@@ -1,0 +1,59 @@
+# Device plugin Kubernetes pour /dev/kvm (+ /dev/net/tun) : un exemplaire
+# par noeud, s'enregistre aupres du kubelet local. Une fois `Running`,
+# `kubectl describe node <noeud>` doit lister `atelier.dev/kvm` dans
+# Capacity/Allocatable — voir crates/kvm-device-plugin/README (a suivre) et
+# docs/PROGRESS.md.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: atelier-kvm-device-plugin
+  namespace: kube-system
+  labels:
+    app: atelier-kvm-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app: atelier-kvm-device-plugin
+  template:
+    metadata:
+      labels:
+        app: atelier-kvm-device-plugin
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+      containers:
+        - name: kvm-device-plugin
+          image: atelier-kvm-device-plugin:dev
+          imagePullPolicy: IfNotPresent
+          # Pas de `privileged: true` : ce plugin n'ouvre jamais /dev/kvm
+          # lui-meme, il se contente de verifier son existence (stat) et de
+          # decrire son chemin au kubelet dans les DeviceSpec renvoyes par
+          # Allocate — c'est le kubelet, cote conteneur consommateur, qui
+          # configure le device cgroup en consequence.
+          volumeMounts:
+            - name: device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: kvm
+              mountPath: /dev/kvm
+            - name: tun
+              mountPath: /dev/net/tun
+      volumes:
+        - name: device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        # Montes individuellement (pas tout /dev en bind mount) : un bind
+        # mount de /dev entier casse le mount par defaut de kubelet sur
+        # /dev/termination-log (systeme de fichiers en lecture seule vu de
+        # l'intérieur une fois /dev remplace).
+        - name: kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
