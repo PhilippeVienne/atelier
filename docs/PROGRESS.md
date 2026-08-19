@@ -17,12 +17,12 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `controller` — reconciliation generale | Fonctionnel | 5/5 tests d'integration reels contre kind |
 | `controller` — provisioning Kanidm | Fonctionnel | Test reel contre un Kanidm en conteneur |
 | `controller` — provisioning OpenBao | Fonctionnel | Test reel contre un OpenBao en conteneur (policy KV data+metadata) |
-| `controller` — cycle suspend/resume | Fonctionnel (pod only) | Test reel : pod libere puis recree, entite Kanidm/role OpenBao preserves |
+| `controller` — cycle suspend/resume | Fonctionnel (snapshot reel) | Canal de controle HTTP `controller` -> `vm-supervisor` (`POST /snapshot`) : suspend declenche un vrai snapshot Firecracker publie sur le cache partage, `status.snapshotDigest` renseigne ; resume restaure la microVM depuis ce snapshot (log "restoring microVM from persisted snapshot") dans un **pod/process totalement nouveau**. Verifie reellement contre kind (cycle complet suspend → snapshot publie → pod libere → resume → microVM restauree). Voir "Canal de controle suspend/resume" ci-dessous |
 | `controller` — cleanup a la suppression | Fonctionnel | Finalizer `atelier.dev/cleanup`, verifie via test reel |
 | `image-builder` — pipeline devcontainer → ext4 | Fonctionnel | `envbuilder` tourne desormais dans la microVM "builder" (plus d'invocation directe dans le conteneur du Job), suivi de `crane export` + `mke2fs` cote hote — build reel de bout en bout sur un vrai depot (`vscode-remote-try-python`), voir "Builder microVM" ci-dessous |
 | `image-builder` — publication PVC + patch status | Fonctionnel | Verifie via un vrai Job Kubernetes en cluster (RBAC dedie, voir ci-dessous) : `status.imageDigest` patche automatiquement, plus besoin d'intervention manuelle |
 | `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
-| `vm-supervisor` — snapshot/restore | Fonctionnel | Cycle snapshot → kill process → restore valide en local (hors pod) |
+| `vm-supervisor` — snapshot/restore | Fonctionnel (cross-process) | `Vm::restore_persisted` (nouveau) restaure une microVM depuis un snapshot **sans** avoir besoin de l'objet `Vm` d'origine vivant — contrairement a `Vm::restore` (fctools), qui a besoin d'une VM source dans le meme process. Teste reellement : VM source completement eteinte et son jail detruit avant la restauration dans un tout nouveau `Vm` (`crates/firecracker/tests/vm.rs`), puis en conditions reelles via le canal de controle HTTP (nouveau process, nouveau pod, cf. ci-dessous) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
 | `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
@@ -352,6 +352,85 @@ seulement valide en isolation :
     microVM builder (allowlist vide = tout refuse, comportement voulu) —
     piege facile en testant manuellement, pas un bug.
 
+## Canal de controle suspend/resume : snapshot Firecracker reel
+
+Item 2 de la roadmap ("canal de controle vsock entre `controller`/
+`vm-supervisor`") : le terme "vsock" du TODO d'origine etait trompeur —
+`AF_VSOCK` est le canal guest<->hote *a l'interieur* d'un meme pod (deja
+utilise par `mcp-gateway`, voir `docs/architecture/network-security.md`),
+alors que `controller` et `vm-supervisor` sont deux process dans deux pods
+distincts : un simple canal HTTP sur le reseau normal du cluster (IP de
+pod) est le bon outil, pas `vsock`.
+
+- **Obstacle principal, resolu par construction plutot que par
+  contournement** : l'API `fctools` (`VmSnapshot`/`Vm::restore`) n'est pas
+  concue pour survivre a un redemarrage complet du process — `Vm::restore`
+  prend `&mut self` sur la VM source, dont le `ResourceSystem` vivant
+  fournit les ressources `Moved` (kernel/rootfs) a recopier dans le nouveau
+  jail, et `VmConfigurationData` ne derive que `Serialize` (pas
+  `Deserialize`) : rien de tout ca ne peut etre serialise puis recharge plus
+  tard dans un tout autre process. Contournement : `VmConfigurationData`
+  est entierement determinee par les memes parametres qu'un boot normal
+  (kernel, rootfs, vcpu/mem, boot_args, reseau), tous deja connus
+  independamment de tout etat runtime — `Vm::restore_persisted` (nouveau,
+  `crates/firecracker/src/vm.rs`) la **reconstruit a l'identique** plutot
+  que de la deserialiser, exactement comme le ferait un nouveau
+  `Vm::boot`/`Vm::boot_with_network`, avec pour seule difference
+  `VmConfiguration::RestoredFromSnapshot` a la place de
+  `VmConfiguration::New`. Validite garantie par le `FlatVirtualPathResolver`
+  du jail (chemin virtuel base sur le nom de fichier, pas sur l'identite de
+  la ressource) : la configuration serialisee vers Firecracker reference
+  "/vmlinux.bin"/"/rootfs.ext4" quel que soit l'objet `Resource` interne qui
+  les a produits. Teste reellement en abandonnant completement la VM source
+  (eteinte, jail detruit) avant de restaurer dans un `Vm` flambant neuf
+  (`crates/firecracker/tests/vm.rs::snapshot_persist_and_restore_without_source_vm`).
+- **`crates/vm-supervisor`** : petit serveur HTTP (`axum`, port 8081 par
+  defaut, `ATELIER_VM_CONTROL_ADDR`) expose `POST /snapshot` — fige la VM
+  (`vm.snapshot()`), publie `snapshot.state`/`snapshot.mem` sur le cache
+  partage (`ATELIER_VM_SNAPSHOT_DIR`, ecriture atomique via fichiers `.tmp`
+  + `rename`), renvoie un digest sha256 informatif, puis arrete proprement
+  la VM et sort du process. Au demarrage, si ce repertoire contient deja un
+  snapshot, restauration via `Vm::restore_persisted` plutot que boot direct
+  — decouverte automatique, sans variable d'environnement supplementaire
+  pour distinguer boot/resume. Premiere conteneurisation testee de bout en
+  bout de ce canal : boot -> snapshot via l'API -> arret propre -> reprise
+  dans un **process totalement neuf**, valide manuellement avant meme le
+  passage par Kubernetes.
+- **`crates/controller/src/reconcile.rs`** : `ensure_suspended` appelle ce
+  canal (`request_snapshot`, best-effort — un echec de connexion, un
+  timeout ou une reponse non exploitable degradent silencieusement vers
+  "suspension sans snapshot" plutot que de bloquer indefiniment la
+  suspension demandee) avant de liberer le pod, et publie
+  `status.snapshotDigest`. `ensure_parent_pod` monte desormais le cache en
+  lecture-ecriture (necessaire pour que `vm-supervisor` y publie) et passe
+  `ATELIER_VM_SNAPSHOT_DIR` (`snapshot_cache_subdir`, nouveau dans
+  `storage.rs` — scope par Workshop, pas content-addressed comme le cache
+  d'images : un snapshot n'a pas besoin de dedup entre Workshops).
+- **Premiere conteneurisation du `controller`** (`crates/controller/Dockerfile`,
+  n'existait pas non plus avant cette session) : necessaire pour valider ce
+  canal en conditions reelles — le `controller`, lance depuis le poste de
+  dev (hors cluster, comme durant toute la session), ne peut pas joindre
+  une IP de pod kind directement (reseau du CNI non route vers l'hote).
+  Contourne en lancant le conteneur `controller` avec
+  `--network container:<noeud-kind>` (partage le netns du noeud, qui lui
+  route bien vers les pods qu'il heberge) — meme categorie de contournement
+  que l'usage de `--network host` pour la microVM builder plus haut. Une
+  fois ce partage de netns en place, la requete `POST /snapshot` atteint
+  bien le pod et le cycle complet fonctionne.
+- **Valide de bout en bout contre kind reel** : Workshop reel -> `Running`
+  -> `desiredState: Suspended` -> `vm-supervisor` recoit `POST /snapshot`,
+  publie `snapshot.state`/`snapshot.mem` sur le PVC, `status.snapshotDigest`
+  renseigne, pod libere (`phase: Suspended`) -> `desiredState: Running` ->
+  nouveau pod parent, log `"restoring microVM from persisted snapshot"`
+  (pas `"booting microVM"`) : preuve que la restauration cross-process,
+  cross-pod, fonctionne reellement.
+- **Note observee, pas un bug** : pendant la periode de grace de suppression
+  du pod (delai par defaut ~30s), un reconcile peut encore voir le pod
+  (`Terminating`) et retenter `POST /snapshot` sur une VM deja eteinte par
+  le premier appel reussi — echoue en 500, journalise en `WARN`, sans
+  consequence : `ensure_suspended` ne remplace `status.snapshotDigest` que
+  sur un appel reussi, jamais par `None`.
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -489,6 +568,34 @@ seulement valide en isolation :
   deroutants (le nouveau code n'est simplement jamais execute). Toujours
   verifier `docker images <nom>` / refaire `kind load` apres tout changement
   de code affectant une image utilisee en cluster.
+- `fctools` 0.7.0-alpha.2 : `VmConfigurationData` ne derive que `Serialize`
+  (pas `Deserialize`), et `Vm::restore` exige un `Vm` source vivant dans le
+  meme process (son `ResourceSystem` fournit les ressources a recopier) —
+  cette API n'est pas concue pour un snapshot qui doit survivre a un
+  redemarrage complet du process appelant. Contournement viable : ne pas
+  serialiser `VmConfigurationData` du tout, la **reconstruire a l'identique**
+  a partir des memes parametres qu'un boot normal (elle est entierement
+  determinee par eux) — la coherence du chemin virtuel jaile
+  (`FlatVirtualPathResolver`, base sur le nom de fichier, pas sur l'identite
+  de la ressource) rend cette reconstruction valide sans avoir besoin de
+  l'objet source. Voir `Vm::restore_persisted`,
+  `crates/firecracker/src/vm.rs`.
+- Le `controller`, lance depuis un poste de dev (hors cluster), ne peut pas
+  joindre une IP de pod kind directement — le reseau du CNI (10.244.0.0/16)
+  n'est pas route vers l'hote par defaut. `docker run --network
+  container:<nom-du-noeud-kind>` (partage le netns du noeud, qui lui route
+  bien vers ses propres pods) contourne ce blocage pour du test manuel —
+  meme categorie de contournement que celui deja documente pour
+  `CAP_NET_ADMIN`/la microVM builder plus haut. En production, le
+  `controller` tournant *dans* le cluster (pas encore le cas dans cette
+  session de dev), ce probleme ne se pose simplement pas.
+- Un `Job` Kubernetes ne supprime pas son pod a la fin (`Complete`) — le
+  pod reste visible (`Terminating` puis disparait apres la periode de
+  grace par defaut, ~30s) : un controller qui interroge ce pod pendant
+  cette fenetre (ex: pour un appel de controle avant liberation) peut le
+  voir "encore la" alors que son process principal a deja fini — prevoir
+  l'idempotence/tolerance a un second appel plutot que supposer qu'un seul
+  suffira.
 
 ## Prochaines etapes (par priorite)
 
@@ -500,9 +607,16 @@ seulement valide en isolation :
    (`ctx.registry_addr`) n'est joignable par la microVM builder que via
    l'alias `registry` de `net-proxy`, pas encore par la VM de l'agent
    (n'a pas de reseau du tout aujourd'hui, voir point 3).
-2. Canal de controle vsock entre `controller`/`vm-supervisor` pour que
-   `suspend` declenche un vrai `snapshot/create` avant liberation du pod
-   (aujourd'hui le pod est simplement supprime, sans snapshot).
+2. ~~Canal de controle entre `controller`/`vm-supervisor` pour que `suspend`
+   declenche un vrai `snapshot/create` avant liberation du pod~~ — **fait
+   cette session**, voir "Canal de controle suspend/resume" ci-dessus.
+   Canal HTTP (pas `vsock`, terme initial trompeur — voir cette section) ;
+   `status.snapshotDigest` reellement renseigne, restauration cross-process/
+   cross-pod validee contre kind. Reste ouvert : le `controller` lui-meme
+   ne tourne pas encore *dans* le cluster (premier `Dockerfile` ecrit cette
+   session, mais uniquement pour ce test manuel — pas encore de
+   Deployment/RBAC cluster-wide dedies), donc ce canal n'est valide qu'en
+   conditions de test, pas encore en deploiement reel.
 3. `identity-proxy` (logique de proxy/injection de credentials) est
    maintenant ecrit et teste en composant seul (voir tableau ci-dessus) ;
    reste a faire : ajouter `net-proxy` et `identity-proxy` comme conteneurs

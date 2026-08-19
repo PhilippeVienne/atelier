@@ -33,4 +33,8 @@ ENV ATELIER_SNAPSHOT_EDITOR_BIN=/bin/true
 ENV ATELIER_VM_KERNEL_PATH=/opt/vmlinux.bin
 ENV ATELIER_VM_CHROOT_BASE_DIR=/var/lib/atelier/jailer
 
+# Canal de controle HTTP (suspend/snapshot), joignable par le controller via
+# l'IP du pod — voir crates/controller/src/reconcile.rs::request_snapshot.
+EXPOSE 8081
+
 ENTRYPOINT ["/usr/local/bin/atelier-vm-supervisor"]

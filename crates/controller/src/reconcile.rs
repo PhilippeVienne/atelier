@@ -159,11 +159,12 @@ async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> 
 ///    le pod parent (phase `Provisioning`/`Resuming` -> `Running`), et si
 ///    OpenBao est configure, le role Kubernetes-auth qui scope l'acces de ce
 ///    ServiceAccount aux seuls secrets de ce Workshop (voir
-///    `crates/controller/src/openbao.rs`). Iteration 2 : ce pod parent est
-///    encore un placeholder (`registry.k8s.io/pause`), pas encore les vrais
-///    conteneurs vm-supervisor/net-proxy/identity-proxy/mcp-gateway — la
-///    reprise depuis un snapshot Firecracker (plutot qu'un reboot) reste a
-///    implementer dans `vm-supervisor`.
+///    `crates/controller/src/openbao.rs`). Le pod parent fait tourner un
+///    vrai conteneur `vm-supervisor` (boot Firecracker jaile, ou restauration
+///    depuis `status.snapshot_digest` si une suspension precedente en a
+///    publie un — voir `ensure_suspended`/`request_snapshot`) ; `net-proxy`/
+///    `identity-proxy`/`mcp-gateway` restent a y ajouter (item 3 de
+///    `docs/PROGRESS.md`, "Prochaines etapes").
 #[tracing::instrument(skip_all, fields(workshop = %workshop.name_any()))]
 pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<WorkshopStatus> {
     let ns = workshop.namespace().unwrap_or_else(|| "default".into());
@@ -201,6 +202,14 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
     .await
 }
 
+/// Port d'ecoute par defaut du canal de controle HTTP de `vm-supervisor`
+/// (`ATELIER_VM_CONTROL_ADDR`, cf. `crates/vm-supervisor/src/main.rs`) — pas
+/// `AF_VSOCK` (reserve au canal guest<->hote a l'interieur d'un meme pod,
+/// voir `docs/architecture/network-security.md`) : `controller` et
+/// `vm-supervisor` sont deux process dans deux pods distincts, joignables
+/// via le reseau normal du cluster (IP de pod).
+const VM_CONTROL_PORT: u16 = 8081;
+
 /// Fait converger vers l'etat suspendu : libere le pod parent (compute) mais
 /// laisse intacts le ServiceAccount, l'entite Kanidm et le role OpenBao,
 /// pour une reprise rapide sans reprovisionner l'identite du Workshop.
@@ -215,13 +224,14 @@ async fn ensure_suspended(
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), ns);
     let pod_name = format!("{name}-parent");
 
-    // TODO: avant de supprimer le pod, demander a vm-supervisor un
-    // snapshot Firecracker (PUT /snapshot/create) et publier son digest
-    // dans status.snapshot_digest ; pour l'instant le pod est simplement
-    // libere, sans snapshot reel (vm-supervisor ne pilote pas encore de
-    // vraie microVM).
-    let phase = match pods.get_opt(&pod_name).await? {
-        Some(_) => {
+    let existing_pod = pods.get_opt(&pod_name).await?;
+    let mut snapshot_digest = workshop.status.as_ref().and_then(|s| s.snapshot_digest.clone());
+
+    let phase = match existing_pod {
+        Some(pod) => {
+            if let Some(digest) = request_snapshot(&pod).await {
+                snapshot_digest = Some(digest);
+            }
             pods.delete(&pod_name, &DeleteParams::default()).await?;
             WorkshopPhase::Suspending
         }
@@ -230,8 +240,51 @@ async fn ensure_suspended(
 
     let image_digest = workshop.status.as_ref().and_then(|s| s.image_digest.clone());
     let mut status = carry_forward_status(workshop, phase, image_digest, kanidm_entity_id);
+    status.snapshot_digest = snapshot_digest;
     status.pod_name = None;
     Ok(status)
+}
+
+/// Demande a `vm-supervisor` (canal de controle HTTP, voir
+/// [`VM_CONTROL_PORT`]) de figer la microVM et de publier son snapshot sur
+/// le cache partage, avant que ce pod ne soit supprime. Best-effort et non
+/// bloquant par conception : si le pod n'a pas encore d'IP (demarrage en
+/// cours) ou que l'appel echoue pour n'importe quelle raison (timeout,
+/// vm-supervisor pas encore pret, ...), on se contente de journaliser et de
+/// liberer le pod sans snapshot — mieux vaut honorer `desired_state:
+/// Suspended` sans etat fige que rester bloque indefiniment dessus.
+async fn request_snapshot(pod: &Pod) -> Option<String> {
+    let pod_ip = pod.status.as_ref().and_then(|s| s.pod_ip.as_deref())?;
+    let url = format!("http://{pod_ip}:{VM_CONTROL_PORT}/snapshot");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .ok()?;
+    let response = match client.post(&url).send().await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(%err, %url, "echec de l'appel snapshot a vm-supervisor, suspension sans snapshot");
+            return None;
+        }
+    };
+    if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), %url, "vm-supervisor a refuse la demande de snapshot, suspension sans snapshot");
+        return None;
+    }
+    match response.json::<serde_json::Value>().await {
+        Ok(body) => {
+            let digest = body.get("snapshotDigest").and_then(|v| v.as_str()).map(str::to_string);
+            if digest.is_none() {
+                tracing::warn!(?body, "reponse de vm-supervisor sans snapshotDigest exploitable");
+            }
+            digest
+        }
+        Err(err) => {
+            tracing::warn!(%err, "reponse de vm-supervisor illisible, suspension sans snapshot");
+            None
+        }
+    }
 }
 
 /// Renvoie l'identite Kanidm existante, ou tente d'en provisionner une
@@ -628,11 +681,20 @@ async fn ensure_parent_pod(
         storage::IMAGE_CACHE_MOUNT_PATH,
         storage::digest_cache_subdir(&image_digest)
     );
+    let snapshot_dir = format!(
+        "{}/{}",
+        storage::IMAGE_CACHE_MOUNT_PATH,
+        storage::snapshot_cache_subdir(ns, name)
+    );
 
+    // Lecture-ecriture (pas read_only comme avant l'ajout du canal de
+    // controle) : `vm-supervisor` doit pouvoir publier les fichiers de
+    // snapshot dans ce meme cache au moment de la suspension (voir
+    // `ensure_suspended`).
     let cache_mount = VolumeMount {
         name: "cache".to_string(),
         mount_path: storage::IMAGE_CACHE_MOUNT_PATH.to_string(),
-        read_only: Some(true),
+        read_only: Some(false),
         ..Default::default()
     };
     let kvm_mount = VolumeMount {
@@ -661,7 +723,7 @@ async fn ensure_parent_pod(
                     name: "cache".to_string(),
                     persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
                         claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
-                        read_only: Some(true),
+                        read_only: Some(false),
                     }),
                     ..Default::default()
                 },
@@ -677,7 +739,10 @@ async fn ensure_parent_pod(
             containers: vec![Container {
                 name: "vm-supervisor".into(),
                 image: Some(VM_SUPERVISOR_IMAGE.into()),
-                env: Some(vec![env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path)]),
+                env: Some(vec![
+                    env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
+                    env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
+                ]),
                 volume_mounts: Some(vec![cache_mount, kvm_mount]),
                 // Requis pour l'acces a /dev/kvm : le cgroup device
                 // controller bloque l'ouverture du device meme avec les

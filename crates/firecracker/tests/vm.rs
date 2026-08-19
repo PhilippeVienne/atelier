@@ -126,3 +126,92 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
 
     tokio::fs::remove_dir_all(&work_dir).await.ok();
 }
+
+/// Contrairement au test precedent, ici la VM source (et son
+/// `ResourceSystem`) est **eteinte et abandonnee avant** la restauration :
+/// seuls les fichiers `snapshot.state`/`snapshot.mem`, copies au prealable
+/// hors du jail d'origine (simulateur d'une publication vers un cache
+/// partage), et les memes parametres de boot (kernel/rootfs/vcpu/mem/
+/// boot_args) servent a `Vm::restore_persisted`. C'est le scenario reel
+/// de mise en veille : `suspend` (snapshot + liberation du pod) et `resume`
+/// (nouveau pod, tout autre process) sont separes dans le temps, sans objet
+/// `Vm` source survivant entre les deux.
+#[tokio::test]
+async fn snapshot_persist_and_restore_without_source_vm() {
+    let Some(fixtures) = fixtures() else {
+        eprintln!(
+            "ATELIER_TEST_FIRECRACKER_BIN/JAILER_BIN/VM_KERNEL_PATH/VM_ROOTFS_PATH non definis, test ignore (voir deploy/dev/firecracker/README.md)"
+        );
+        return;
+    };
+
+    // Noms courts deliberement (voir docs/PROGRESS.md, "Lecons retenues") :
+    // sockaddr_un.sun_path est limite a 108 octets, et fctools 0.7.0-alpha.2
+    // avale silencieusement un ENAMETOOLONG dans une boucle qui ne cede
+    // jamais la main a l'executeur (100% CPU, jamais de timeout).
+    let work_dir = PathBuf::from("/var/tmp").join(format!("atelier-vmp-{}", std::process::id()));
+    tokio::fs::create_dir_all(&work_dir).await.unwrap();
+    let chroot_base_dir = work_dir.join("jails");
+
+    let base_config = VmConfig {
+        firecracker_bin: fixtures.firecracker_bin.clone(),
+        jailer_bin: fixtures.jailer_bin.clone(),
+        snapshot_editor_bin: fixtures.snapshot_editor_bin.clone(),
+        chroot_base_dir,
+        jail_id: format!("vmp-boot-{}", std::process::id()),
+        uid: nix::unistd::Uid::current().as_raw(),
+        gid: nix::unistd::Gid::current().as_raw(),
+        vcpu_count: 1,
+        mem_mib: 256,
+        boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
+    };
+
+    let mut vm = Vm::boot(&base_config, &fixtures.kernel_path, &fixtures.rootfs_path)
+        .await
+        .expect("le boot jaile de la microVM doit reussir");
+
+    let snapshot = vm.snapshot().await.expect("le snapshot de la microVM doit reussir");
+
+    // Publication vers un "cache" simule : copie hors du jail d'origine,
+    // qui va etre detruit juste apres.
+    let published_snapshot_path = work_dir.join("published-snapshot.state");
+    let published_mem_file_path = work_dir.join("published-snapshot.mem");
+    tokio::fs::copy(&snapshot.snapshot_path, &published_snapshot_path)
+        .await
+        .expect("copie du fichier d'etat du snapshot vers le cache simule");
+    tokio::fs::copy(&snapshot.mem_file_path, &published_mem_file_path)
+        .await
+        .expect("copie du fichier memoire du snapshot vers le cache simule");
+
+    // La VM source est completement eteinte : plus aucun etat en memoire du
+    // process ne la concerne, seuls les fichiers publies et les parametres
+    // de boot d'origine (connus independamment, memes valeurs que
+    // `base_config`) survivent — exactement ce qu'un nouveau process
+    // `vm-supervisor`, dans un tout autre pod, aurait a sa disposition.
+    vm.shutdown().await.expect("l'arret de la VM source doit reussir");
+
+    let restore_config = VmConfig {
+        jail_id: format!("vmp-restore-{}", std::process::id()),
+        ..base_config
+    };
+    let mut restored = Vm::restore_persisted(
+        &restore_config,
+        &fixtures.kernel_path,
+        &fixtures.rootfs_path,
+        None,
+        &published_snapshot_path,
+        &published_mem_file_path,
+    )
+    .await
+    .expect("la restauration depuis un snapshot persiste (sans VM source vivante) doit reussir");
+    assert!(
+        restored.is_running().await.expect("lecture de l'etat de la VM restauree"),
+        "la microVM restauree depuis un snapshot persiste doit tourner"
+    );
+
+    if let Err(err) = restored.shutdown().await {
+        eprintln!("arret de la microVM restauree (non bloquant): {err}");
+    }
+
+    tokio::fs::remove_dir_all(&work_dir).await.ok();
+}

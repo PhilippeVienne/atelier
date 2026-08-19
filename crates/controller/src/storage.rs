@@ -60,3 +60,13 @@ pub async fn ensure_image_cache_pvc(client: &Client, ns: &str, size: &str) -> an
 pub fn digest_cache_subdir(digest: &str) -> String {
     digest.replace(':', "_")
 }
+
+/// Sous-repertoire du cache ou `vm-supervisor` publie/lit les fichiers de
+/// snapshot d'UN Workshop (`snapshot.state`/`snapshot.mem`). Contrairement
+/// au cache d'images (`digest_cache_subdir`, partage entre Workshops via le
+/// digest du contenu), un snapshot est scope a un seul Workshop a la fois —
+/// pas de dedup utile, donc pas de content-addressing : simplement
+/// namespace/nom, ecrase a chaque nouvelle suspension.
+pub fn snapshot_cache_subdir(ns: &str, name: &str) -> String {
+    format!("snapshots/{ns}_{name}")
+}

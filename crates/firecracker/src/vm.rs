@@ -30,7 +30,8 @@ use fctools::runtime::tokio::TokioRuntime;
 use fctools::vm::api::VmApi;
 use fctools::vm::configuration::{InitMethod, VmConfiguration, VmConfigurationData};
 use fctools::vm::models::{
-    BootSource, CreateSnapshot, Drive, MachineConfiguration, NetworkInterface, SnapshotType,
+    BootSource, CreateSnapshot, Drive, LoadSnapshot, MachineConfiguration, MemoryBackend,
+    MemoryBackendType, NetworkInterface, SnapshotType,
 };
 use fctools::vm::shutdown::{VmShutdownAction, VmShutdownMethod};
 use fctools::vm::snapshot::{PrepareVmFromSnapshotOptions, VmSnapshot};
@@ -57,6 +58,74 @@ fn to_anyhow<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> a
 type Executor = JailedVmmExecutor<FlatVirtualPathResolver>;
 type Spawner = DirectProcessSpawner;
 type FcVm = fctools::vm::Vm<Executor, Spawner, TokioRuntime>;
+
+/// Declare les ressources kernel/rootfs et construit la configuration de la
+/// VM — commun a un boot normal ([`Vm::boot`]/[`Vm::boot_with_network`]) et
+/// a une restauration depuis un snapshot persiste ([`Vm::restore_persisted`]) :
+/// dans les deux cas, la configuration ne depend que de ces memes parametres
+/// d'entree, jamais d'un etat runtime prealable.
+fn build_configuration_data(
+    resource_system: &mut ResourceSystem<Spawner, TokioRuntime>,
+    config: &VmConfig,
+    kernel_path: &Path,
+    rootfs_path: &Path,
+    network: Option<&NetworkSetup>,
+) -> Result<VmConfigurationData> {
+    let kernel = resource_system
+        .create_resource(kernel_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+        .context("declaration de la ressource kernel")?;
+    let rootfs = resource_system
+        .create_resource(rootfs_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+        .context("declaration de la ressource rootfs")?;
+
+    let network_interfaces = network
+        .map(|net| {
+            vec![NetworkInterface {
+                iface_id: net.iface_id.clone(),
+                host_dev_name: net.tap_name.clone(),
+                guest_mac: Some(net.guest_mac.clone()),
+                rx_rate_limiter: None,
+                tx_rate_limiter: None,
+            }]
+        })
+        .unwrap_or_default();
+
+    Ok(VmConfigurationData {
+        boot_source: BootSource {
+            kernel_image: kernel,
+            boot_args: Some(config.boot_args.clone()),
+            initrd: None,
+        },
+        drives: vec![Drive {
+            drive_id: "rootfs".to_string(),
+            is_root_device: true,
+            cache_type: None,
+            partuuid: None,
+            is_read_only: Some(false),
+            block: Some(rootfs),
+            rate_limiter: None,
+            io_engine: None,
+            socket: None,
+        }],
+        pmem_devices: vec![],
+        machine_configuration: MachineConfiguration {
+            vcpu_count: config.vcpu_count,
+            mem_size_mib: config.mem_mib,
+            smt: None,
+            track_dirty_pages: Some(true),
+            huge_pages: None,
+        },
+        cpu_template: None,
+        network_interfaces,
+        balloon_device: None,
+        vsock_device: None,
+        logger_system: None,
+        metrics_system: None,
+        memory_hotplug_configuration: None,
+        mmds_configuration: None,
+        entropy_device: None,
+    })
+}
 
 pub struct VmConfig {
     pub firecracker_bin: PathBuf,
@@ -173,67 +242,7 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-
-        let kernel = resource_system
-            .create_resource(
-                kernel_path.to_path_buf(),
-                ResourceType::Moved(MovedResourceType::Copied),
-            )
-            .context("declaration de la ressource kernel")?;
-        let rootfs = resource_system
-            .create_resource(
-                rootfs_path.to_path_buf(),
-                ResourceType::Moved(MovedResourceType::Copied),
-            )
-            .context("declaration de la ressource rootfs")?;
-
-        let network_interfaces = network
-            .map(|net| {
-                vec![NetworkInterface {
-                    iface_id: net.iface_id.clone(),
-                    host_dev_name: net.tap_name.clone(),
-                    guest_mac: Some(net.guest_mac.clone()),
-                    rx_rate_limiter: None,
-                    tx_rate_limiter: None,
-                }]
-            })
-            .unwrap_or_default();
-
-        let data = VmConfigurationData {
-            boot_source: BootSource {
-                kernel_image: kernel,
-                boot_args: Some(config.boot_args.clone()),
-                initrd: None,
-            },
-            drives: vec![Drive {
-                drive_id: "rootfs".to_string(),
-                is_root_device: true,
-                cache_type: None,
-                partuuid: None,
-                is_read_only: Some(false),
-                block: Some(rootfs),
-                rate_limiter: None,
-                io_engine: None,
-                socket: None,
-            }],
-            pmem_devices: vec![],
-            machine_configuration: MachineConfiguration {
-                vcpu_count: config.vcpu_count,
-                mem_size_mib: config.mem_mib,
-                smt: None,
-                track_dirty_pages: Some(true),
-                huge_pages: None,
-            },
-            cpu_template: None,
-            network_interfaces,
-            balloon_device: None,
-            vsock_device: None,
-            logger_system: None,
-            metrics_system: None,
-            memory_hotplug_configuration: None,
-            mmds_configuration: None,
-            entropy_device: None,
-        };
+        let data = build_configuration_data(&mut resource_system, config, kernel_path, rootfs_path, network)?;
 
         let executor = config.executor("/run/firecracker.socket")?;
         let installation = config.installation();
@@ -254,6 +263,80 @@ impl Vm {
             .start(Duration::from_secs(5))
             .await
             .map_err(to_anyhow("demarrage de la microVM"))?;
+
+        drain_console_pipes(&mut inner);
+
+        Ok(Self { inner })
+    }
+
+    /// Restaure une microVM depuis un snapshot **persiste** (fichiers
+    /// `snapshot.state`/`snapshot.mem` copies hors du jail d'origine, par
+    /// exemple dans un cache content-addressed), dans un process qui n'a
+    /// plus acces a l'objet `Vm` d'origine — contrairement a [`Vm::restore`],
+    /// qui a besoin d'un `Vm` source vivant dans le meme process (l'API telle
+    /// que fournie par `fctools` n'est pas concue pour survivre a un
+    /// redemarrage complet du process appelant : `VmConfigurationData` ne
+    /// derive que `Serialize`, pas `Deserialize`, et `Resource` encapsule un
+    /// `Arc` vers l'etat interne du systeme de ressources d'origine).
+    ///
+    /// Contournement : `VmConfigurationData` est entierement determinee par
+    /// les memes parametres qu'un boot normal (kernel, rootfs, vcpu/mem,
+    /// boot_args, reseau) — elle est donc **reconstruite a l'identique**
+    /// plutot que deserialisee, exactement comme le ferait un nouveau
+    /// `Vm::boot`/`Vm::boot_with_network`, avec pour seule difference le
+    /// `VmConfiguration::RestoredFromSnapshot` (charge l'etat/memoire figes)
+    /// a la place de `VmConfiguration::New`. La coherence du chemin virtuel
+    /// jaile (`FlatVirtualPathResolver`, base sur le nom de fichier, pas sur
+    /// l'identite de la ressource) rend cette reconstruction valide : la
+    /// configuration serialisee vers Firecracker reference "/vmlinux.bin",
+    /// "/rootfs.ext4", peu importe quel objet `Resource` interne les a
+    /// produits.
+    pub async fn restore_persisted(
+        config: &VmConfig,
+        kernel_path: &Path,
+        rootfs_path: &Path,
+        network: Option<&NetworkSetup>,
+        snapshot_path: &Path,
+        mem_file_path: &Path,
+    ) -> Result<Self> {
+        let mut resource_system =
+            ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
+        let data = build_configuration_data(&mut resource_system, config, kernel_path, rootfs_path, network)?;
+
+        let snapshot = resource_system
+            .create_resource(snapshot_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+            .context("declaration de la ressource snapshot")?;
+        let mem_file = resource_system
+            .create_resource(mem_file_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+            .context("declaration de la ressource memoire")?;
+
+        let load_snapshot = LoadSnapshot {
+            track_dirty_pages: Some(false),
+            mem_backend: MemoryBackend {
+                backend_type: MemoryBackendType::File,
+                backend: mem_file,
+            },
+            snapshot,
+            resume_vm: Some(true),
+            network_overrides: Vec::new(),
+        };
+
+        let executor = config.executor("/run/firecracker.socket")?;
+        let installation = config.installation();
+
+        let mut inner = FcVm::prepare(
+            executor,
+            resource_system,
+            installation,
+            VmConfiguration::RestoredFromSnapshot { load_snapshot, data },
+        )
+        .await
+        .map_err(to_anyhow("preparation de la microVM depuis un snapshot persiste"))?;
+
+        inner
+            .start(Duration::from_secs(5))
+            .await
+            .map_err(to_anyhow("restauration (snapshot/load) de la microVM"))?;
 
         drain_console_pipes(&mut inner);
 
