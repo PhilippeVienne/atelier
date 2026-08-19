@@ -24,15 +24,15 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `vm-supervisor` — boot Firecracker jaile | Fonctionnel | VM reelle demarree via jailer + capabilities, hors et dans un pod `privileged: true` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel (cross-process) | `Vm::restore_persisted` (nouveau) restaure une microVM depuis un snapshot **sans** avoir besoin de l'objet `Vm` d'origine vivant — contrairement a `Vm::restore` (fctools), qui a besoin d'une VM source dans le meme process. Teste reellement : VM source completement eteinte et son jail detruit avant la restauration dans un tout nouveau `Vm` (`crates/firecracker/tests/vm.rs`), puis en conditions reelles via le canal de controle HTTP (nouveau process, nouveau pod, cf. ci-dessous) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
-| `crates/firecracker::network` (TAP link-local pour la microVM "builder") | Fonctionnel (composant seul) | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root) |
+| `crates/firecracker::network` (TAP link-local) | Fonctionnel | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root), plus `restrict_to_net_proxy` (regles iptables de defense en profondeur, voir `docs/architecture/network-security.md`) — testees reellement (contenu exact des regles verifie via `iptables -S`). Desormais utilise par `vm-supervisor` (VM de l'agent), pas seulement la microVM "builder" |
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Fonctionnel | JWT valide reellement (RS256, cle generee via `openssl`, JWKS charge au demarrage — pas encore teste contre un vrai flux OAuth2 Kanidm, aucun n'est configure dans l'instance de dev) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) |
-| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation cette session (`crates/net-proxy/Dockerfile`) et premier deploiement reel : sidecar natif (`initContainer` `restartPolicy: Always`) du Job `image-builder`, allowlist alimentee depuis `Workshop.spec.egress_allowlist`, verifie contre un vrai Job en cluster. Toujours pas ajoute au **pod parent** de l'agent (item 3 de la roadmap, distinct) |
+| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation le mois dernier (`crates/net-proxy/Dockerfile`), deploye a la fois comme sidecar du Job `image-builder` et desormais comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (3/3 conteneurs `Running`, alias `identity-proxy` actif, chainage obligatoire confirme) |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel (composant seul) | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur a authentifier — pas encore ecrit cote `api-server`). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
-| `identity-proxy` | Fonctionnel (composant seul) | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`ATELIER_IDENTITY_INJECTION_RULES`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Teste reellement : bout-en-bout sur de vraies sockets TCP (injection verifiee sur ce que recoit la "destination"). Container pas encore ajoute au pod parent, regles pas encore alimentees depuis `Workshop.spec` par le controller |
+| `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Non demarre | — |
 | `dashboard` | Squelette Next.js | Pas encore branche sur `api-server` |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
@@ -431,6 +431,68 @@ pod) est le bon outil, pas `vsock`.
   consequence : `ensure_suspended` ne remplace `status.snapshotDigest` que
   sur un appel reussi, jamais par `None`.
 
+## Reseau de l'agent + `net-proxy`/`identity-proxy` dans le pod parent
+
+Item 3 de la roadmap. Le mecanisme d'isolation reseau etait deja
+integralement specifie dans `docs/architecture/network-security.md` (session
+precedente) — cette partie de la session l'a implemente et valide.
+
+- **`Workshop.spec.identityInjectionRules`** (nouveau champ) : meme type
+  (`IdentityInjectionRule`) defini une seule fois dans `atelier_common::crd`
+  et reexporte par `crates/identity-proxy::rules` (`pub use ... as
+  InjectionRule`, methode `secret_cache_key()` deplacee dans un trait
+  d'extension puisque le type n'est plus local a ce crate) — le controller
+  serialise le contenu du CR tel quel vers `ATELIER_IDENTITY_INJECTION_RULES`
+  (JSON, camelCase des deux cotes). CRD regenere (`crds/workshop.yaml`) et
+  reapplique sur kind.
+- **TAP reseau pour la VM de l'agent** (`crates/vm-supervisor/src/main.rs`) :
+  `vm-supervisor` cree desormais un TAP link-local (`setup_link_local_tap`,
+  meme mecanisme que la microVM "builder", mais sans NAT) et pose les regles
+  iptables de `NetworkSetup::restrict_to_net_proxy` (nouveau,
+  `crates/firecracker/src/network.rs`) avant de booter. Contrairement a la
+  microVM "builder" (init personnalise `atelier-builder-vm-init`),
+  `vm-supervisor` boote le devcontainer construit par `image-builder` tel
+  quel — impossible de lui faire executer du code de configuration reseau a
+  nous. Solution : le parametre de boot noyau standard `ip=<guest>::<hote>:
+  <masque>::eth0:off` (autoconfiguration IP Linux, `Documentation/admin-guide/
+  nfs/nfsroot.rst`), qui configure l'interface et la route par defaut **avant
+  meme que l'init du guest ne demarre**, sans aucune cooperation requise.
+  Verifie reellement (`RUST_LOG=atelier_firecracker=debug`, console du
+  guest) : `IP-Config: Complete: device=eth0, ipaddr=169.254.0.2,
+  mask=255.255.255.252, gw=169.254.0.1`. Regles iptables verifiees a
+  l'identique de la specification (`iptables -S atelier-vm-<tap>` : `ACCEPT`
+  sur le port `net-proxy` + DNS `:53`, puis `DROP`).
+- **`net-proxy` et `identity-proxy` comme conteneurs du pod parent**
+  (`ensure_parent_pod`, `crates/controller/src/reconcile.rs`) : contrairement
+  au sidecar du Job `image-builder` (qui devait etre un `initContainer`
+  `restartPolicy: Always` pour ne pas empecher le Job de se terminer), ici
+  ce sont de simples `containers[]` — le Pod parent est cense tourner
+  indefiniment, aucune contrainte de "completion" ne s'applique.
+  `ATELIER_VM_ADDR` (net-proxy) est fixe a `169.254.0.2` : deterministe,
+  `vm-supervisor` utilise toujours l'index de sous-reseau `0` (une seule
+  microVM par pod). Premier `Dockerfile` d'`identity-proxy` (n'existait pas
+  non plus avant cette session).
+- **Bug trouve en testant reellement (meme categorie que pour
+  `image-builder`)** : `iproute2`/`iptables` absents de l'image Docker finale
+  de `vm-supervisor` (presents nulle part avant, puisque cette image ne
+  faisait jusqu'ici jamais de reseau) — `CrashLoopBackOff` avec `lancement de
+  ip: No such file or directory`. Corrige en les ajoutant a
+  `crates/vm-supervisor/Dockerfile`.
+- **Valide de bout en bout contre kind reel** : `Workshop` avec
+  `egressAllowlist: ["*"]` et une regle `identityInjectionRules` reelle ->
+  pod parent `3/3 Running` -> logs confirmant chaque piece : `vm-supervisor`
+  ("microVM running"), `net-proxy` (`identity_proxy_alias=true`,
+  `identity_proxy_mandatory_hop=true`), `identity-proxy` ("regles
+  d'injection chargees count=1").
+- **Explicitement hors scope de cette session** (voir
+  `docs/architecture/network-security.md`, section mise a jour) : le TAP et
+  le pare-feu donnent au guest un chemin *possible* vers `net-proxy`, mais
+  rien a l'interieur du guest ne configure encore `HTTP_PROXY`/`HTTPS_PROXY`
+  pour s'en servir — un devcontainer construit sans le savoir tenterait une
+  connexion directe, silencieusement bloquee par les regles iptables. Reste
+  a injecter ces variables dans l'image construite par `image-builder` (ex:
+  `/etc/environment`), voir "Prochaines etapes".
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -596,6 +658,20 @@ pod) est le bon outil, pas `vsock`.
   voir "encore la" alors que son process principal a deja fini — prevoir
   l'idempotence/tolerance a un second appel plutot que supposer qu'un seul
   suffira.
+- Le parametre de boot noyau Linux standard `ip=<client-ip>:<server-ip>:
+  <gw-ip>:<netmask>:<hostname>:<device>:<autoconf>` (autoconfiguration IP,
+  cf. `Documentation/admin-guide/nfs/nfsroot.rst`) configure une interface
+  et sa route par defaut **avant que l'init du guest ne demarre**, sans
+  aucune cooperation de celui-ci — le bon outil pour donner une IP a une VM
+  dont on ne controle pas l'init (contrairement a la microVM "builder", qui
+  a son propre init personnalise et peut donc configurer son reseau
+  elle-meme en espace utilisateur).
+- Chaque nouvelle image Docker qui commence a faire du reseau/pare-feu doit
+  explicitement installer `iproute2`/`iptables` — l'oubli est facile
+  (`image-builder` puis `vm-supervisor` ont chacun ete oublies une fois
+  cette session) et le symptome (`lancement de ip: No such file or
+  directory`, ou pire un `CrashLoopBackOff` sans message clair au premier
+  coup d'oeil) ne pointe pas immediatement vers la cause.
 
 ## Prochaines etapes (par priorite)
 
@@ -617,21 +693,18 @@ pod) est le bon outil, pas `vsock`.
    session, mais uniquement pour ce test manuel — pas encore de
    Deployment/RBAC cluster-wide dedies), donc ce canal n'est valide qu'en
    conditions de test, pas encore en deploiement reel.
-3. `identity-proxy` (logique de proxy/injection de credentials) est
-   maintenant ecrit et teste en composant seul (voir tableau ci-dessus) ;
-   reste a faire : ajouter `net-proxy` et `identity-proxy` comme conteneurs
-   du pod parent, cabler l'allowlist de `net-proxy`
-   (`ATELIER_EGRESS_ALLOWLIST`) et les regles d'injection d'`identity-proxy`
-   (`ATELIER_IDENTITY_INJECTION_RULES`) depuis `Workshop.spec` cote
-   controller, et trancher le TODO ouvert dans `docs/ARCHITECTURE.md`
-   (l'agent parle-t-il a `identity-proxy` en direct, port TAP dedie, ou
-   l'injection passe-t-elle par `net-proxy` lui-meme).
-   - Donner un TAP reseau a la VM de l'agent (aujourd'hui absent —
-     `vm-supervisor` boote sans interface reseau) en reutilisant
-     `crates/firecracker::network::setup_link_local_tap` (lien
-     point-a-point vers `net-proxy`, pas de NAT/acces direct a Internet —
-     voir section "Builder microVM" ci-dessus pour le detail de ce choix,
-     applicable tel quel a la VM de l'agent).
+3. ~~`net-proxy`/`identity-proxy` comme conteneurs du pod parent + TAP
+   reseau pour la VM de l'agent~~ — **fait cette session**, voir "Reseau de
+   l'agent + net-proxy/identity-proxy dans le pod parent" ci-dessus. Le TODO
+   de `docs/ARCHITECTURE.md` (l'agent parle-t-il a `identity-proxy` en
+   direct ou seulement via `net-proxy`) etait deja tranche par
+   `docs/architecture/network-security.md` (session precedente) : jamais en
+   direct, uniquement via `net-proxy`. Reste ouvert, distinct : faire en
+   sorte que le devcontainer construit utilise reellement ce chemin —
+   injecter `HTTP_PROXY`/`HTTPS_PROXY` (et un resolveur DNS pointant sur
+   `net-proxy`) dans l'image produite par `image-builder`, probablement via
+   `/etc/environment` ecrit pendant le build (mecanisme exact a trouver cote
+   `envbuilder` — non recherche cette session).
 4. `api-server` : CRUD/suspend/resume et validation JWT sont ecrits et
    testes reellement (voir tableau et resume chronologique ci-dessus) ; reste
    a faire : configurer un vrai OAuth2 Resource Server cote Kanidm (aucun

@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::sync::RwLock;
 
-use crate::rules::InjectionRule;
+use crate::rules::{InjectionRule, InjectionRuleExt};
 
 const DEFAULT_SA_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 /// Le token client OpenBao pour le role `workshop-<name>` a un TTL de 15

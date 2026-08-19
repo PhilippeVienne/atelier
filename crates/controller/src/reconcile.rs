@@ -23,6 +23,7 @@ const FIELD_MANAGER: &str = "atelier-controller";
 const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
 const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
 const NET_PROXY_IMAGE: &str = "atelier-net-proxy:dev";
+const IDENTITY_PROXY_IMAGE: &str = "atelier-identity-proxy:dev";
 /// Bloque la suppression effective d'un Workshop tant que
 /// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
 /// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
@@ -702,6 +703,29 @@ async fn ensure_parent_pod(
         mount_path: "/dev/kvm".to_string(),
         ..Default::default()
     };
+    let tun_mount = VolumeMount {
+        name: "tun".to_string(),
+        mount_path: "/dev/net/tun".to_string(),
+        ..Default::default()
+    };
+
+    // Allowlist d'egress *runtime* de l'agent (contrairement a celle de la
+    // microVM builder, ci-dessus dans `ensure_image_build_job`) : c'est ici
+    // le sens original de `Workshop.spec.egress_allowlist`.
+    let egress_allowlist = workshop.spec.egress_allowlist.join(",");
+    let identity_injection_rules = serde_json::to_string(&workshop.spec.identity_injection_rules)
+        .unwrap_or_else(|_| "[]".to_string());
+    // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
+    // avec le sous-reseau link-local d'index 0 (une seule microVM par pod),
+    // ce qui fixe host_ip=169.254.0.1 / guest_ip=169.254.0.2 (arithmetique
+    // de `fctools::extension::link_local::LinkLocalSubnet`, voir
+    // `crates/firecracker/src/network.rs`).
+    const VM_GUEST_IP: &str = "169.254.0.2";
+    const NET_PROXY_PORT: u16 = 3128;
+    // `identity-proxy` et `net-proxy` partagent le netns du pod (tous les
+    // conteneurs d'un meme Pod) : joignables en `127.0.0.1`, sans service
+    // Kubernetes ni DNS.
+    const IDENTITY_PROXY_PORT: u16 = 3129;
 
     let pod = Pod {
         metadata: ObjectMeta {
@@ -716,8 +740,9 @@ async fn ensure_parent_pod(
         },
         spec: Some(PodSpec {
             service_account_name: Some(sa_name),
-            // TODO: net-proxy/identity-proxy/mcp-gateway restent a ajouter
-            // comme conteneurs supplementaires de ce pod.
+            // TODO: mcp-gateway reste a ajouter comme conteneur
+            // supplementaire de ce pod (expose a l'agent via vsock, voir
+            // docs/ARCHITECTURE.md).
             volumes: Some(vec![
                 Volume {
                     name: "cache".to_string(),
@@ -735,26 +760,72 @@ async fn ensure_parent_pod(
                     }),
                     ..Default::default()
                 },
-            ]),
-            containers: vec![Container {
-                name: "vm-supervisor".into(),
-                image: Some(VM_SUPERVISOR_IMAGE.into()),
-                env: Some(vec![
-                    env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
-                    env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
-                ]),
-                volume_mounts: Some(vec![cache_mount, kvm_mount]),
-                // Requis pour l'acces a /dev/kvm : le cgroup device
-                // controller bloque l'ouverture du device meme avec les
-                // bonnes permissions de fichier sans ceci — constate en
-                // pratique (cf. deploy/dev/vm-supervisor/README.md). Pas de
-                // device plugin KVM dedie pour l'instant.
-                security_context: Some(SecurityContext {
-                    privileged: Some(true),
+                Volume {
+                    name: "tun".to_string(),
+                    host_path: Some(HostPathVolumeSource {
+                        path: "/dev/net/tun".to_string(),
+                        type_: Some("CharDevice".to_string()),
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            }],
+                },
+            ]),
+            containers: vec![
+                Container {
+                    name: "vm-supervisor".into(),
+                    image: Some(VM_SUPERVISOR_IMAGE.into()),
+                    env: Some(vec![
+                        env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
+                        env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
+                        env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
+                    ]),
+                    volume_mounts: Some(vec![cache_mount, kvm_mount, tun_mount]),
+                    // Requis pour l'acces a /dev/kvm (le cgroup device
+                    // controller bloque l'ouverture du device meme avec les
+                    // bonnes permissions de fichier sans ceci — constate en
+                    // pratique, cf. deploy/dev/vm-supervisor/README.md) et
+                    // pour CAP_NET_ADMIN (creation du TAP + regles iptables
+                    // de la microVM de l'agent). Pas de device plugin KVM
+                    // dedie pour l'instant.
+                    security_context: Some(SecurityContext {
+                        privileged: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                Container {
+                    name: "net-proxy".into(),
+                    image: Some(NET_PROXY_IMAGE.into()),
+                    env: Some(vec![
+                        env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
+                        env_var("ATELIER_NET_PROXY_LISTEN_ADDR", &format!("0.0.0.0:{NET_PROXY_PORT}")),
+                        env_var("ATELIER_VM_ADDR", VM_GUEST_IP),
+                        // Tout l'egress autorise par net-proxy est chaine
+                        // vers identity-proxy des lors qu'il est configure
+                        // (voir docs/architecture/network-security.md,
+                        // "identity-proxy : jamais joint directement par la
+                        // VM") : c'est lui, pas la VM, qui decide ensuite
+                        // d'injecter un credential ou de relayer tel quel.
+                        env_var("ATELIER_IDENTITY_PROXY_ADDR", &format!("127.0.0.1:{IDENTITY_PROXY_PORT}")),
+                    ]),
+                    ..Default::default()
+                },
+                Container {
+                    name: "identity-proxy".into(),
+                    image: Some(IDENTITY_PROXY_IMAGE.into()),
+                    env: Some(vec![
+                        env_var(
+                            "ATELIER_IDENTITY_PROXY_LISTEN_ADDR",
+                            &format!("0.0.0.0:{IDENTITY_PROXY_PORT}"),
+                        ),
+                        env_var("ATELIER_IDENTITY_INJECTION_RULES", &identity_injection_rules),
+                        env_var("ATELIER_WORKSHOP_NAME", name),
+                    ]
+                    .into_iter()
+                    .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
+                    .collect::<Vec<_>>()),
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         }),
         ..Default::default()

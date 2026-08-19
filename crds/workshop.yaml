@@ -52,6 +52,30 @@ spec:
                 items:
                   type: string
                 type: array
+              identityInjectionRules:
+                default: []
+                description: 'Regles d''injection de credentials appliquees par `identity-proxy` aux appels sortants de l''agent (jamais exposees en clair a la VM, voir `docs/architecture/network-security.md`). Vide : identity-proxy relaie sans jamais injecter.'
+                items:
+                  description: 'Une regle d''injection `identity-proxy` : les requetes sortantes de l''agent dont l''hote correspond a `host` (correspondance exacte ou wildcard `*.domaine`, meme syntaxe que `egress_allowlist`) recoivent l''en-tete `header` construit comme `prefix` + la valeur du champ `field` du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`. Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule` (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).'
+                  properties:
+                    field:
+                      default: value
+                      type: string
+                    header:
+                      type: string
+                    host:
+                      type: string
+                    prefix:
+                      default: ''
+                      type: string
+                    secretPath:
+                      type: string
+                  required:
+                  - header
+                  - host
+                  - secretPath
+                  type: object
+                type: array
               ownerSubject:
                 description: Identite du sujet JWT autorise a piloter ce Workshop.
                 type: string

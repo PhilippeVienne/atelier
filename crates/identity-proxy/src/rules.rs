@@ -1,38 +1,25 @@
 //! Regles d'injection : quel en-tete poser, avec quel secret OpenBao,
 //! pour les requetes a destination de quel hote.
 //!
-//! Pas encore alimente par le controller depuis `Workshop.spec` (voir
-//! PROGRESS.md, "Prochaines etapes" #3) : pour l'instant configure via une
-//! variable d'environnement JSON, sur le meme modele que
-//! `ATELIER_EGRESS_ALLOWLIST` cote net-proxy avant son propre branchement.
+//! Le type de regle est defini une seule fois, dans `atelier_common::crd`
+//! (partagee avec `Workshop.spec.identity_injection_rules`, dont le
+//! controller serialise le contenu tel quel vers cette variable
+//! d'environnement — voir `crates/controller/src/reconcile.rs`) : ce module
+//! ne fait plus que charger/faire correspondre ces regles.
 
-use serde::Deserialize;
+pub use atelier_common::IdentityInjectionRule as InjectionRule;
 
-/// Une regle : les requetes dont l'hote correspond a `host` (correspondance
-/// exacte ou prefixe `*.`, meme syntaxe que l'allowlist de net-proxy)
-/// recoivent l'en-tete `header` construit comme `prefix` + la valeur du
-/// champ `field` du secret KV v2 stocke sous
-/// `secret/workshops/<name>/<secret_path>`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct InjectionRule {
-    pub host: String,
-    pub header: String,
-    #[serde(default)]
-    pub prefix: String,
-    pub secret_path: String,
-    #[serde(default = "default_field")]
-    pub field: String,
+/// Cle utilisee pour retrouver la valeur en cache (voir `secrets.rs`) : un
+/// meme secret peut alimenter plusieurs regles (hotes differents), donc
+/// indexe par `(secret_path, field)` plutot que par hote. Extension plutot
+/// que methode inherente : `InjectionRule` est definie dans `atelier_common`,
+/// pas dans ce crate.
+pub trait InjectionRuleExt {
+    fn secret_cache_key(&self) -> String;
 }
 
-fn default_field() -> String {
-    "value".to_string()
-}
-
-impl InjectionRule {
-    /// Cle utilisee pour retrouver la valeur en cache (voir `secrets.rs`) :
-    /// un meme secret peut alimenter plusieurs regles (hotes differents),
-    /// donc indexe par `(secret_path, field)` plutot que par hote.
-    pub fn secret_cache_key(&self) -> String {
+impl InjectionRuleExt for InjectionRule {
+    fn secret_cache_key(&self) -> String {
         format!("{}#{}", self.secret_path, self.field)
     }
 }
@@ -97,7 +84,7 @@ mod tests {
 
     #[test]
     fn parses_from_json() {
-        let json = r#"[{"host":"api.github.com","header":"Authorization","prefix":"Bearer ","secret_path":"github","field":"token"}]"#;
+        let json = r#"[{"host":"api.github.com","header":"Authorization","prefix":"Bearer ","secretPath":"github","field":"token"}]"#;
         std::env::set_var("ATELIER_IDENTITY_INJECTION_RULES", json);
         let rules = from_env().unwrap();
         std::env::remove_var("ATELIER_IDENTITY_INJECTION_RULES");

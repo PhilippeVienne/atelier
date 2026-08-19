@@ -103,7 +103,23 @@ connaisse :
      questions multiples et les types `ANY`/`AXFR`/`IXFR`, memes pour un
      nom autorise.
 
-**A faire** : donner effectivement un TAP reseau a la VM de l'agent
-(aujourd'hui absente — `vm-supervisor` boote sans interface reseau, cf.
-commentaire de tete de `crates/firecracker/src/network.rs`) et poser les
-regles ci-dessus. Le mecanisme est specifie, pas encore cable.
+**Fait** : `vm-supervisor` cree desormais ce TAP (`crates/vm-supervisor/src/main.rs`,
+`setup_link_local_tap` + `NetworkSetup::restrict_to_net_proxy`) et boote la
+VM avec. Le guest n'a pas d'init personnalise (contrairement a la microVM
+"builder") : l'adresse/route par defaut sont posees par le noyau lui-meme
+via le parametre de boot `ip=<guest>::<host>:<masque>::eth0:off`
+(autoconfiguration IP standard Linux, ne necessite aucune cooperation de
+l'init du guest) — verifie reellement (`IP-Config: Complete: device=eth0,
+ipaddr=169.254.0.2, mask=255.255.255.252, gw=169.254.0.1`), de meme que les
+regles iptables (`iptables -S atelier-vm-<tap>` confirme les `ACCEPT`
+port net-proxy/DNS puis le `DROP` final).
+
+**Reste ouvert** : ce mecanisme donne au guest un chemin reseau *possible*
+vers `net-proxy` (couche paquet), mais ne configure encore aucun outil a
+l'interieur du guest pour s'en servir (`HTTP_PROXY`/`HTTPS_PROXY`, resolveur
+DNS) — un devcontainer construit sans le savoir n'a aujourd'hui aucune
+raison d'utiliser ce chemin plutot que d'essayer une connexion directe
+(qui echoue silencieusement, bloquee par les regles iptables ci-dessus).
+Injecter ces variables dans l'image construite par `image-builder` (ex:
+`/etc/environment`) reste a faire — voir `docs/PROGRESS.md`, "Prochaines
+etapes".

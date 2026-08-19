@@ -21,7 +21,7 @@ use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::http::{self, RequestHead};
-use crate::rules::{self, InjectionRule};
+use crate::rules::{self, InjectionRule, InjectionRuleExt};
 use crate::secrets::SecretCache;
 
 const BAD_GATEWAY_RESPONSE: &[u8] =

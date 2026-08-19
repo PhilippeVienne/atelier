@@ -12,7 +12,7 @@ RUN cargo build --release -p atelier-vm-supervisor
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libcap2-bin ca-certificates \
+    && apt-get install -y --no-install-recommends libcap2-bin ca-certificates iproute2 iptables \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deploy/dev/firecracker/assets/firecracker /usr/local/bin/firecracker

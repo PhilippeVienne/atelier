@@ -52,3 +52,49 @@ async fn creates_tap_then_tears_it_down() {
         "le device TAP doit avoir disparu apres teardown()"
     );
 }
+
+/// Verifie la defense en profondeur au niveau paquet (voir
+/// docs/architecture/network-security.md) : seule la destination
+/// `net-proxy` (port applicatif + DNS) doit etre acceptee sur le TAP de la
+/// VM de l'agent, tout le reste jete — et la chaine dediee doit disparaitre
+/// proprement au `teardown()`.
+#[tokio::test]
+async fn restricts_tap_to_net_proxy_only() {
+    let tap_name = format!("fc-r{}", std::process::id() % 10000);
+    let network = setup_link_local_tap(&tap_name, 2)
+        .await
+        .expect("la creation du TAP doit reussir sous CAP_NET_ADMIN");
+
+    network
+        .restrict_to_net_proxy(3128)
+        .await
+        .expect("la pose des regles iptables doit reussir sous CAP_NET_ADMIN");
+
+    let chain = format!("atelier-vm-{tap_name}");
+    let list_output = Command::new("iptables")
+        .args(["-S", &chain])
+        .output()
+        .expect("lancement de `iptables -S`");
+    let rules = String::from_utf8_lossy(&list_output.stdout);
+    assert!(rules.contains("--dport 3128") && rules.contains("ACCEPT"), "regle net-proxy manquante: {rules}");
+    assert!(rules.contains("--dport 53"), "regle DNS manquante: {rules}");
+    assert!(rules.contains("-j DROP"), "regle de rejet par defaut manquante: {rules}");
+
+    let input_output = Command::new("iptables")
+        .args(["-S", "INPUT"])
+        .output()
+        .expect("lancement de `iptables -S INPUT`");
+    let input_rules = String::from_utf8_lossy(&input_output.stdout);
+    assert!(
+        input_rules.contains(&format!("-i {tap_name} -j {chain}")),
+        "le TAP doit etre route vers la chaine dediee: {input_rules}"
+    );
+
+    network.teardown().await;
+
+    let chain_after = Command::new("iptables").args(["-S", &chain]).output().expect("lancement de `iptables -S`");
+    assert!(
+        !chain_after.status.success(),
+        "la chaine dediee doit avoir disparu apres teardown()"
+    );
+}

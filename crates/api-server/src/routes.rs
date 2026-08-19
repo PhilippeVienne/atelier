@@ -64,6 +64,8 @@ struct CreateWorkshopRequest {
     egress_allowlist: Vec<String>,
     #[serde(default)]
     tools: Vec<String>,
+    #[serde(default)]
+    identity_injection_rules: Vec<atelier_common::IdentityInjectionRule>,
 }
 
 async fn create_workshop(
@@ -80,6 +82,7 @@ async fn create_workshop(
             resources: req.resources,
             egress_allowlist: req.egress_allowlist,
             tools: req.tools,
+            identity_injection_rules: req.identity_injection_rules,
             // Jamais depuis le corps de la requete : c'est l'identite
             // verifiee par le JWT qui devient le proprietaire, pas une
             // valeur que le client pourrait usurper.

@@ -19,16 +19,25 @@ sequenceDiagram
     participant VM as vm-supervisor
 
     U->>C: spec.desiredState = Suspended
+    C->>VM: POST /snapshot (canal de controle HTTP)
+    VM->>VM: fige la VM, publie snapshot.state/snapshot.mem sur le cache partage
+    VM-->>C: snapshotDigest
     C->>P: supprime le pod (phase Suspending)
-    Note over C: TODO : demander un snapshot<br/>avant suppression (pas encore cable)
-    C-->>U: status.phase = Suspended
+    C-->>U: status.phase = Suspended, status.snapshotDigest
 
     U->>C: spec.desiredState = Running
     C->>P: recree le pod (phase Resuming)
-    P->>VM: boot (depuis image_digest)
+    P->>VM: snapshot present sur le cache ? restore_persisted : boot (depuis image_digest)
     VM-->>C: pod Running
     C-->>U: status.phase = Running
 ```
+
+Best-effort par conception : si l'appel `POST /snapshot` echoue (pod pas
+encore joignable, timeout, ...), la suspension aboutit quand meme, sans
+etat fige (`ensure_suspended`/`request_snapshot`,
+`crates/controller/src/reconcile.rs`) — mieux vaut honorer
+`desired_state: Suspended` sans snapshot que rester bloque dessus
+indefiniment.
 
 L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 (`crates/api-server`), typiquement utilises par le dashboard pour une mise

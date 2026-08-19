@@ -29,6 +29,12 @@ pub struct WorkshopSpec {
     /// Outils/simulateurs a exposer via le mcp-gateway (ex: "aws-sim", "identity").
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Regles d'injection de credentials appliquees par `identity-proxy` aux
+    /// appels sortants de l'agent (jamais exposees en clair a la VM, voir
+    /// `docs/architecture/network-security.md`). Vide : identity-proxy relaie
+    /// sans jamais injecter.
+    #[serde(default)]
+    pub identity_injection_rules: Vec<IdentityInjectionRule>,
     /// Identite du sujet JWT autorise a piloter ce Workshop.
     pub owner_subject: String,
     /// Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en
@@ -66,6 +72,29 @@ fn default_revision() -> String {
 
 fn default_devcontainer_path() -> String {
     ".devcontainer/devcontainer.json".to_string()
+}
+
+/// Une regle d'injection `identity-proxy` : les requetes sortantes de
+/// l'agent dont l'hote correspond a `host` (correspondance exacte ou
+/// wildcard `*.domaine`, meme syntaxe que `egress_allowlist`) recoivent
+/// l'en-tete `header` construit comme `prefix` + la valeur du champ `field`
+/// du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`.
+/// Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule`
+/// (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityInjectionRule {
+    pub host: String,
+    pub header: String,
+    #[serde(default)]
+    pub prefix: String,
+    pub secret_path: String,
+    #[serde(default = "default_injection_field")]
+    pub field: String,
+}
+
+fn default_injection_field() -> String {
+    "value".to_string()
 }
 
 /// Quantites au format Kubernetes (ex: "500m", "2Gi").

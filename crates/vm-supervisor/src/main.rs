@@ -29,6 +29,7 @@
 //! le permet pas directement).
 
 use anyhow::Context;
+use atelier_firecracker::network::{setup_link_local_tap, NetworkSetup};
 use atelier_firecracker::vm::{Vm, VmConfig};
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -55,6 +56,28 @@ async fn main() -> anyhow::Result<()> {
     let _telemetry = atelier_common::telemetry::init("atelier-vm-supervisor");
     tracing::info!("atelier-vm-supervisor starting");
 
+    let net_proxy_port: u16 = std::env::var("ATELIER_NET_PROXY_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3128);
+
+    // TAP link-local, pas de NAT/route de sortie directe — net-proxy (dans
+    // le meme pod, meme netns) est le seul voisin joignable, verrouille
+    // ensuite au niveau paquet par `restrict_to_net_proxy` en defense en
+    // profondeur de l'allowlist applicative. Voir
+    // docs/architecture/network-security.md pour le detail complet.
+    let network = setup_link_local_tap("atelier-vm", 0)
+        .await
+        .context("creation du TAP pour la microVM de l'agent (CAP_NET_ADMIN requis)")?;
+    network
+        .restrict_to_net_proxy(net_proxy_port)
+        .await
+        .context("pose des regles iptables de restriction du TAP")?;
+
+    let base_boot_args = std::env::var("ATELIER_VM_BOOT_ARGS")
+        .unwrap_or_else(|_| "console=ttyS0 reboot=k panic=1 pci=off".to_string());
+    let boot_args = format!("{base_boot_args} {}", kernel_ip_boot_arg(&network));
+
     let config = VmConfig {
         firecracker_bin: env_path("ATELIER_FIRECRACKER_BIN", "firecracker"),
         jailer_bin: env_path("ATELIER_JAILER_BIN", "jailer"),
@@ -71,8 +94,7 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(256),
-        boot_args: std::env::var("ATELIER_VM_BOOT_ARGS")
-            .unwrap_or_else(|_| "console=ttyS0 reboot=k panic=1 pci=off".to_string()),
+        boot_args,
     };
     let kernel_path = env_path("ATELIER_VM_KERNEL_PATH", "");
     let rootfs_path = env_path("ATELIER_VM_ROOTFS_PATH", "");
@@ -93,13 +115,13 @@ async fn main() -> anyhow::Result<()> {
     let mut vm = match (&snapshot_state_path, &snapshot_mem_path) {
         (Some(state), Some(mem)) if state.exists() && mem.exists() => {
             tracing::info!(?state, ?mem, "restoring microVM from persisted snapshot");
-            Vm::restore_persisted(&config, &kernel_path, &rootfs_path, None, state, mem)
+            Vm::restore_persisted(&config, &kernel_path, &rootfs_path, Some(&network), state, mem)
                 .await
                 .context("restauration de la microVM depuis un snapshot persiste")?
         }
         _ => {
             tracing::info!(?kernel_path, ?rootfs_path, "booting microVM");
-            Vm::boot(&config, &kernel_path, &rootfs_path).await?
+            Vm::boot_with_network(&config, &kernel_path, &rootfs_path, &network).await?
         }
     };
     tracing::info!("microVM running");
@@ -136,7 +158,9 @@ async fn main() -> anyhow::Result<()> {
                 let _ = respond_to.send(result);
                 if succeeded {
                     tracing::info!("snapshot published, shutting down microVM for suspend");
-                    vm.shutdown().await?;
+                    let shutdown_result = vm.shutdown().await;
+                    network.teardown().await;
+                    shutdown_result?;
                     return Ok(());
                 }
             }
@@ -156,7 +180,29 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    vm.shutdown().await
+    let shutdown_result = vm.shutdown().await;
+    network.teardown().await;
+    shutdown_result
+}
+
+/// Parametre de boot noyau `ip=` (autoconfiguration IP standard du noyau
+/// Linux, cf. `Documentation/admin-guide/nfs/nfsroot.rst`) : configure
+/// l'interface et la route par defaut du guest **avant meme que son init ne
+/// demarre**, sans cooperation necessaire de l'image (contrairement a
+/// `atelier-builder-vm-init`, qui a son propre init personnalise,
+/// `vm-supervisor` boote le devcontainer construit par `image-builder` tel
+/// quel — son init n'est pas le notre).
+fn kernel_ip_boot_arg(network: &NetworkSetup) -> String {
+    let netmask = prefix_to_netmask(network.network_length);
+    format!(
+        "ip={}::{}:{netmask}::{}:off",
+        network.guest_ip, network.host_ip, network.iface_id
+    )
+}
+
+fn prefix_to_netmask(prefix_len: u8) -> std::net::Ipv4Addr {
+    let mask: u32 = if prefix_len == 0 { 0 } else { u32::MAX << (32 - prefix_len) };
+    std::net::Ipv4Addr::from(mask)
 }
 
 /// Prend un snapshot de la VM en cours et publie ses fichiers dans

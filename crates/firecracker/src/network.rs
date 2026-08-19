@@ -105,6 +105,58 @@ impl NetworkSetup {
     /// la VM eteinte, en compagnon de [`crate::vm::Vm::shutdown`].
     pub async fn teardown(&self) {
         let _ = run(&ip_bin(), &["tuntap", "del", &self.tap_name, "mode", "tap"]).await;
+        // Chaine dediee (voir `restrict_to_net_proxy`) : supprimee ici pour
+        // ne rien laisser trainer, meme si `restrict_to_net_proxy` n'a
+        // jamais ete appelee (no-op dans ce cas, la chaine n'existe pas).
+        let chain = self.iptables_chain_name();
+        let _ = run("iptables", &["-D", "INPUT", "-i", &self.tap_name, "-j", &chain]).await;
+        let _ = run("iptables", &["-D", "FORWARD", "-i", &self.tap_name, "-j", "DROP"]).await;
+        let _ = run("iptables", &["-F", &chain]).await;
+        let _ = run("iptables", &["-X", &chain]).await;
+    }
+
+    fn iptables_chain_name(&self) -> String {
+        format!("atelier-vm-{}", self.tap_name)
+    }
+
+    /// Defense en profondeur au niveau paquet, en complement de l'allowlist
+    /// applicative de `net-proxy` : sans ca, rien n'empeche techniquement le
+    /// guest d'ouvrir une connexion TCP brute vers l'IP du pod (`eth0`),
+    /// l'API server Kubernetes ou un service de metadata cloud, en
+    /// contournant `net-proxy` entierement — le `sysctl
+    /// net.ipv4.ip_forward` est global au netns du pod, une autre microVM
+    /// du meme pod qui l'active ne doit pas rouvrir cette voie par
+    /// accident. Autorise uniquement `net-proxy` (port HTTP proxy + DNS) et
+    /// jette tout le reste — voir docs/architecture/network-security.md
+    /// pour le detail. A appeler apres [`setup_link_local_tap`], avant de
+    /// booter la VM.
+    pub async fn restrict_to_net_proxy(&self, net_proxy_port: u16) -> Result<()> {
+        let chain = self.iptables_chain_name();
+        let host_ip = self.host_ip.to_string();
+
+        run("iptables", &["-N", &chain]).await?;
+        run(
+            "iptables",
+            &[
+                "-A",
+                &chain,
+                "-p",
+                "tcp",
+                "-d",
+                &host_ip,
+                "--dport",
+                &net_proxy_port.to_string(),
+                "-j",
+                "ACCEPT",
+            ],
+        )
+        .await?;
+        run("iptables", &["-A", &chain, "-p", "udp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT"]).await?;
+        run("iptables", &["-A", &chain, "-p", "tcp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT"]).await?;
+        run("iptables", &["-A", &chain, "-j", "DROP"]).await?;
+        run("iptables", &["-A", "INPUT", "-i", &self.tap_name, "-j", &chain]).await?;
+        run("iptables", &["-A", "FORWARD", "-i", &self.tap_name, "-j", "DROP"]).await?;
+        Ok(())
     }
 }
 

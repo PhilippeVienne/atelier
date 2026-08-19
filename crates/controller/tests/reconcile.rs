@@ -61,6 +61,7 @@ fn sample_spec() -> WorkshopSpec {
         },
         egress_allowlist: vec![],
         tools: vec![],
+        identity_injection_rules: vec![],
         owner_subject: "test-user".into(),
         desired_state: WorkshopDesiredState::Running,
     }
