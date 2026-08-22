@@ -1,0 +1,11 @@
+[Unit]
+Description=atelier mcp-gateway agent probe (chemin de production complet)
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/environment
+ExecStart=/bin/sh /usr/local/bin/mcp_probe.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

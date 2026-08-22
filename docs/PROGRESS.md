@@ -655,9 +655,9 @@ que l'agent demande des reglages a l'atelier plutot que d'agir en direct.
     (`apply_creates_owned_parent_pod_once_image_ready`) : verifie contre
     kind reel que le pod parent genere porte bien les quatre conteneurs
     (`vm-supervisor`, `net-proxy`, `identity-proxy`, `mcp-gateway`).
-- **Reste a faire** : verification bout-en-bout depuis l'interieur d'une
-  vraie microVM agent (pas encore fait : aucun agent MCP dans le
-  devcontainer de test actuel).
+- ~~**Reste a faire** : verification bout-en-bout depuis l'interieur d'une
+  vraie microVM agent~~ — **fait cette session**, voir "Verification MCP
+  depuis l'interieur d'une vraie microVM agent" ci-dessous.
 
 ### `enable_simulator` + premier simulateur (LocalStack) : fait, verifie de bout en bout
 
@@ -770,6 +770,42 @@ cible documente pour `mcp-gateway`) :
   Egalement non teste : le comportement en conditions Kubernetes reelles
   (volume `emptyDir` partage entre conteneurs d'un vrai pod, teste ici en
   isolation avec deux process natifs partageant un repertoire local).
+
+### Verification MCP depuis l'interieur d'une vraie microVM agent : fait
+
+Dernier point ouvert de la section `mcp-gateway` : tous les tests HTTP
+precedents (`request_egress`, `request_credential`, `enable_simulator`)
+etaient verifies via un client `curl` tournant sur l'**hote**, partageant le
+netns Docker avec `net-proxy` — jamais depuis un guest reellement boote par
+`vm-supervisor`, donc jamais a travers le pare-feu TAP de production.
+
+- **`demo/mcp-agent-probe/`** (nouveau) : devcontainer minimal (systemd +
+  `curl`) dont le seul acces reseau est celui d'un devcontainer normal —
+  aucun raccourci, contrairement a `demo/vsock-probe/` (pas de partage de
+  netns/process avec l'hote). `mcp_probe.sh` fait un vrai handshake MCP
+  (`initialize` -> `notifications/initialized` -> `tools/call
+  request_egress`) contre `http://mcp-gateway/mcp`, en s'appuyant
+  uniquement sur `HTTP_PROXY` (lu depuis `/etc/environment` via
+  `EnvironmentFile=` systemd) — exactement le chemin qu'un vrai client MCP
+  dans un devcontainer emprunterait.
+- **`/etc/environment` injecte a la main** avec le contenu exact produit par
+  `inject_net_proxy_config` (deja verifie octet pour octet contre le vrai
+  pipeline `image-builder` plus tot dans cette session) : reproduit
+  manuellement plutot que rejoue via le pipeline complet, pour eviter le
+  blocage connu d'auth git sur un depot prive (meme limite que
+  `demo/ministack-workshop/`).
+- **Boot avec les vrais binaires** `atelier-vm-supervisor` (TAP +
+  `restrict_to_net_proxy`, le pare-feu de production, pas une version
+  allegee), `atelier-net-proxy` (alias `mcp-gateway` configure) et
+  `atelier-mcp-gateway` (tool `egress` active).
+- **Verifie de bout en bout, avec preuve croisee** (pas seulement "le guest
+  dit que ca a marche") : le guest recupere bien `HTTP_PROXY=http://169.254.0.1:3128`
+  (log de la sonde), les trois etapes du handshake MCP reussissent (log de
+  la sonde, lu apres extinction via `debugfs`), **et** `net-proxy` (systeme
+  tiers independant) journalise de son cote `allowlist elargie a chaud
+  (request_egress) host="example.com" count=1` — la meme requete qui a
+  transite par le pare-feu TAP a reellement modifie l'etat de `net-proxy`.
+  Voir `demo/mcp-agent-probe/README.md`.
 
 ## Devcontainer de demo `ministack-workshop` : le boot Firecracker de l'agent exige systemd
 
