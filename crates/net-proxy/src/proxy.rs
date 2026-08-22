@@ -40,6 +40,14 @@ pub struct EgressConfig {
     /// dans le cas courant. Prend le pas sur `upstream` (proxy parent
     /// externe) : voir la note sur `tunnel`/`forward` plus bas.
     pub identity_proxy: Option<Arc<UpstreamProxy>>,
+    /// Alias `simulator` (voir `crate::admin`, tool MCP `enable_simulator`) :
+    /// contrairement aux alias de `internal` (toujours actifs des le
+    /// demarrage), celui-ci reste `None` (donc soumis a l'allowlist
+    /// normale, qui le refuse puisque "simulator" n'est pas un domaine
+    /// reel) tant que l'agent n'a pas explicitement demande le simulateur
+    /// via MCP — un simulateur AWS local n'a pas vocation a etre joignable
+    /// par defaut, seulement quand demande.
+    pub simulator: Arc<RwLock<Option<(String, u16)>>>,
 }
 
 pub async fn handle_connection(
@@ -79,6 +87,17 @@ pub async fn handle_connection(
         } else {
             forward(client, &head, &target_host, target_port, peer, None, &[]).await
         };
+    }
+
+    if host.eq_ignore_ascii_case("simulator") {
+        if let Some((target_host, target_port)) = config.simulator.read().await.clone() {
+            tracing::info!(%peer, target_host, target_port, method = %head.method, "route simulateur (active par enable_simulator)");
+            return if head.method.eq_ignore_ascii_case("CONNECT") {
+                tunnel(client, &target_host, target_port, peer, None, &[]).await
+            } else {
+                forward(client, &head, &target_host, target_port, peer, None, &[]).await
+            };
+        }
     }
 
     let allowed = {
@@ -245,6 +264,7 @@ mod tests {
                     auth_header: None,
                 })
             }),
+            simulator: Arc::new(RwLock::new(None)),
         }
     }
 

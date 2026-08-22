@@ -34,7 +34,7 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
-| `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao) et `request_egress` (elargissement a chaud de l'allowlist `net-proxy`), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous deux verifies de bout en bout contre de la vraie infra. `enable_simulator` reste a faire, voir section dediee ci-dessous |
+| `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock, 3 tools) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao), `request_egress` (elargissement a chaud de l'allowlist `net-proxy`) et `enable_simulator` (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous |
 | `dashboard` | Fonctionnel (CRUD de base) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
@@ -655,9 +655,58 @@ que l'agent demande des reglages a l'atelier plutot que d'agir en direct.
     (`apply_creates_owned_parent_pod_once_image_ready`) : verifie contre
     kind reel que le pod parent genere porte bien les quatre conteneurs
     (`vm-supervisor`, `net-proxy`, `identity-proxy`, `mcp-gateway`).
-- **Reste a faire** : tool `enable_simulator` et premier simulateur,
-  verification bout-en-bout depuis l'interieur d'une vraie microVM agent
-  (pas encore fait : aucun agent MCP dans le devcontainer de test actuel).
+- **Reste a faire** : verification bout-en-bout depuis l'interieur d'une
+  vraie microVM agent (pas encore fait : aucun agent MCP dans le
+  devcontainer de test actuel).
+
+### `enable_simulator` + premier simulateur (LocalStack) : fait, verifie de bout en bout
+
+- **Decision de design : alias `simulator` "gate", pas un alias interne
+  classique.** Les alias existants (`identity-proxy`/`mcp-gateway`/`registry`,
+  `crates/net-proxy/src/internal.rs`) sont fixes au demarrage et toujours
+  joignables — corrects pour des composants de confiance structurels, mais
+  un simulateur AWS local n'a pas vocation a etre joignable par defaut,
+  seulement quand l'agent le demande explicitement. Nouvel etat mutable
+  distinct (`EgressConfig::simulator`, `Arc<RwLock<Option<(String, u16)>>>`,
+  `crates/net-proxy/src/proxy.rs`) : initialise a `None` (donc l'hote
+  `simulator` retombe sur l'allowlist normale, qui le refuse sauf `*`, et de
+  toute facon `simulator` n'est pas un nom DNS reel) ; ne devient `Some`
+  qu'apres un appel a `POST /internal/simulator/enable` (nouveau,
+  `crates/net-proxy/src/admin.rs`, meme serveur loopback-only que
+  `request_egress`).
+- **`crates/mcp-gateway`** : nouveau tool `enable_simulator` (sans
+  parametre), gate par `"enable_simulator"` dans `Workshop.spec.tools`
+  (meme convention que les autres tools) — relaie simplement l'appel vers
+  l'endpoint d'admin ci-dessus.
+- **`crates/controller/src/reconcile.rs`** : conteneur `simulator` ajoute au
+  pod parent **seulement si** `Workshop.spec.tools` contient
+  `enable_simulator` — image officielle `localstack/localstack:3` (pas de
+  fork/rebuild maison), lie a `127.0.0.1:4566` (`GATEWAY_LISTEN`, "edge
+  port" LocalStack qui sert la quasi-totalite des API AWS emulees sur ce
+  seul port), donc structurellement injoignable par la VM (netns distincte)
+  et par tout ce qui n'est pas dans le pod. `net-proxy` recoit
+  `ATELIER_SIMULATOR_ADDR=127.0.0.1:4566` dans ce cas, sinon rien (pas de
+  conteneur, pas d'adresse configuree : `enable_simulator` echoue proprement
+  avec un message explicite plutot que de planter).
+- **Verifie de bout en bout, sans mock** (conteneurs Docker reels,
+  `atelier-net-proxy:dev` + `atelier-mcp-gateway:dev` + `localstack/localstack:3`
+  officiel, partage de netns Docker) : avant `enable_simulator`, une requete
+  via `net-proxy` vers l'hote `simulator` echoue (502, ne resout jamais
+  reellement le nom "simulator") ; un vrai handshake MCP complet par HTTP
+  (`initialize`/`notifications/initialized`/`tools/call enable_simulator`,
+  meme protocole que pour `request_egress` documente plus haut) retourne
+  `"simulateur active"` ; la meme requete vers `simulator` a travers
+  `net-proxy` reussit alors (200, vraie reponse JSON de sante LocalStack
+  listant les ~34 services AWS emules) — preuve que le gate fonctionne dans
+  les deux sens et que le chemin complet agent -> mcp-gateway -> net-proxy ->
+  LocalStack est reellement cable.
+- **Limite assumee** : verifie via `net-proxy` directement (curl a travers
+  le proxy HTTP), pas encore depuis l'interieur d'une vraie microVM agent
+  (meme limite que le reste de cette section) ; pas de test contre kind reel
+  non plus (conteneurs Docker isoles, pas de pod K8s) — le cablage
+  `reconcile.rs` (volume, conteneur conditionnel, env vars) est verifie par
+  `cargo check`/compilation mais pas encore par un test d'integration contre
+  un cluster reel.
 
 ### Transport `vsock` natif : fait, verifie de bout en bout
 

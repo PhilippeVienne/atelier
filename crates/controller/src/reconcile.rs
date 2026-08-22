@@ -26,6 +26,9 @@ const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
 const NET_PROXY_IMAGE: &str = "atelier-net-proxy:dev";
 const IDENTITY_PROXY_IMAGE: &str = "atelier-identity-proxy:dev";
 const MCP_GATEWAY_IMAGE: &str = "atelier-mcp-gateway:dev";
+// Image officielle (pas de fork/rebuild maison) : premier simulateur du
+// projet, voir `docs/PROGRESS.md` ("mcp-gateway", tool `enable_simulator`).
+const SIMULATOR_IMAGE: &str = "localstack/localstack:3";
 /// Bloque la suppression effective d'un Workshop tant que
 /// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
 /// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
@@ -747,6 +750,13 @@ async fn ensure_parent_pod(
     // `crates/net-proxy/src/admin.rs`) : joignable par mcp-gateway (meme
     // pod), structurellement injoignable par la VM (netns distincte).
     const NET_PROXY_ADMIN_PORT: u16 = 9001;
+    // "Edge port" LocalStack (sert la quasi-totalite des API AWS emulees
+    // sur ce seul port) : lie a `127.0.0.1` du pod, jamais expose
+    // directement a la VM (seulement via l'alias `simulator` de net-proxy,
+    // et seulement une fois `enable_simulator` appele, cf.
+    // `crates/net-proxy/src/admin.rs`).
+    const SIMULATOR_PORT: u16 = 4566;
+    let simulator_enabled = workshop.spec.tools.iter().any(|t| t == "enable_simulator");
     // Base des jails Firecracker, partagee via le volume "jailer" ci-dessus
     // (defaut binaire identique, mais fixe explicitement ici : le controller
     // et `mcp-gateway` doivent s'accorder sur le meme chemin absolu sans
@@ -843,7 +853,13 @@ async fn ensure_parent_pod(
                         // Alias interne, jamais dans l'allowlist de
                         // l'utilisateur : voir `crates/net-proxy/src/internal.rs`.
                         env_var("ATELIER_MCP_GATEWAY_ADDR", &format!("127.0.0.1:{MCP_GATEWAY_PORT}")),
-                    ]),
+                    ]
+                    .into_iter()
+                    .chain(
+                        simulator_enabled
+                            .then(|| env_var("ATELIER_SIMULATOR_ADDR", &format!("127.0.0.1:{SIMULATOR_PORT}"))),
+                    )
+                    .collect::<Vec<_>>()),
                     ..Default::default()
                 },
                 Container {
@@ -886,7 +902,20 @@ async fn ensure_parent_pod(
                     volume_mounts: Some(vec![jailer_mount]),
                     ..Default::default()
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(simulator_enabled.then(|| Container {
+                name: "simulator".into(),
+                image: Some(SIMULATOR_IMAGE.into()),
+                env: Some(vec![
+                    // "Edge port" unique : pas besoin d'activer les
+                    // services AWS individuellement, LocalStack les sert
+                    // tous derriere ce port des qu'on leur parle.
+                    env_var("GATEWAY_LISTEN", &format!("127.0.0.1:{SIMULATOR_PORT}")),
+                ]),
+                ..Default::default()
+            }))
+            .collect(),
             ..Default::default()
         }),
         ..Default::default()

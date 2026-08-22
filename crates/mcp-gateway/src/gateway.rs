@@ -1,10 +1,9 @@
 //! Tools MCP exposes a l'agent : `request_credential` (lecture d'un secret
-//! OpenBao scope au Workshop) et `request_egress` (elargissement a chaud de
-//! l'allowlist egress de `net-proxy` pour cette session de pod). Chaque
-//! tool n'est actif que si son nom figure dans `Workshop.spec.tools`
-//! (`ATELIER_TOOLS`) ; `enable_simulator` n'est pas encore implemente
-//! (aucun simulateur n'existe pour l'instant, voir `docs/PROGRESS.md`,
-//! roadmap item 5).
+//! OpenBao scope au Workshop), `request_egress` (elargissement a chaud de
+//! l'allowlist egress de `net-proxy` pour cette session de pod) et
+//! `enable_simulator` (rend joignable le sidecar `simulator`/LocalStack du
+//! pod, voir `crates/controller/src/reconcile.rs`). Chaque tool n'est actif
+//! que si son nom figure dans `Workshop.spec.tools` (`ATELIER_TOOLS`).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -104,6 +103,32 @@ impl Gateway {
             .http
             .post(format!("http://{addr}/internal/allowlist/add"))
             .json(&serde_json::json!({ "host": host }))
+            .send()
+            .await
+            .map_err(|err| ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None))?;
+        response
+            .text()
+            .await
+            .map_err(|err| ErrorData::internal_error(format!("reponse net-proxy invalide: {err}"), None))
+    }
+
+    #[tool(
+        description = "Rend joignable le simulateur AWS local (LocalStack) provisionne pour ce Workshop, via l'hote \"simulator\" (meme HTTP_PROXY que le reste de l'egress). Necessite que \"enable_simulator\" figure dans Workshop.spec.tools et qu'un simulateur ait ete demande a la creation du Workshop."
+    )]
+    async fn enable_simulator(&self) -> Result<String, ErrorData> {
+        if !self.config.enabled_tools.contains("enable_simulator") {
+            return Err(ErrorData::invalid_request(
+                "tool \"enable_simulator\" non active pour ce Workshop (Workshop.spec.tools)",
+                None,
+            ));
+        }
+        let addr = self.config.net_proxy_admin_addr.as_ref().ok_or_else(|| {
+            ErrorData::internal_error("ATELIER_NET_PROXY_ADMIN_ADDR non configure", None)
+        })?;
+        let response = self
+            .config
+            .http
+            .post(format!("http://{addr}/internal/simulator/enable"))
             .send()
             .await
             .map_err(|err| ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None))?;

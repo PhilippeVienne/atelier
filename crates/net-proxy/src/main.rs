@@ -120,12 +120,28 @@ async fn main() -> anyhow::Result<()> {
         "routes internes (identity-proxy/mcp-gateway/registry) configurees"
     );
 
+    // Sidecar `simulator` du pod (LocalStack), voir `crates/mcp-gateway`
+    // (tool `enable_simulator`) et `crates/controller/src/reconcile.rs` :
+    // present seulement si `Workshop.spec.tools` le demande. Contrairement
+    // aux alias de `internal_routes` (toujours actifs), reste `None` (donc
+    // non joignable, l'allowlist normale le rejette) tant que l'agent n'a
+    // pas explicitement appele `enable_simulator`.
+    let simulator_target = std::env::var("ATELIER_SIMULATOR_ADDR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|addr| {
+            let (host, port) = addr.rsplit_once(':')?;
+            Some((host.to_string(), port.parse::<u16>().ok()?))
+        });
+    let simulator: Arc<RwLock<Option<(String, u16)>>> = Arc::new(RwLock::new(None));
+
     let egress_config = EgressConfig {
         allowlist,
         upstream: upstream_proxy,
         no_proxy,
         internal: internal_routes,
         identity_proxy,
+        simulator: Arc::clone(&simulator),
     };
 
     let control_router = portforward::router(portforward::PortForwardState {
@@ -143,6 +159,8 @@ async fn main() -> anyhow::Result<()> {
     // 127.0.0.1 uniquement, injoignable par la microVM (voir `crate::admin`).
     let admin_router = admin::router(admin::AdminState {
         allowlist: Arc::clone(&egress_config.allowlist),
+        simulator_target,
+        simulator,
     });
     let admin_listener = TcpListener::bind(&admin_addr).await?;
     tracing::info!(%admin_addr, "serveur d'administration (allowlist) en ecoute");

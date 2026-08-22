@@ -24,6 +24,14 @@ use tokio::sync::RwLock;
 #[derive(Clone)]
 pub struct AdminState {
     pub allowlist: Arc<RwLock<Vec<String>>>,
+    /// Adresse reelle du simulateur (sidecar `simulator` du pod, ex:
+    /// `127.0.0.1:4566`), connue au demarrage (presente si
+    /// `Workshop.spec.tools` contient `enable_simulator`, absente sinon) —
+    /// distincte de `EgressConfig::simulator` (le meme `Arc`, partage) : ce
+    /// champ ne change jamais, seul son contenu (via `enable_simulator_route`)
+    /// bascule de `None` a `Some` lors de l'appel MCP.
+    pub simulator_target: Option<(String, u16)>,
+    pub simulator: Arc<RwLock<Option<(String, u16)>>>,
 }
 
 #[derive(Deserialize)]
@@ -34,6 +42,7 @@ struct AddHostRequest {
 pub fn router(state: AdminState) -> Router {
     Router::new()
         .route("/internal/allowlist/add", post(add_host))
+        .route("/internal/simulator/enable", post(enable_simulator))
         .with_state(state)
 }
 
@@ -52,6 +61,19 @@ async fn add_host(State(state): State<AdminState>, Json(request): Json<AddHostRe
     "ajoute"
 }
 
+/// Rend l'alias `simulator` joignable (voir `crate::proxy::handle_connection`) :
+/// pas d'effet si aucun sidecar `simulator` n'a ete provisionne pour ce pod
+/// (`simulator_target` absent, `Workshop.spec.tools` sans `enable_simulator`).
+async fn enable_simulator(State(state): State<AdminState>) -> &'static str {
+    let Some(target) = state.simulator_target.clone() else {
+        tracing::warn!("enable_simulator demande mais aucun sidecar simulateur configure pour ce pod");
+        return "aucun simulateur configure pour ce Workshop";
+    };
+    *state.simulator.write().await = Some(target);
+    tracing::info!("alias simulator active (enable_simulator)");
+    "simulateur active"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,7 +84,52 @@ mod tests {
     fn state(initial: &[&str]) -> AdminState {
         AdminState {
             allowlist: Arc::new(RwLock::new(initial.iter().map(|s| s.to_string()).collect())),
+            simulator_target: None,
+            simulator: Arc::new(RwLock::new(None)),
         }
+    }
+
+    #[tokio::test]
+    async fn enable_simulator_without_target_configured_is_a_noop() {
+        let state = state(&[]);
+        let simulator = Arc::clone(&state.simulator);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/simulator/enable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(simulator.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn enable_simulator_activates_the_configured_target() {
+        let mut state = state(&[]);
+        state.simulator_target = Some(("127.0.0.1".to_string(), 4566));
+        let simulator = Arc::clone(&state.simulator);
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/simulator/enable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*simulator.read().await, Some(("127.0.0.1".to_string(), 4566)));
     }
 
     #[tokio::test]
