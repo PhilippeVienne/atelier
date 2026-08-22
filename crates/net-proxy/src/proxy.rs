@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
 use crate::allowlist;
 use crate::http::{self, RequestHead};
@@ -21,7 +22,9 @@ const BAD_GATEWAY_RESPONSE: &[u8] =
 
 #[derive(Clone)]
 pub struct EgressConfig {
-    pub allowlist: Arc<Vec<String>>,
+    /// Mutable a chaud : `mcp-gateway` peut y ajouter un hote via
+    /// `crate::admin` (`request_egress`), sans redemarrer net-proxy.
+    pub allowlist: Arc<RwLock<Vec<String>>>,
     pub upstream: Option<Arc<UpstreamProxy>>,
     pub no_proxy: Arc<Vec<String>>,
     pub internal: Arc<InternalRoutes>,
@@ -78,7 +81,11 @@ pub async fn handle_connection(
         };
     }
 
-    if !allowlist::is_allowed(&host, &config.allowlist) {
+    let allowed = {
+        let list = config.allowlist.read().await;
+        allowlist::is_allowed(&host, &list)
+    };
+    if !allowed {
         tracing::warn!(
             %peer,
             host,
@@ -228,7 +235,7 @@ mod tests {
 
     fn base_config(identity_proxy_addr: Option<String>) -> EgressConfig {
         EgressConfig {
-            allowlist: Arc::new(vec!["127.0.0.1".to_string()]),
+            allowlist: Arc::new(RwLock::new(vec!["127.0.0.1".to_string()])),
             upstream: None,
             no_proxy: Arc::new(Vec::new()),
             internal: Arc::new(InternalRoutes::default()),

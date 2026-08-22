@@ -36,10 +36,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use atelier_common::OpenBaoClient;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
-
-use secrets::OpenBaoClient;
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3129";
 

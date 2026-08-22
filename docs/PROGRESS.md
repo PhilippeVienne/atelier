@@ -34,7 +34,7 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
-| `mcp-gateway` | Non demarre | — |
+| `mcp-gateway` | Fonctionnel (base, HTTP/SSE) | Serveur MCP reel (SDK officiel `rmcp`, transport streamable HTTP) exposant `request_credential` (lecture OpenBao) et `request_egress` (elargissement a chaud de l'allowlist `net-proxy`), tous deux verifies de bout en bout contre de la vraie infra (OpenBao reel, net-proxy reel). `enable_simulator` et le transport `vsock` natif restent a faire, voir section dediee ci-dessous |
 | `dashboard` | Fonctionnel (CRUD de base) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
@@ -568,6 +568,170 @@ precedente) — cette partie de la session l'a implemente et valide.
   a injecter ces variables dans l'image construite par `image-builder` (ex:
   `/etc/environment`), voir "Prochaines etapes".
 
+## `mcp-gateway` : premier serveur MCP reel
+
+Dernier composant du tableau ci-dessus a sortir de "Non demarre". Design
+cible documente de longue date (`docs/ARCHITECTURE.md`,
+`docs/architecture/network-security.md`) : un point d'entree structure pour
+que l'agent demande des reglages a l'atelier plutot que d'agir en direct.
+
+- **Decision d'architecture : HTTP/SSE via `net-proxy`, pas `vsock`, pour ce
+  lot.** Le design documente presente `vsock` comme transport primaire (deja
+  cable cote design, jamais construit : `crates/firecracker/src/vm.rs` fixe
+  `vsock_device: None` sur toute VM) et l'alias HTTP de `net-proxy`
+  (`ATELIER_MCP_GATEWAY_ADDR`, deja present dans `crates/net-proxy/src/internal.rs`
+  mais jamais branche jusqu'ici) comme repli pour les clients qui prefèrent
+  HTTP/SSE. Batir `vsock` correctement (device Firecracker, plumbing hote,
+  cote guest) est un chantier de l'ampleur du TAP reseau deja fait pour
+  l'agent — differe. La garantie de securite recherchee ("mcp-gateway jamais
+  joint directement par la VM") ne depend pas de vsock : elle est deja
+  assuree par le meme mecanisme que pour `identity-proxy` (pare-feu TAP, la
+  VM ne connait que `net-proxy`).
+- **`crates/common::openbao_client`** : `login()`/`read_field()`
+  (authentification Kubernetes-auth OpenBao + lecture KV v2) extraits de
+  `crates/identity-proxy/src/secrets.rs` vers un client partage — la policy
+  provisionnee par `crates/controller/src/openbao.rs::ensure_workshop_role`
+  couvre deja tout `secret/data/workshops/<name>/*`, donc `mcp-gateway`
+  peut lire un sous-chemin different (`workshops/<name>/mcp`) avec le meme
+  role, sans aucun changement de provisioning. `identity-proxy` refactore
+  pour consommer ce client, son cache/rafraichissement periodique restant
+  local (specifique a l'injection continue de credentials HTTP).
+- **`crates/net-proxy` : allowlist mutable a chaud + endpoint d'admin
+  loopback-only.** `EgressConfig.allowlist`/`DnsConfig.allowlist` passent de
+  `Arc<Vec<String>>` a `Arc<RwLock<Vec<String>>>` (`proxy.rs`, `dns.rs`,
+  `main.rs`). Nouveau module `admin.rs` : `POST /internal/allowlist/add`,
+  servi sur un **second listener** lie explicitement a `127.0.0.1`
+  (`ATELIER_NET_PROXY_ADMIN_ADDR`, defaut `127.0.0.1:9001`) — jamais
+  `0.0.0.0`, contrairement au port de controle du port-forward
+  (`ATELIER_NET_PROXY_CONTROL_ADDR`) qui n'est protege que par les regles
+  iptables du TAP. Verifie manuellement (conteneurs Docker reels, meme
+  netns) : un appel externe sur le port publie de ce listener echoue
+  (connexion refusee, le bind loopback n'est routable que depuis l'interieur
+  du conteneur), alors qu'un appel depuis un conteneur partageant le netns
+  (`mcp-gateway`) reussit. Pas de persistance : un ajout ne survit pas a un
+  redemarrage de `net-proxy` ni ne modifie `Workshop.spec.egress_allowlist`.
+- **`crates/mcp-gateway`** : SDK officiel `rmcp` (meme choix de principe que
+  pour `fctools` : SDK officiel plutot que hand-roll), transport streamable
+  HTTP (`StreamableHttpService` + `axum::Router::nest_service`, feature
+  `tower` de `rmcp`). Deux tools reels, actifs seulement si leur nom figure
+  dans `Workshop.spec.tools` (`ATELIER_TOOLS`, verifie au moment de l'appel,
+  pas filtre de `tools/list`) :
+  - `request_credential { field }` : lit `workshops/<name>/mcp` via le
+    client OpenBao partage, retourne le champ demande.
+  - `request_egress { host }` : appelle l'endpoint d'admin de `net-proxy`
+    (ci-dessus) sur `127.0.0.1:9001` (meme pod).
+  - `enable_simulator` : **non implemente** — aucun simulateur n'existe
+    encore (roadmap item 5, "mcp-gateway et le premier simulateur, candidat
+    LocalStack" reste a faire).
+  `allowed_hosts` de `rmcp` (protection anti DNS-rebinding, restreint par
+  defaut a `localhost`/`127.0.0.1`) etendu explicitement a `mcp-gateway` :
+  `net-proxy` relaie la requete de la VM telle quelle recue
+  (`crate::proxy::forward`), Host header compris, potentiellement
+  `Host: mcp-gateway` plutot qu'une IP.
+- **`crates/controller/src/reconcile.rs`** : conteneur `mcp-gateway` ajoute
+  au pod parent (`containers[]`, comme `net-proxy`/`identity-proxy` —
+  tourne indefiniment), env `ATELIER_WORKSHOP_NAME`, `ATELIER_TOOLS`
+  (serialisation CSV de `workshop.spec.tools`), `ATELIER_NET_PROXY_ADMIN_ADDR`,
+  `OPENBAO_ADDR` (si configure). Alias `ATELIER_MCP_GATEWAY_ADDR` enfin
+  branche cote conteneur `net-proxy` (le code le supportait deja, jamais
+  utilise jusqu'ici).
+- **Verifie reellement, sans mock** (conteneurs Docker construits et
+  executes, pas seulement `cargo test`) :
+  - `request_egress` bout en bout : un appel MCP `tools/call` reel
+    (handshake `initialize`/`notifications/initialized`/`tools/call` via
+    `curl`, protocole streamable HTTP) contre un vrai conteneur
+    `atelier-mcp-gateway` elargit l'allowlist d'un vrai conteneur
+    `atelier-net-proxy` (partage de netns Docker, meme scenario que deux
+    conteneurs d'un pod) ; un `CONNECT` HTTPS ulterieur vers l'hote ajoute
+    (`crates.io`) reussit alors un vrai handshake TLS complet a travers le
+    tunnel, la ou il echouait avant l'appel.
+  - `request_credential` bout en bout : provisioning reel d'un role
+    OpenBao (`workshop-mcpdemo`, methode Kubernetes-auth, meme sequence que
+    `deploy/dev/openbao/README.md`) et d'un secret KV v2
+    (`workshops/mcpdemo/mcp`), interroge via `mcp-gateway` lance en local
+    avec un vrai token de ServiceAccount Kubernetes — la valeur exacte du
+    secret est retournee par l'appel MCP.
+  - Test d'integration controller etendu
+    (`apply_creates_owned_parent_pod_once_image_ready`) : verifie contre
+    kind reel que le pod parent genere porte bien les quatre conteneurs
+    (`vm-supervisor`, `net-proxy`, `identity-proxy`, `mcp-gateway`).
+- **Reste a faire** : transport `vsock` natif (voir plus haut), tool
+  `enable_simulator` et premier simulateur, verification bout-en-bout depuis
+  l'interieur d'une vraie microVM agent (pas encore fait : aucun agent MCP
+  dans le devcontainer de test actuel).
+
+## Devcontainer de demo `ministack-workshop` : le boot Firecracker de l'agent exige systemd
+
+Question ouverte depuis la conception de `vm-supervisor` (qui boote le
+rootfs d'un devcontainer arbitraire **sans** `init=` personnalise,
+contrairement a la microVM "builder") : le PID 1 par defaut d'une image
+devcontainer standard demarre-t-il seulement, et fait-il tourner quoi que
+ce soit tout seul ? Verifie reellement cette session avec
+`demo/ministack-workshop` (devcontainer combinant docker-in-docker,
+`ministack`, Claude Code, `code-server` — voir
+`demo/ministack-workshop/README.md`) :
+
+- **Rootfs construit a la main, meme procedure qu'`image-builder`** (export
+  d'image Docker + `mke2fs -F -t ext4 -d`, cf. `crates/image-builder/src/main.rs`),
+  boote directement avec `atelier-firecracker`, boot_args identiques a
+  `crates/vm-supervisor/src/main.rs` (nouveau test
+  `crates/firecracker/tests/agent_boot_smoke.rs`, sur le modele de
+  `tests/builder_vm.rs`) : reproduit fidelement les conditions reelles sans
+  passer par tout le pipeline K8s (Job `image-builder`, registre,
+  controller), qui aurait ajoute des variables sans rapport avec la
+  question posee (notamment l'auth git sur un depot prive).
+- **Constat initial : le PID 1 par defaut ne demarre rien.** Console du
+  guest (draine vers `tracing::debug!`, seul canal de diagnostic sans
+  vsock) : le noyau tente `/sbin/init`, `/etc/init`, `/bin/init`, ne trouve
+  aucun des trois (l'image `mcr.microsoft.com/devcontainers/base` n'a pas
+  de systeme init installe, pensee pour tourner sous un runtime de
+  conteneur classique, pas pour booter seule) et retombe sur un `/bin/sh`
+  nu comme PID 1 — rien ne demarre. `postStartCommand`
+  (`devcontainer.json`) est un concept du CLI `devcontainer`, jamais
+  rejoue par le noyau : sans lui, aucun mecanisme ne lance
+  `dockerd`/`ministack`/`code-server`.
+- **Corrige** : `systemd`/`systemd-sysv` ajoutes a l'image
+  (`demo/ministack-workshop/.devcontainer/Dockerfile`), nos services
+  demarres via deux unites systemd dediees
+  (`atelier-ministack.service`/`atelier-code-server.service`,
+  `WantedBy=multi-user.target`) plutot que via `postStartCommand`, qui
+  reste par ailleurs utile pour l'usage `devcontainer up` classique
+  (Docker, testee au debut de cette session).
+- **Piege trouve en corrigeant** : `systemctl enable` echoue silencieusement
+  dans cette image (exit 0, aucun symlink cree) — un script factice
+  intercepte `systemctl`/`service` ("systemd is not running in this
+  container due to its overhead"), place par l'image de base pour eviter
+  que l'installation de paquets `.deb` fournissant des unites systemd
+  echoue pendant un `docker build` classique (sans PID 1 systemd). Les
+  paquets eux-memes (ex: `docker.service`, installe par la feature
+  `docker-in-docker`) s'activent correctement malgre tout via
+  `deb-systemd-helper` (appele par leur script `postinst`), qui manipule
+  les symlinks directement sans passer par ce faux `systemctl` — repris a
+  la main (`ln -s` dans `/etc/systemd/system/multi-user.target.wants/`)
+  pour nos deux unites.
+- **Resultat, verifie reellement** : boot confirme (meme environnement que
+  les autres tests Firecracker de ce crate, `docker run --privileged
+  --network host` avec `/dev/kvm`+`/dev/net/tun`, voir "Lecons retenues"),
+  `code-server:8080` et `ministack:4566` repondent tous les deux a une
+  vraie connexion TCP depuis l'hote — dans une microVM bootee exactement
+  comme le fait `vm-supervisor` en production (memes boot_args, aucune
+  concession).
+- **Portee de ce resultat** : ce n'est pas seulement une bizarrerie de ce
+  devcontainer de demo — c'est la premiere verification reelle que
+  l'architecture "n'importe quel depot Dev Containers standard" (`docs/ARCHITECTURE.md`)
+  a une limite concrete non documentee jusqu'ici : un devcontainer sans
+  systeme init installe ne fera jamais tourner ses `postCreateCommand`/
+  `postStartCommand` une fois boote comme microVM (contrairement a
+  l'usage normal via le CLI `devcontainer`/VS Code). Implication pour tout
+  futur Workshop : soit le devcontainer source installe lui-meme un
+  systeme init et declare ses propres services demarres au boot (comme
+  fait ici), soit `image-builder`/`vm-supervisor` devront un jour injecter
+  un mecanisme generique equivalent — non tranche, laisse ouvert.
+- **Reste a faire** : creer un vrai `Workshop` K8s pointant sur ce depot
+  (bloque sur l'auth git a un depot prive, jamais testee jusqu'ici — les
+  Workshops de test utilisaient des depots publics) pour valider la meme
+  chose a travers le pipeline complet, pas seulement en isolation.
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -816,6 +980,23 @@ precedente) — cette partie de la session l'a implemente et valide.
   `enable-localhost-redirects` explicite en plus de `add-redirect-url`,
   sans quoi l'echange de code echoue meme avec une redirect_uri par ailleurs
   correctement enregistree.
+- Une image devcontainer standard (`mcr.microsoft.com/devcontainers/base`)
+  n'a **pas** de systeme init installe : bootee directement par un noyau
+  (sans runtime de conteneur), le PID 1 retombe sur un `/bin/sh` nu apres
+  l'echec de `/sbin/init`/`/etc/init`/`/bin/init` — rien ne demarre tout
+  seul, `postStartCommand` n'etant rejoue que par le CLI `devcontainer`.
+  Ajouter `systemd`/`systemd-sysv` et declarer ses propres services comme
+  unites systemd est necessaire pour tout devcontainer destine a booter
+  comme microVM.
+- Dans une image devcontainer standard, `systemctl enable <unit>` echoue
+  silencieusement (exit 0, aucun symlink cree) : un faux `systemctl` y est
+  installe pour eviter que l'installation de paquets `.deb` porteurs
+  d'unites systemd echoue pendant un `docker build` classique (pas de PID 1
+  systemd a ce moment-la). Contournement : creer soi-meme le symlink
+  d'activation (`ln -s ../mon-service.service
+  /etc/systemd/system/multi-user.target.wants/mon-service.service`), comme
+  le fait `deb-systemd-helper` pour les paquets (qui, lui, n'est pas
+  intercepte).
 
 ## Prochaines etapes (par priorite)
 
@@ -843,19 +1024,60 @@ precedente) — cette partie de la session l'a implemente et valide.
    de `docs/ARCHITECTURE.md` (l'agent parle-t-il a `identity-proxy` en
    direct ou seulement via `net-proxy`) etait deja tranche par
    `docs/architecture/network-security.md` (session precedente) : jamais en
-   direct, uniquement via `net-proxy`. Reste ouvert, distinct : faire en
-   sorte que le devcontainer construit utilise reellement ce chemin —
-   injecter `HTTP_PROXY`/`HTTPS_PROXY` (et un resolveur DNS pointant sur
-   `net-proxy`) dans l'image produite par `image-builder`, probablement via
-   `/etc/environment` ecrit pendant le build (mecanisme exact a trouver cote
-   `envbuilder` — non recherche cette session).
+   direct, uniquement via `net-proxy`. ~~Reste ouvert, distinct : faire en
+   sorte que le devcontainer construit utilise reellement ce chemin~~ —
+   **fait cette session** : plutot que de chercher un mecanisme cote
+   `envbuilder` (aucun hook natif trouve, et de toute facon inutilisable ici
+   — l'export brut `crane export`+`mke2fs` perd deja toute metadonnee OCI
+   `ENV`, voir "Lecons retenues"), `image-builder::inject_net_proxy_config`
+   (nouveau, `crates/image-builder/src/main.rs`) ecrit directement
+   `/etc/environment` (complete le fichier existant, `HTTP_PROXY`/
+   `HTTPS_PROXY`/variantes minuscules + `NO_PROXY` vers `169.254.0.1:3128`)
+   et `/etc/resolv.conf` (`nameserver 169.254.0.1`, remplace un eventuel
+   symlink `systemd-resolved`) dans l'arborescence exportee, entre
+   `export_image_filesystem` et `package_ext4` — meme adresse fixe de lien
+   point-a-point et meme port que `vm-supervisor`/`controller` (constante
+   `3128`, cf. `crates/controller/src/reconcile.rs`). `/etc/environment` est
+   le bon point d'injection pour un guest sans init personnalise (boote le
+   PID 1 du devcontainer tel quel) : lu par `pam_env` pour toute session de
+   login (SSH/terminal interactif — code-server, Claude Code).
+   **Verifie contre le vrai pipeline `image-builder`** (pas seulement
+   `cargo check`) : conteneurs Docker reels `atelier-image-builder:dev` +
+   `atelier-net-proxy:dev` (partage du netns hote, meme registre `:5000`
+   reel), vrai devcontainer (`vscode-remote-try-python`) construit par la
+   microVM builder via `envbuilder`, push registre reel, `crane export` +
+   injection + `mke2fs` reels. Contenu du `rootfs.ext4` resultant inspecte
+   directement (`debugfs -R "cat ..."`, sans montage) : `/etc/environment`
+   et `/etc/resolv.conf` (fichier regulier, pas un symlink residuel) portent
+   bien le contenu attendu.
+   **Usage reel par un guest boot, verifie ensuite** (`demo/net-proxy-probe/`,
+   nouveau) : devcontainer minimal (systemd + `curl` + service qui fait un
+   vrai `CONNECT` HTTPS vers `example.com`) boote avec le **vrai binaire**
+   `atelier-vm-supervisor` (pas une reimplementation de test), a cote d'un
+   vrai `atelier-net-proxy`, meme protocole A/B qu'ailleurs dans cette
+   section : rootfs identique avec/sans les deux fichiers injectes. Preuve
+   observee dans les logs du **vrai** `net-proxy` (pas dans un mock) :
+   variante avec injection -> `egress autorise ... host="example.com"
+   port=443 method=CONNECT allowed=true` (le guest a bien lu `HTTPS_PROXY`
+   et l'a utilise) ; variante sans injection -> aucune entree de log
+   pendant toute la fenetre du run (la tentative directe de `curl` est
+   silencieusement rejetee par `restrict_to_net_proxy`, jamais un `CONNECT`
+   n'atteint `net-proxy`). Voir `demo/net-proxy-probe/README.md` pour le
+   protocole complet et la limite restante (sonde TCP directe sur le port
+   du guest non fiable dans cet environnement, non bloquant vu que la preuve
+   par les logs `net-proxy` suffit).
 4. ~~`api-server` : valider contre un vrai flux OAuth2 Kanidm, et role de
    coordinateur de port-forward~~ — **fait cette session**, voir point 11
    du resume chronologique ci-dessus. Resource Server OAuth2 reel configure
    dans Kanidm de dev, deux bugs reels trouves et corriges
    (`ATELIER_JWT_AUDIENCE`, `ATELIER_JWT_CA_PATH`), endpoint
    `/v1/workshops/{name}/portforward` ecrit et teste de bout en bout.
-5. `mcp-gateway` et le premier simulateur (candidat : LocalStack pour AWS).
+5. ~~`mcp-gateway`~~ — **base faite cette session**, voir section dediee
+   ci-dessus : serveur MCP reel (`request_credential`, `request_egress`) via
+   HTTP/SSE. Reste ouvert : le premier simulateur (candidat toujours
+   LocalStack pour AWS) et le tool `enable_simulator` associe, le transport
+   `vsock` natif, et une verification depuis l'interieur d'une vraie
+   microVM agent (pas encore d'agent MCP dans le devcontainer de test).
 6. ~~Device plugin Kubernetes pour `/dev/kvm`, afin de sortir du pod
    `privileged: true`~~ — **fait cette session**, voir point 12 du resume
    chronologique ci-dessus. `vm-supervisor` et `image-builder` tournent
@@ -866,3 +1088,17 @@ precedente) — cette partie de la session l'a implemente et valide.
    explicitement differe).
 8. Stack d'observabilite complet : collector OTLP + backend de stockage +
    Grafana.
+9. Devcontainer de demo `ministack-workshop` : boot Firecracker reel
+   **verifie cette session** (voir section dediee ci-dessus,
+   `code-server`/`ministack` reellement joignables). Reste ouvert : creer
+   un vrai `Workshop` K8s pointant sur ce depot (bloque sur l'auth git a un
+   depot prive, jamais geree jusqu'ici), puis une UI dashboard dediee
+   (demarrage/gestion/connexion, bouton "ouvrir VS Code" via un pont
+   HTTP+WS a construire cote `api-server` au-dessus du protocole
+   `portforward` existant — decision d'architecture deja prise, a
+   planifier separement).
+10. LLM Proxy (Claude Code, ou tout autre agent, a besoin d'inference —
+    routage vers OpenAI/Grok/Vertex/Bedrock, credentials injectes selon le
+    meme modele qu'`identity-proxy`/`mcp-gateway`) : besoin identifie cette
+    session, conception a faire separement (voir memoire de session,
+    non commitee ici).

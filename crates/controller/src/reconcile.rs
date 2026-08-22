@@ -25,6 +25,7 @@ const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
 const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
 const NET_PROXY_IMAGE: &str = "atelier-net-proxy:dev";
 const IDENTITY_PROXY_IMAGE: &str = "atelier-identity-proxy:dev";
+const MCP_GATEWAY_IMAGE: &str = "atelier-mcp-gateway:dev";
 /// Bloque la suppression effective d'un Workshop tant que
 /// `cleanup()` (entite Kanidm, role OpenBao) n'a pas reussi. Les ressources
 /// Kubernetes du Workshop (Job, ServiceAccount, Pod) n'en ont pas besoin :
@@ -729,6 +730,7 @@ async fn ensure_parent_pod(
     let egress_allowlist = workshop.spec.egress_allowlist.join(",");
     let identity_injection_rules = serde_json::to_string(&workshop.spec.identity_injection_rules)
         .unwrap_or_else(|_| "[]".to_string());
+    let tools = workshop.spec.tools.join(",");
     // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
     // avec le sous-reseau link-local d'index 0 (une seule microVM par pod),
     // ce qui fixe host_ip=169.254.0.1 / guest_ip=169.254.0.2 (arithmetique
@@ -736,10 +738,15 @@ async fn ensure_parent_pod(
     // `crates/firecracker/src/network.rs`).
     const VM_GUEST_IP: &str = "169.254.0.2";
     const NET_PROXY_PORT: u16 = 3128;
-    // `identity-proxy` et `net-proxy` partagent le netns du pod (tous les
-    // conteneurs d'un meme Pod) : joignables en `127.0.0.1`, sans service
-    // Kubernetes ni DNS.
+    // `identity-proxy`, `mcp-gateway` et `net-proxy` partagent le netns du
+    // pod (tous les conteneurs d'un meme Pod) : joignables en `127.0.0.1`,
+    // sans service Kubernetes ni DNS.
     const IDENTITY_PROXY_PORT: u16 = 3129;
+    const MCP_GATEWAY_PORT: u16 = 3130;
+    // Lie a `127.0.0.1` uniquement cote net-proxy (voir
+    // `crates/net-proxy/src/admin.rs`) : joignable par mcp-gateway (meme
+    // pod), structurellement injoignable par la VM (netns distincte).
+    const NET_PROXY_ADMIN_PORT: u16 = 9001;
 
     let pod = Pod {
         metadata: ObjectMeta {
@@ -754,9 +761,6 @@ async fn ensure_parent_pod(
         },
         spec: Some(PodSpec {
             service_account_name: Some(sa_name),
-            // TODO: mcp-gateway reste a ajouter comme conteneur
-            // supplementaire de ce pod (expose a l'agent via vsock, voir
-            // docs/ARCHITECTURE.md).
             volumes: Some(vec![Volume {
                 name: "cache".to_string(),
                 persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
@@ -798,6 +802,9 @@ async fn ensure_parent_pod(
                         // VM") : c'est lui, pas la VM, qui decide ensuite
                         // d'injecter un credential ou de relayer tel quel.
                         env_var("ATELIER_IDENTITY_PROXY_ADDR", &format!("127.0.0.1:{IDENTITY_PROXY_PORT}")),
+                        // Alias interne, jamais dans l'allowlist de
+                        // l'utilisateur : voir `crates/net-proxy/src/internal.rs`.
+                        env_var("ATELIER_MCP_GATEWAY_ADDR", &format!("127.0.0.1:{MCP_GATEWAY_PORT}")),
                     ]),
                     ..Default::default()
                 },
@@ -815,6 +822,28 @@ async fn ensure_parent_pod(
                     .into_iter()
                     .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
                     .collect::<Vec<_>>()),
+                    ..Default::default()
+                },
+                Container {
+                    name: "mcp-gateway".into(),
+                    image: Some(MCP_GATEWAY_IMAGE.into()),
+                    env: Some(
+                        vec![
+                            env_var(
+                                "ATELIER_MCP_GATEWAY_LISTEN_ADDR",
+                                &format!("0.0.0.0:{MCP_GATEWAY_PORT}"),
+                            ),
+                            env_var("ATELIER_WORKSHOP_NAME", name),
+                            env_var("ATELIER_TOOLS", &tools),
+                            env_var(
+                                "ATELIER_NET_PROXY_ADMIN_ADDR",
+                                &format!("127.0.0.1:{NET_PROXY_ADMIN_PORT}"),
+                            ),
+                        ]
+                        .into_iter()
+                        .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
+                        .collect::<Vec<_>>(),
+                    ),
                     ..Default::default()
                 },
             ],

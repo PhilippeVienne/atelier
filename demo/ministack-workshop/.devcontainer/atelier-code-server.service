@@ -1,0 +1,12 @@
+[Unit]
+Description=code-server (VS Code dans le navigateur pour la demo atelier)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/code-server --bind-addr 0.0.0.0:8080 --auth none
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

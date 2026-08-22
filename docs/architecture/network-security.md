@@ -25,15 +25,22 @@ decision de design qui reduit `net-proxy` a l'unique destination que la VM
 connaisse :
 
 1. **`mcp-gateway` : isolation structurelle, plus un alias HTTP optionnel
-   via `net-proxy`.** Expose nativement via `vsock` (`AF_VSOCK`, adressage
-   CID/port), pas sur le reseau IP de la VM — rien de ce qui transite par
-   le tap reseau ne peut l'atteindre par ce chemin, et rien d'externe au
-   couple hote/VM ne peut atteindre ce vsock. `net-proxy` expose en plus
-   l'alias HTTP `mcp-gateway` (`ATELIER_MCP_GATEWAY_ADDR`,
-   `crates/net-proxy/src/internal.rs`) pour les clients MCP qui prefèrent
-   un transport HTTP/SSE standard au vsock — ce deuxieme chemin passe par
-   le meme port que `net-proxy`, pas par un port supplementaire a
-   autoriser separement.
+   via `net-proxy`.** Cible a terme : expose nativement via `vsock`
+   (`AF_VSOCK`, adressage CID/port), pas sur le reseau IP de la VM — rien
+   de ce qui transite par le tap reseau ne peut l'atteindre par ce chemin,
+   et rien d'externe au couple hote/VM ne peut atteindre ce vsock.
+   **Limite assumee (comme la limite CONNECT/MITM d'`identity-proxy`
+   ci-dessous) : ce transport `vsock` n'est pas construit** — voir
+   `docs/PROGRESS.md`, section "`mcp-gateway` : premier serveur MCP reel".
+   `net-proxy` expose en attendant l'alias HTTP `mcp-gateway`
+   (`ATELIER_MCP_GATEWAY_ADDR`, `crates/net-proxy/src/internal.rs`, branche
+   cote `crates/controller/src/reconcile.rs`) — c'est aujourd'hui le
+   **seul** chemin fonctionnel vers `mcp-gateway`, pas une simple
+   alternative pour les clients qui prefèrent HTTP/SSE. La garantie de
+   securite recherchee (mcp-gateway jamais joint directement par la VM)
+   tient malgre tout : ce chemin passe par le meme port que `net-proxy`,
+   pas par un port supplementaire a autoriser separement, exactement
+   comme pour `identity-proxy` (point 2 ci-dessous).
 2. **`identity-proxy` : jamais joint directement par la VM, uniquement via
    `net-proxy`.** Decision de design (revisee) : la premiere version
    configurait `identity-proxy` comme un second `HTTP_PROXY` que la VM

@@ -34,6 +34,8 @@ use anyhow::{bail, Context};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
+use tokio::sync::RwLock;
+
 use crate::allowlist;
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -51,7 +53,9 @@ const FORBIDDEN_QTYPES: [u16; 3] = [QTYPE_ANY, QTYPE_AXFR, QTYPE_IXFR];
 pub struct DnsConfig {
     pub listen_addr: String,
     pub upstream: String,
-    pub allowlist: Arc<Vec<String>>,
+    /// Mutable a chaud (voir `crate::admin`) : `request_egress` de
+    /// `mcp-gateway` peut elargir cette liste sans redemarrer le process.
+    pub allowlist: Arc<RwLock<Vec<String>>>,
 }
 
 pub async fn run(config: DnsConfig) -> anyhow::Result<()> {
@@ -95,7 +99,8 @@ async fn run_udp(config: DnsConfig) -> anyhow::Result<()> {
         let allowlist = Arc::clone(&config.allowlist);
         let upstream = config.upstream.clone();
         tokio::spawn(async move {
-            if let Some(response) = handle_query(&message, &allowlist, &upstream, client_addr).await {
+            let snapshot = allowlist.read().await.clone();
+            if let Some(response) = handle_query(&message, &snapshot, &upstream, client_addr).await {
                 let _ = listen.send_to(&response, client_addr).await;
             }
         });
@@ -118,7 +123,7 @@ async fn run_tcp(config: DnsConfig) -> anyhow::Result<()> {
 
 async fn handle_tcp_connection(
     mut socket: TcpStream,
-    allowlist: Arc<Vec<String>>,
+    allowlist: Arc<RwLock<Vec<String>>>,
     upstream: String,
     peer: SocketAddr,
 ) -> anyhow::Result<()> {
@@ -131,7 +136,8 @@ async fn handle_tcp_connection(
         let mut message = vec![0u8; len];
         socket.read_exact(&mut message).await?;
 
-        let response = handle_query(&message, &allowlist, &upstream, peer)
+        let snapshot = allowlist.read().await.clone();
+        let response = handle_query(&message, &snapshot, &upstream, peer)
             .await
             .unwrap_or_else(|| refusal(&message));
 

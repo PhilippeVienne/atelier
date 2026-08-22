@@ -243,6 +243,13 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         Some(expected_pod_name.clone()),
         "le pod parent doit utiliser son propre ServiceAccount dedie"
     );
+    let containers = &pod.spec.as_ref().expect("pod spec").containers;
+    for expected in ["vm-supervisor", "net-proxy", "identity-proxy", "mcp-gateway"] {
+        assert!(
+            containers.iter().any(|c| c.name == expected),
+            "le pod parent doit avoir un conteneur {expected}"
+        );
+    }
 
     // apply() doit rester idempotent : un deuxieme appel ne doit pas echouer.
     atelier_controller::reconcile::apply(&ctx, &with_digest)

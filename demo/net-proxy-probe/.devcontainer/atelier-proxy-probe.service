@@ -1,0 +1,11 @@
+[Unit]
+Description=atelier net-proxy usage probe
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/environment
+ExecStart=/usr/local/bin/atelier-proxy-probe.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

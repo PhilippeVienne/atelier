@@ -1,0 +1,18 @@
+{
+    "name": "atelier-ministack-demo",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "version": "latest"
+        },
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+    },
+    "postStartCommand": "bash .devcontainer/post-start.sh",
+    "forwardPorts": [4566, 8080],
+    "portsAttributes": {
+        "4566": { "label": "ministack (AWS emulator)" },
+        "8080": { "label": "code-server (VS Code dans le navigateur)" }
+    }
+}

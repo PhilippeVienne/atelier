@@ -1,0 +1,12 @@
+[Unit]
+Description=ministack (emulateur AWS local pour la demo atelier)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ministack
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

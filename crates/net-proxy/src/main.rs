@@ -35,6 +35,7 @@
 //! Ce chainage remplace alors le proxy parent externe
 //! (`ATELIER_UPSTREAM_PROXY`) pour la duree du saut.
 
+mod admin;
 mod allowlist;
 mod dns;
 mod forward;
@@ -48,6 +49,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 
 use internal::InternalRoutes;
 use proxy::EgressConfig;
@@ -57,6 +59,8 @@ const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3128";
 const DEFAULT_CONTROL_ADDR: &str = "0.0.0.0:9000";
 const DEFAULT_DNS_LISTEN_ADDR: &str = "0.0.0.0:53";
 const DEFAULT_VM_ADDR: &str = "127.0.0.1";
+/// Lie a `127.0.0.1` uniquement (voir `crate::admin`) : jamais `0.0.0.0`.
+const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:9001";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -69,7 +73,11 @@ async fn main() -> anyhow::Result<()> {
     let vm_addr: Arc<str> =
         std::env::var("ATELIER_VM_ADDR").unwrap_or_else(|_| DEFAULT_VM_ADDR.to_string()).into();
 
-    let allowlist: Arc<Vec<String>> = Arc::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST"));
+    let admin_addr = std::env::var("ATELIER_NET_PROXY_ADMIN_ADDR")
+        .unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_string());
+
+    let allowlist: Arc<RwLock<Vec<String>>> =
+        Arc::new(RwLock::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST")));
     let no_proxy: Arc<Vec<String>> = Arc::new(upstream::no_proxy_from_env());
     let upstream_proxy = UpstreamProxy::from_env().map(Arc::new);
     let internal_routes = Arc::new(InternalRoutes::from_env()?);
@@ -86,12 +94,15 @@ async fn main() -> anyhow::Result<()> {
             })
         });
 
-    if allowlist.is_empty() {
-        tracing::warn!(
-            "ATELIER_EGRESS_ALLOWLIST absente ou vide : tout le trafic sortant sera refuse"
-        );
-    } else {
-        tracing::info!(allowlist = ?allowlist, "atelier-net-proxy demarre");
+    {
+        let initial = allowlist.read().await;
+        if initial.is_empty() {
+            tracing::warn!(
+                "ATELIER_EGRESS_ALLOWLIST absente ou vide : tout le trafic sortant sera refuse"
+            );
+        } else {
+            tracing::info!(allowlist = ?*initial, "atelier-net-proxy demarre");
+        }
     }
     if let Some(proxy) = &upstream_proxy {
         tracing::info!(
@@ -125,6 +136,19 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(err) = axum::serve(control_listener, control_router).await {
             tracing::error!(%err, "serveur de controle arrete en erreur");
+        }
+    });
+
+    // Reserve a mcp-gateway (outil MCP `request_egress`) : lie a
+    // 127.0.0.1 uniquement, injoignable par la microVM (voir `crate::admin`).
+    let admin_router = admin::router(admin::AdminState {
+        allowlist: Arc::clone(&egress_config.allowlist),
+    });
+    let admin_listener = TcpListener::bind(&admin_addr).await?;
+    tracing::info!(%admin_addr, "serveur d'administration (allowlist) en ecoute");
+    tokio::spawn(async move {
+        if let Err(err) = axum::serve(admin_listener, admin_router).await {
+            tracing::error!(%err, "serveur d'administration arrete en erreur");
         }
     });
 

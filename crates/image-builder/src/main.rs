@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
     tracing::info!(%image_ref, "exporting image filesystem");
     let rootfs_dir = export_image_filesystem(&crane_bin, &image_ref, &work_dir, registry_insecure).await?;
 
+    tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
+    inject_net_proxy_config(&rootfs_dir).await?;
+
     tracing::info!("packaging rootfs as ext4");
     let ext4_path = work_dir.join("rootfs.ext4");
     package_ext4(&rootfs_dir, &ext4_path).await?;
@@ -430,6 +433,58 @@ async fn export_image_filesystem(
 
     tokio::fs::remove_file(&tar_path).await.ok();
     Ok(rootfs_dir)
+}
+
+/// Ecrit `/etc/environment` et `/etc/resolv.conf` directement dans
+/// l'arborescence exportee, pour que le devcontainer utilise reellement
+/// `net-proxy` comme seule sortie reseau une fois booted : le TAP + les
+/// regles iptables de `vm-supervisor` (voir `docs/PROGRESS.md`, "Reseau de
+/// l'agent") n'autorisent deja que ce chemin, mais rien ne configurait
+/// jusqu'ici `HTTP_PROXY`/`HTTPS_PROXY` ni un resolveur DNS a l'interieur de
+/// l'image construite — un devcontainer qui l'ignore tente une connexion
+/// directe, silencieusement rejetee par ces regles. Doit s'ecrire dans le
+/// filesystem lui-meme (pas passe en variable au build) : l'export brut
+/// (`crane export` + `mke2fs`) perd toute metadonnee OCI `ENV`, et
+/// `vm-supervisor` boote le PID 1 du devcontainer tel quel, sans init
+/// personnalise capable de recevoir des parametres au boot (contrairement a
+/// la microVM "builder"). `net-proxy` est toujours joignable a l'adresse
+/// fixe du lien point-a-point (`169.254.0.1`, cf.
+/// `crates/firecracker::network`), le port `3128` est une constante partagee
+/// avec `vm-supervisor`/`controller` (`crates/controller/src/reconcile.rs`),
+/// pas encore configurable par Workshop.
+async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
+    let net_proxy_port =
+        std::env::var("ATELIER_NET_PROXY_PORT").unwrap_or_else(|_| "3128".to_string());
+    let proxy_url = format!("http://169.254.0.1:{net_proxy_port}");
+
+    // /etc/environment est lu par pam_env pour toute session de login
+    // (SSH/terminal interactif, ex: code-server, Claude Code) : on complete
+    // le fichier existant plutot que de l'ecraser, une image de base pouvant
+    // deja y definir d'autres variables.
+    let environment_path = rootfs_dir.join("etc/environment");
+    let mut environment = tokio::fs::read_to_string(&environment_path)
+        .await
+        .unwrap_or_default();
+    if !environment.is_empty() && !environment.ends_with('\n') {
+        environment.push('\n');
+    }
+    environment.push_str(&format!(
+        "HTTP_PROXY={proxy_url}\nHTTPS_PROXY={proxy_url}\nhttp_proxy={proxy_url}\nhttps_proxy={proxy_url}\nNO_PROXY=169.254.0.1\nno_proxy=169.254.0.1\n"
+    ));
+    tokio::fs::write(&environment_path, environment)
+        .await
+        .with_context(|| format!("ecriture de {environment_path:?}"))?;
+
+    // Peut etre un symlink (ex: vers systemd-resolved) dans l'image de base
+    // — sans effet ici puisque rien ne fait tourner systemd-resolved dans
+    // cette microVM, remplace donc par un fichier statique.
+    let resolv_conf_path = rootfs_dir.join("etc/resolv.conf");
+    tokio::fs::remove_file(&resolv_conf_path).await.ok();
+    tokio::fs::write(&resolv_conf_path, "nameserver 169.254.0.1\n")
+        .await
+        .with_context(|| format!("ecriture de {resolv_conf_path:?}"))?;
+
+    Ok(())
 }
 
 /// Empaquette un repertoire en image ext4 (`mke2fs -d`), dimensionnee sur le
