@@ -31,7 +31,7 @@ use fctools::vm::api::VmApi;
 use fctools::vm::configuration::{InitMethod, VmConfiguration, VmConfigurationData};
 use fctools::vm::models::{
     BootSource, CreateSnapshot, Drive, LoadSnapshot, MachineConfiguration, MemoryBackend,
-    MemoryBackendType, NetworkInterface, SnapshotType,
+    MemoryBackendType, NetworkInterface, SnapshotType, VsockDevice,
 };
 use fctools::vm::shutdown::{VmShutdownAction, VmShutdownMethod};
 use fctools::vm::snapshot::{PrepareVmFromSnapshotOptions, VmSnapshot};
@@ -90,6 +90,23 @@ fn build_configuration_data(
         })
         .unwrap_or_default();
 
+    // Meme remarque que pour les ressources `Produced` d'un snapshot (voir
+    // `Vm::snapshot`) : le chemin donne a Firecracker doit etre relatif au
+    // jail ("/vsock.sock"), c'est lui qui cree ce fichier au demarrage
+    // (uds "principal", cote hote — un sibling process qui veut recevoir
+    // les connexions initiees par le guest doit lui-meme lier un UDS a
+    // "<uds_path>_<port>", convention Firecracker, voir `crates/mcp-gateway`).
+    let vsock_device = config
+        .vsock
+        .as_ref()
+        .map(|vsock| -> Result<VsockDevice> {
+            let uds = resource_system
+                .create_resource(PathBuf::from(&vsock.uds_relative_path), ResourceType::Produced)
+                .context("declaration de la ressource uds vsock")?;
+            Ok(VsockDevice { guest_cid: vsock.guest_cid, uds })
+        })
+        .transpose()?;
+
     Ok(VmConfigurationData {
         boot_source: BootSource {
             kernel_image: kernel,
@@ -118,7 +135,7 @@ fn build_configuration_data(
         cpu_template: None,
         network_interfaces,
         balloon_device: None,
-        vsock_device: None,
+        vsock_device,
         logger_system: None,
         metrics_system: None,
         memory_hotplug_configuration: None,
@@ -143,6 +160,25 @@ pub struct VmConfig {
     pub vcpu_count: u8,
     pub mem_mib: usize,
     pub boot_args: String,
+    /// Device `AF_VSOCK` optionnel : canal guest<->hote a l'interieur du
+    /// meme pod, plus bas niveau que le chemin via `net-proxy` (pas de TAP,
+    /// pas d'iptables, pas d'allowlist egress a traverser) — utilise par
+    /// `mcp-gateway` pour les connexions initiees par le guest. Absent par
+    /// defaut (`None`), la microVM builder et les tests existants n'en ont
+    /// pas besoin.
+    pub vsock: Option<VsockConfig>,
+}
+
+/// `guest_cid` : identifiant du guest sur le "reseau" vsock, doit etre >= 3
+/// (0/1/2 sont reserves, 2 = l'hote). `uds_relative_path` : chemin **relatif
+/// au jail** (ex: `/vsock.sock`) du socket Unix "principal" que Firecracker
+/// cree lui-meme au demarrage (ressource `Produced`, voir
+/// `build_configuration_data`) — le chemin hote reel resulte du jail
+/// (`chroot_base_dir/jail_id/root/<nom>`).
+#[derive(Debug, Clone)]
+pub struct VsockConfig {
+    pub guest_cid: u32,
+    pub uds_relative_path: String,
 }
 
 impl VmConfig {

@@ -153,6 +153,7 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         vcpu_count: 2,
         mem_mib: 1024,
         boot_args,
+        vsock: None,
     };
 
     eprintln!("[diag] avant boot_with_network, t={:?}", std::time::Instant::now());

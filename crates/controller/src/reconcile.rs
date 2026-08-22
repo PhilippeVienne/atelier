@@ -747,6 +747,26 @@ async fn ensure_parent_pod(
     // `crates/net-proxy/src/admin.rs`) : joignable par mcp-gateway (meme
     // pod), structurellement injoignable par la VM (netns distincte).
     const NET_PROXY_ADMIN_PORT: u16 = 9001;
+    // Base des jails Firecracker, partagee via le volume "jailer" ci-dessus
+    // (defaut binaire identique, mais fixe explicitement ici : le controller
+    // et `mcp-gateway` doivent s'accorder sur le meme chemin absolu sans
+    // dependre d'un defaut cote binaire qui pourrait changer independamment).
+    const JAILER_CHROOT_BASE_DIR: &str = "/srv/jailer";
+    const VM_JAIL_ID: &str = "atelier-vm";
+    const VM_VSOCK_UDS_FILENAME: &str = "vsock.sock";
+    let jailer_mount = VolumeMount {
+        name: "jailer".to_string(),
+        mount_path: JAILER_CHROOT_BASE_DIR.to_string(),
+        read_only: Some(false),
+        ..Default::default()
+    };
+    // Le jailer insere le nom de l'executable comme composant de chemin
+    // (`--chroot-base-dir/<exec_file_name>/<jail_id>/root/`, constate en
+    // pratique par inspection reelle de l'arborescence produite) : pas
+    // `<chroot_base_dir>/<jail_id>/root/` comme on pourrait le supposer par
+    // analogie avec `--chroot-base-dir` seul.
+    let vsock_uds_path =
+        format!("{JAILER_CHROOT_BASE_DIR}/firecracker/{VM_JAIL_ID}/root/{VM_VSOCK_UDS_FILENAME}");
 
     let pod = Pod {
         metadata: ObjectMeta {
@@ -761,14 +781,29 @@ async fn ensure_parent_pod(
         },
         spec: Some(PodSpec {
             service_account_name: Some(sa_name),
-            volumes: Some(vec![Volume {
-                name: "cache".to_string(),
-                persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
-                    claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
-                    read_only: Some(false),
-                }),
-                ..Default::default()
-            }]),
+            volumes: Some(vec![
+                Volume {
+                    name: "cache".to_string(),
+                    persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                        claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
+                        read_only: Some(false),
+                    }),
+                    ..Default::default()
+                },
+                // Partage entre `vm-supervisor` et `mcp-gateway` : le socket
+                // Unix "principal" du device vsock est cree par Firecracker
+                // *a l'interieur du jail* (`chroot_base_dir/jail_id/root/`,
+                // voir `crates/firecracker/src/vm.rs`) — `mcp-gateway` doit
+                // voir ce meme chemin hote pour y lier a son tour le socket
+                // "<uds>_<port>" qui recoit les connexions initiees par le
+                // guest (convention Firecracker). `emptyDir` : contenu
+                // ephemere, scope au pod, pas de persistance necessaire.
+                Volume {
+                    name: "jailer".to_string(),
+                    empty_dir: Some(EmptyDirVolumeSource::default()),
+                    ..Default::default()
+                },
+            ]),
             containers: vec![
                 Container {
                     name: "vm-supervisor".into(),
@@ -777,8 +812,11 @@ async fn ensure_parent_pod(
                         env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
                         env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
                         env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
+                        env_var("ATELIER_VM_CHROOT_BASE_DIR", JAILER_CHROOT_BASE_DIR),
+                        env_var("ATELIER_VM_JAIL_ID", VM_JAIL_ID),
+                        env_var("ATELIER_VM_VSOCK_UDS_FILENAME", VM_VSOCK_UDS_FILENAME),
                     ]),
-                    volume_mounts: Some(vec![cache_mount]),
+                    volume_mounts: Some(vec![cache_mount, jailer_mount.clone()]),
                     // /dev/kvm et /dev/net/tun alloues via le device plugin
                     // (`atelier.dev/kvm`, voir `kvm_device_resources`),
                     // CAP_NET_ADMIN pour la creation du TAP + regles
@@ -839,11 +877,13 @@ async fn ensure_parent_pod(
                                 "ATELIER_NET_PROXY_ADMIN_ADDR",
                                 &format!("127.0.0.1:{NET_PROXY_ADMIN_PORT}"),
                             ),
+                            env_var("ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH", &vsock_uds_path),
                         ]
                         .into_iter()
                         .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
                         .collect::<Vec<_>>(),
                     ),
+                    volume_mounts: Some(vec![jailer_mount]),
                     ..Default::default()
                 },
             ],

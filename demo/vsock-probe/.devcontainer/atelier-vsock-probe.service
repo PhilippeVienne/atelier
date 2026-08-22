@@ -1,0 +1,10 @@
+[Unit]
+Description=atelier mcp-gateway vsock probe
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/vsock_probe.py
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

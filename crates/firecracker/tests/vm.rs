@@ -73,6 +73,7 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
         vcpu_count: 1,
         mem_mib: 256,
         boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
+        vsock: None,
     };
 
     let mut vm = Vm::boot(&base_config, &fixtures.kernel_path, &fixtures.rootfs_path)
@@ -164,6 +165,7 @@ async fn snapshot_persist_and_restore_without_source_vm() {
         vcpu_count: 1,
         mem_mib: 256,
         boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
+        vsock: None,
     };
 
     let mut vm = Vm::boot(&base_config, &fixtures.kernel_path, &fixtures.rootfs_path)

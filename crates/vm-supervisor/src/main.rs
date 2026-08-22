@@ -30,7 +30,7 @@
 
 use anyhow::Context;
 use atelier_firecracker::network::{setup_link_local_tap, NetworkSetup};
-use atelier_firecracker::vm::{Vm, VmConfig};
+use atelier_firecracker::vm::{Vm, VmConfig, VsockConfig};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
@@ -95,6 +95,17 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(256),
         boot_args,
+        // Toujours active : sans emplacement partage avec `mcp-gateway`
+        // (`ATELIER_VM_CHROOT_BASE_DIR` sur un volume commun), ce device
+        // reste simplement inutilise, cout nul. `guest_cid` >= 3 requis
+        // (0/1/2 reserves, 2 = l'hote).
+        vsock: Some(VsockConfig {
+            guest_cid: env_u32("ATELIER_VM_VSOCK_GUEST_CID", 3),
+            uds_relative_path: format!(
+                "/{}",
+                std::env::var("ATELIER_VM_VSOCK_UDS_FILENAME").unwrap_or_else(|_| "vsock.sock".to_string())
+            ),
+        }),
     };
     let kernel_path = env_path("ATELIER_VM_KERNEL_PATH", "");
     let rootfs_path = env_path("ATELIER_VM_ROOTFS_PATH", "");

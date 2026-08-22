@@ -2,12 +2,20 @@
 //! reglages a l'atelier plutot que d'agir en direct (elargir l'egress,
 //! obtenir un credential, a terme activer un simulateur).
 //!
-//! Transport : HTTP/SSE (streamable HTTP, SDK officiel `rmcp`) via l'alias
-//! interne `mcp-gateway` de `net-proxy` (`crates/net-proxy/src/internal.rs`),
-//! jamais joint directement par la VM (meme garantie que pour
-//! `identity-proxy`, voir `docs/architecture/network-security.md`). Le
-//! design cible documente aussi un transport `vsock` natif, non construit
-//! pour l'instant — limite assumee, voir `docs/PROGRESS.md`.
+//! Deux transports actifs en parallele :
+//! - HTTP/SSE (streamable HTTP, SDK officiel `rmcp`) via l'alias interne
+//!   `mcp-gateway` de `net-proxy` (`crates/net-proxy/src/internal.rs`),
+//!   jamais joint directement par la VM (meme garantie que pour
+//!   `identity-proxy`, voir `docs/architecture/network-security.md`).
+//! - `vsock` natif (`ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH`) : canal guest<->hote
+//!   plus direct (pas de TAP/iptables/allowlist a traverser), pour un client
+//!   MCP a l'interieur du guest capable de parler `AF_VSOCK` directement.
+//!   Reutilise le meme `Gateway` (meme `ServerHandler`) sur un flux brut via
+//!   `rmcp::transport::async_rw` (`Gateway::serve(unix_stream)`) plutot que
+//!   `StreamableHttpService`, specifique a HTTP. Convention Firecracker pour
+//!   les connexions **initiees par le guest** : ce process doit lier un UDS
+//!   a `<uds_path>_<port>` (le fichier `<uds_path>` lui-meme est cree par
+//!   Firecracker, cote `vm-supervisor`, voir `crates/firecracker/src/vm.rs`).
 
 mod gateway;
 
@@ -17,12 +25,14 @@ use std::sync::Arc;
 use atelier_common::OpenBaoClient;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use tokio::net::TcpListener;
+use rmcp::ServiceExt;
+use tokio::net::{TcpListener, UnixListener};
 
 use gateway::{Gateway, GatewayConfig};
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3130";
 const DEFAULT_NET_PROXY_ADMIN_ADDR: &str = "127.0.0.1:9001";
+const DEFAULT_VSOCK_PORT: u32 = 10000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -64,6 +74,25 @@ async fn main() -> anyhow::Result<()> {
         http: reqwest::Client::new(),
     });
 
+    if let Some(uds_path) = std::env::var("ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let vsock_port: u32 = std::env::var("ATELIER_MCP_GATEWAY_VSOCK_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_VSOCK_PORT);
+        let listen_path = format!("{uds_path}_{vsock_port}");
+        let config = Arc::clone(&config);
+        tokio::spawn(async move {
+            if let Err(err) = run_vsock_listener(&listen_path, config).await {
+                tracing::error!(%err, %listen_path, "serveur MCP vsock arrete en erreur");
+            }
+        });
+    } else {
+        tracing::info!("ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH absent : transport vsock desactive");
+    }
+
     // `allowed_hosts` par defaut de rmcp ne couvre que localhost/127.0.0.1 —
     // net-proxy relaie la requete telle quelle recue de la VM (voir
     // `crate::proxy::forward` dans net-proxy), Host header compris, donc
@@ -82,4 +111,31 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%listen_addr, "serveur MCP en ecoute (/mcp)");
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Accepte les connexions `AF_VSOCK` initiees par le guest (relayees par
+/// Firecracker vers ce socket Unix, cf. commentaire de module) : une session
+/// MCP complete par connexion, meme `Gateway` que le transport HTTP. Le
+/// fichier peut deja exister d'un process precedent (redemarrage du
+/// conteneur) : supprime avant de re-lier, sans quoi `bind` echoue en
+/// `AddrInUse`.
+async fn run_vsock_listener(listen_path: &str, config: Arc<gateway::GatewayConfig>) -> anyhow::Result<()> {
+    let _ = tokio::fs::remove_file(listen_path).await;
+    let listener = UnixListener::bind(listen_path)?;
+    tracing::info!(%listen_path, "serveur MCP vsock en ecoute");
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+        let config = Arc::clone(&config);
+        tokio::spawn(async move {
+            let gateway = Gateway::new(config);
+            match gateway.serve(stream).await {
+                Ok(running) => {
+                    if let Err(err) = running.waiting().await {
+                        tracing::warn!(%err, "session MCP vsock terminee en erreur");
+                    }
+                }
+                Err(err) => tracing::warn!(%err, "echec d'initialisation d'une session MCP vsock"),
+            }
+        });
+    }
 }

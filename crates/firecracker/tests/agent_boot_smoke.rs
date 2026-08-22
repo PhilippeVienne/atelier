@@ -119,6 +119,7 @@ async fn agent_devcontainer_boots_without_custom_init() {
         vcpu_count: 2,
         mem_mib: 2048,
         boot_args,
+        vsock: None,
     };
 
     eprintln!("[diag] avant boot_with_network, t={:?}", std::time::Instant::now());

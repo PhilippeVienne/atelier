@@ -34,7 +34,7 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
-| `mcp-gateway` | Fonctionnel (base, HTTP/SSE) | Serveur MCP reel (SDK officiel `rmcp`, transport streamable HTTP) exposant `request_credential` (lecture OpenBao) et `request_egress` (elargissement a chaud de l'allowlist `net-proxy`), tous deux verifies de bout en bout contre de la vraie infra (OpenBao reel, net-proxy reel). `enable_simulator` et le transport `vsock` natif restent a faire, voir section dediee ci-dessous |
+| `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao) et `request_egress` (elargissement a chaud de l'allowlist `net-proxy`), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous deux verifies de bout en bout contre de la vraie infra. `enable_simulator` reste a faire, voir section dediee ci-dessous |
 | `dashboard` | Fonctionnel (CRUD de base) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
@@ -655,10 +655,72 @@ que l'agent demande des reglages a l'atelier plutot que d'agir en direct.
     (`apply_creates_owned_parent_pod_once_image_ready`) : verifie contre
     kind reel que le pod parent genere porte bien les quatre conteneurs
     (`vm-supervisor`, `net-proxy`, `identity-proxy`, `mcp-gateway`).
-- **Reste a faire** : transport `vsock` natif (voir plus haut), tool
-  `enable_simulator` et premier simulateur, verification bout-en-bout depuis
-  l'interieur d'une vraie microVM agent (pas encore fait : aucun agent MCP
-  dans le devcontainer de test actuel).
+- **Reste a faire** : tool `enable_simulator` et premier simulateur,
+  verification bout-en-bout depuis l'interieur d'une vraie microVM agent
+  (pas encore fait : aucun agent MCP dans le devcontainer de test actuel).
+
+### Transport `vsock` natif : fait, verifie de bout en bout
+
+Composant desormais construit (etait le seul morceau manquant du design
+cible documente pour `mcp-gateway`) :
+
+- **`crates/firecracker::vm`** : `VmConfig.vsock: Option<VsockConfig>`
+  (`guest_cid`, `uds_relative_path`) — `build_configuration_data` declare le
+  socket "principal" comme ressource `Produced` (meme mecanisme que les
+  fichiers de snapshot, voir `Vm::snapshot`) : chemin **relatif au jail**
+  (`/vsock.sock`), Firecracker le cree lui-meme au boot, le chemin hote reel
+  resulte de la resolution du jail.
+- **`crates/vm-supervisor`** : device vsock toujours actif
+  (`ATELIER_VM_VSOCK_GUEST_CID`, defaut `3` ; `ATELIER_VM_VSOCK_UDS_FILENAME`,
+  defaut `vsock.sock`) — sans emplacement partage avec `mcp-gateway`, reste
+  simplement inutilise, cout nul.
+- **`crates/mcp-gateway`** : second transport actif en parallele du HTTP
+  existant, meme `Gateway` (`ServerHandler`) des deux cotes. Convention
+  Firecracker pour les connexions **initiees par le guest** : ce process lie
+  lui-meme un `UnixListener` a `<uds_path>_<port>`
+  (`ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH`, `ATELIER_MCP_GATEWAY_VSOCK_PORT`
+  defaut `10000`) — pas de transport HTTP a reimplementer : `rmcp` expose
+  `ServiceExt::serve` sur n'importe quel `AsyncRead + AsyncWrite`
+  (`rmcp::transport::async_rw`, meme framing JSON-RPC delimite par newline
+  que le style stdio MCP standard), un `tokio::net::UnixStream` convient
+  donc directement, une session MCP complete par connexion acceptee.
+- **`crates/controller/src/reconcile.rs`** : nouveau volume `emptyDir`
+  "jailer" partage entre les conteneurs `vm-supervisor` et `mcp-gateway` du
+  pod parent, monte au meme chemin absolu (`/srv/jailer`,
+  `ATELIER_VM_CHROOT_BASE_DIR` fixe explicitement plutot que de dependre du
+  defaut binaire) dans les deux — necessaire puisque le socket vsock
+  "principal" vit **a l'interieur** de l'arborescence du jail, pas a un
+  chemin choisi arbitrairement. `ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH` calcule
+  par le controller a partir des memes constantes (`VM_JAIL_ID`,
+  `VM_VSOCK_UDS_FILENAME`) que celles passees a `vm-supervisor`.
+- **Piege trouve en testant reellement** : le jailer insere le nom de
+  l'executable comme composant de chemin —
+  `<chroot_base_dir>/<exec_file_name>/<jail_id>/root/` (donc
+  `/srv/jailer/firecracker/atelier-vm/root/...`), pas
+  `<chroot_base_dir>/<jail_id>/root/` comme la seule lecture de la doc
+  `--chroot-base-dir` le suggererait — corrige apres inspection reelle de
+  l'arborescence produite (`find /srv/jailer`).
+- **Verifie de bout en bout, sans mock** (`demo/vsock-probe/`, nouveau) :
+  vrai `atelier-vm-supervisor` + vrai `atelier-mcp-gateway` (binaires
+  natifs, pas de conteneur Docker pour ce test-la — les deux process
+  partagent directement `/srv/jailer` sur le systeme de fichiers de
+  l'environnement de test), devcontainer minimal (systemd + `python3`) dont
+  un service ecrit un **vrai client MCP** a la main (stdlib `socket` avec
+  `socket.AF_VSOCK`, disponible nativement sur Linux depuis Python 3.9) qui
+  fait un handshake MCP complet (`initialize` -> `notifications/initialized`
+  -> `tools/list`) contre `mcp-gateway` en passant uniquement par
+  `AF_VSOCK`. Resultat lu apres coup dans le `rootfs.ext4` du guest
+  (`debugfs -R "cat ..."`, meme technique que pour la validation
+  HTTP_PROXY) : les trois etapes reussissent, `tools/list` renvoie bien
+  `request_credential`/`request_egress`. Voir `demo/vsock-probe/README.md`.
+- **Limite assumee** : ce test prouve que le **transport** fonctionne
+  (jailer+firecracker+vsock+rmcp s'assemblent correctement), pas qu'un
+  client MCP standard (Claude Code, etc.) choisirait ce chemin plutot que
+  HTTP aujourd'hui — rien ne l'annonce au guest (pas d'equivalent au
+  `HTTP_PROXY` injecte dans `/etc/environment` pour signaler ce transport).
+  Egalement non teste : le comportement en conditions Kubernetes reelles
+  (volume `emptyDir` partage entre conteneurs d'un vrai pod, teste ici en
+  isolation avec deux process natifs partageant un repertoire local).
 
 ## Devcontainer de demo `ministack-workshop` : le boot Firecracker de l'agent exige systemd
 
