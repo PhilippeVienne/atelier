@@ -57,6 +57,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Fetch Firecracker Assets and Crane Binary
+        run: |
+          ./deploy/dev/firecracker/fetch-test-assets.sh
+          mkdir -p deploy/dev/crane
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" | tar xz -C deploy/dev/crane crane
+          chmod +x deploy/dev/crane/crane
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
