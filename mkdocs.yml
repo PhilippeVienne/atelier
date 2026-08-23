@@ -53,11 +53,16 @@ extra_javascript:
 
 nav:
   - 🏠 Présentation: index.md
-  - 📖 Guide Utilisateur: user-guide.md
-  - 📐 Architecture & Sécurité:
-      - Vue d'ensemble: ARCHITECTURE.md
-      - Sécurité & Proxies Réseau: architecture/network-security.md
+  - 👤 Espace Utilisateur:
+      - Guide de prise en main: user-guide.md
+  - 💻 Espace Développeur & Architecture:
+      - Vue d'ensemble Architecture: ARCHITECTURE.md
+      - Sécurité Réseau & Proxies: architecture/network-security.md
       - Identités & Secrets (Kanidm / OpenBao): architecture/identity-secrets.md
       - Snapshot RAM & Reprise microVM: architecture/snapshot-restore.md
-  - 🚀 Déploiement & CI/CD: DEPLOYMENT.md
-  - 📊 État du Projet: PROGRESS.md
+      - Guide de Déploiement & CI/CD: DEPLOYMENT.md
+      - Matrice d'Avancement: PROGRESS.md
+  - 🤝 Contribution & Communauté:
+      - Guide de Contribution: contributing.md
+      - Directives Agents IA (Claude / Gemini): agents-guide.md
+      - Accord de Licence CLA: cla.md
