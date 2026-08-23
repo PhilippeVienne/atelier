@@ -91,6 +91,9 @@ async fn main() -> Result<()> {
     tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
     inject_net_proxy_config(&rootfs_dir).await?;
 
+    tracing::info!("ensuring workspace directory exists and is owned by vscode");
+    ensure_workspace_directory(&rootfs_dir, &source).await?;
+
     tracing::info!("packaging rootfs as ext4");
     let ext4_path = work_dir.join("rootfs.ext4");
     package_ext4(&rootfs_dir, &ext4_path).await?;
@@ -619,6 +622,36 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
         .await
         .with_context(|| format!("ecriture de {resolv_conf_path:?}"))?;
 
+    Ok(())
+}
+
+/// S'assure que `/workspaces` et le repertoire cible `/workspaces/<repo>`
+/// existent et appartiennent a l'utilisateur non-root (typiquement `vscode` /
+/// uid 1000) dans le rootfs final, pour que `ttyd` et `code-server`
+/// demarrent directement dans le bon workspace sans dependre d'un `mkdir`
+/// prealable.
+async fn ensure_workspace_directory(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
+    let repo_name = source
+        .repo
+        .rsplit('/')
+        .next()
+        .unwrap_or("workspace")
+        .trim_end_matches(".git");
+    let ws_dir = rootfs_dir.join("workspaces").join(repo_name);
+    tokio::fs::create_dir_all(&ws_dir).await?;
+    let keep_file = ws_dir.join(".keep");
+    if !keep_file.exists() {
+        tokio::fs::write(&keep_file, "atelier workspace\n")
+            .await
+            .ok();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::chown;
+        let _ = chown(rootfs_dir.join("workspaces"), Some(1000), Some(1000));
+        let _ = chown(&ws_dir, Some(1000), Some(1000));
+        let _ = chown(&keep_file, Some(1000), Some(1000));
+    }
     Ok(())
 }
 
