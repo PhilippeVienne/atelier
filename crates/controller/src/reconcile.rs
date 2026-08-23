@@ -925,6 +925,16 @@ async fn ensure_parent_pod(
     // `crates/net-proxy/src/admin.rs`) : joignable par mcp-gateway (meme
     // pod), structurellement injoignable par la VM (netns distincte).
     const NET_PROXY_ADMIN_PORT: u16 = 9001;
+    // Control-plane `portforward` de net-proxy (`crates/net-proxy/src/main.rs`,
+    // `DEFAULT_CONTROL_ADDR`) : contrairement a `NET_PROXY_ADMIN_PORT`, lie a
+    // `0.0.0.0` — c'est par la que passe `crate::guest_probe`, depuis
+    // l'exterieur du pod.
+    const NET_PROXY_CONTROL_PORT: u16 = 9000;
+    // Port `ttyd` dans le guest (voir `crates/api-server/src/terminal.rs`,
+    // meme convention) : canari le plus rapide a demarrer parmi les
+    // services embarques par le devcontainer, utilise comme signal de
+    // readiness avant de marquer le Workshop `Running`.
+    const GUEST_TERMINAL_PORT: u16 = 7681;
     // "Edge port" LocalStack (sert la quasi-totalite des API AWS emulees
     // sur ce seul port) : lie a `127.0.0.1` du pod, jamais expose
     // directement a la VM (seulement via l'alias `simulator` de net-proxy,
@@ -1172,7 +1182,38 @@ async fn ensure_parent_pod(
         .and_then(|p| p.status.as_ref())
         .and_then(|s| s.phase.as_deref())
         == Some("Running");
-    let phase = match (pod_running, resuming) {
+    // Le pod Kubernetes passe `Running` des que le kernel de la microVM a
+    // booté — bien avant que systemd, a l'interieur du guest, ait fini de
+    // demarrer `ttyd`/`code-server` (constate en pratique). Sonder `ttyd`
+    // (le plus rapide des deux a demarrer) via `net-proxy` avant d'annoncer
+    // `Running` evite ce mensonge : le badge de statut refletera alors
+    // reellement "utilisable", pas seulement "le pod a booté". Ne sonde que
+    // si le pod est deja `Running` (sinon le control-plane net-proxy
+    // lui-meme ne repond pas encore) ET que le Workshop n'etait pas deja
+    // confirme `Running` lors du reconcile precedent — sans ce
+    // court-circuit, cette sonde tournerait a chaque reconcile (toutes les
+    // 5s, indefiniment) pour un Workshop stable, juste pour reconfirmer un
+    // etat deja connu.
+    let already_confirmed_running =
+        workshop.status.as_ref().map(|s| &s.phase) == Some(&WorkshopPhase::Running);
+    let guest_ready = pod_running
+        && (already_confirmed_running
+            || match current
+                .as_ref()
+                .and_then(|p| p.status.as_ref())
+                .and_then(|s| s.pod_ip.clone())
+            {
+                Some(pod_ip) => {
+                    crate::guest_probe::guest_tcp_port_open(
+                        &pod_ip,
+                        NET_PROXY_CONTROL_PORT,
+                        GUEST_TERMINAL_PORT,
+                    )
+                    .await
+                }
+                None => false,
+            });
+    let phase = match (guest_ready, resuming) {
         (true, _) => WorkshopPhase::Running,
         (false, true) => WorkshopPhase::Resuming,
         (false, false) => WorkshopPhase::Provisioning,

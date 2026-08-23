@@ -118,6 +118,7 @@ pub(crate) async fn resolve_running_pod_ip(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateWorkshopRequest {
     /// Nom de la ressource Kubernetes sous-jacente : au client de le
     /// choisir (comme `kubectl create -f` avec un nom explicite), pas

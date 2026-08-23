@@ -338,6 +338,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 
