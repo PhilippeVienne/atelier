@@ -50,7 +50,9 @@ fn fixtures() -> Option<Fixtures> {
             .unwrap_or_else(|_| "/bin/true".to_string())
             .into(),
         kernel_path: std::env::var("ATELIER_TEST_VM_KERNEL_PATH").ok()?.into(),
-        rootfs_path: std::env::var("ATELIER_TEST_BUILDER_ROOTFS_PATH").ok()?.into(),
+        rootfs_path: std::env::var("ATELIER_TEST_BUILDER_ROOTFS_PATH")
+            .ok()?
+            .into(),
         registry_addr: std::env::var("ATELIER_TEST_REGISTRY_ADDR").ok()?,
         net_proxy_addr: std::env::var("ATELIER_TEST_NET_PROXY_ADDR").ok()?,
     })
@@ -123,7 +125,11 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
     // dans crates/builder-vm-init). Constate en pratique : "dial tcp: lookup
     // localhost ...: network is unreachable" cote guest, alors que le meme
     // registre est bien joignable via net-proxy avec une IP non-loopback.
-    let registry_port = fixtures.registry_addr.rsplit_once(':').map(|(_, p)| p).unwrap_or("5000");
+    let registry_port = fixtures
+        .registry_addr
+        .rsplit_once(':')
+        .map(|(_, p)| p)
+        .unwrap_or("5000");
     let image_ref_for_guest = format!(
         "{}:{registry_port}/atelier-workshops/builder-vm-test-{}:latest",
         network.host_ip,
@@ -156,10 +162,18 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         vsock: None,
     };
 
-    eprintln!("[diag] avant boot_with_network, t={:?}", std::time::Instant::now());
-    let mut vm = Vm::boot_with_network(&config, &fixtures.kernel_path, &fixtures.rootfs_path, &network)
-        .await
-        .expect("le boot jaile de la microVM builder doit reussir");
+    eprintln!(
+        "[diag] avant boot_with_network, t={:?}",
+        std::time::Instant::now()
+    );
+    let mut vm = Vm::boot_with_network(
+        &config,
+        &fixtures.kernel_path,
+        &fixtures.rootfs_path,
+        &network,
+    )
+    .await
+    .expect("le boot jaile de la microVM builder doit reussir");
     eprintln!("[diag] apres boot_with_network (VM demarree)");
 
     // La VM s'eteint d'elle-meme (reboot(RB_POWER_OFF) dans

@@ -107,12 +107,14 @@ fn to_tungstenite(msg: AxumMessage) -> TsMessage {
         AxumMessage::Binary(data) => TsMessage::Binary(data),
         AxumMessage::Ping(data) => TsMessage::Ping(data),
         AxumMessage::Pong(data) => TsMessage::Pong(data),
-        AxumMessage::Close(frame) => TsMessage::Close(frame.map(|f| {
-            tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                code: f.code.into(),
-                reason: f.reason.as_str().into(),
-            }
-        })),
+        AxumMessage::Close(frame) => {
+            TsMessage::Close(
+                frame.map(|f| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: f.code.into(),
+                    reason: f.reason.as_str().into(),
+                }),
+            )
+        }
     }
 }
 

@@ -105,11 +105,12 @@ impl Gateway {
             .json(&serde_json::json!({ "host": host }))
             .send()
             .await
-            .map_err(|err| ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None))?;
-        response
-            .text()
-            .await
-            .map_err(|err| ErrorData::internal_error(format!("reponse net-proxy invalide: {err}"), None))
+            .map_err(|err| {
+                ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None)
+            })?;
+        response.text().await.map_err(|err| {
+            ErrorData::internal_error(format!("reponse net-proxy invalide: {err}"), None)
+        })
     }
 
     #[tool(
@@ -131,11 +132,12 @@ impl Gateway {
             .post(format!("http://{addr}/internal/simulator/enable"))
             .send()
             .await
-            .map_err(|err| ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None))?;
-        response
-            .text()
-            .await
-            .map_err(|err| ErrorData::internal_error(format!("reponse net-proxy invalide: {err}"), None))
+            .map_err(|err| {
+                ErrorData::internal_error(format!("net-proxy injoignable: {err}"), None)
+            })?;
+        response.text().await.map_err(|err| {
+            ErrorData::internal_error(format!("reponse net-proxy invalide: {err}"), None)
+        })
     }
 }
 

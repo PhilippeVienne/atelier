@@ -50,11 +50,15 @@ pub async fn vscode_proxy(
 
     let stream = open_forwarded_tcp_stream(&pod_ip, code_server_port())
         .await
-        .map_err(|err| ApiError::bad_gateway(format!("connexion a code-server impossible: {err}")))?;
+        .map_err(|err| {
+            ApiError::bad_gateway(format!("connexion a code-server impossible: {err}"))
+        })?;
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
-        .map_err(|err| ApiError::bad_gateway(format!("handshake HTTP avec code-server echoue: {err}")))?;
+        .map_err(|err| {
+            ApiError::bad_gateway(format!("handshake HTTP avec code-server echoue: {err}"))
+        })?;
     tokio::spawn(conn.with_upgrades());
 
     let is_upgrade = req.headers().get(http::header::UPGRADE).is_some();
@@ -99,7 +103,9 @@ pub async fn vscode_proxy(
                 (Ok(server_io), Ok(client_io)) => {
                     let mut server_io = TokioIo::new(server_io);
                     let mut client_io = TokioIo::new(client_io);
-                    if let Err(err) = tokio::io::copy_bidirectional(&mut server_io, &mut client_io).await {
+                    if let Err(err) =
+                        tokio::io::copy_bidirectional(&mut server_io, &mut client_io).await
+                    {
                         tracing::debug!(%err, "tunnel websocket code-server ferme");
                     }
                 }

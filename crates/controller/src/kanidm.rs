@@ -71,11 +71,16 @@ pub async fn ensure_workshop_entity(
 /// suppression d'un Workshop dont l'entite a deja ete nettoyee ; toute autre
 /// erreur (reseau, auth, ...) est remontee pour que le finalizer retente
 /// plutot que de risquer une entite orpheline.
-pub async fn delete_workshop_entity(client: &KanidmClient, workshop_name: &str) -> anyhow::Result<()> {
+pub async fn delete_workshop_entity(
+    client: &KanidmClient,
+    workshop_name: &str,
+) -> anyhow::Result<()> {
     let account_name = format!("atelier-workshop-{workshop_name}");
     match client.idm_service_account_delete(&account_name).await {
         Ok(()) => Ok(()),
         Err(ClientError::Http(status, _, _)) if status == reqwest::StatusCode::NOT_FOUND => Ok(()),
-        Err(err) => Err(anyhow::anyhow!("suppression du service account Kanidm: {err:?}")),
+        Err(err) => Err(anyhow::anyhow!(
+            "suppression du service account Kanidm: {err:?}"
+        )),
     }
 }

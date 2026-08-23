@@ -59,7 +59,12 @@ impl TrustedIssuer {
         let audience = std::env::var("ATELIER_JWT_AUDIENCE")
             .context("ATELIER_JWT_ISSUER est defini mais ATELIER_JWT_AUDIENCE est absent")?;
         let ca_path = std::env::var("ATELIER_JWT_CA_PATH").ok();
-        Ok(Some(Self { issuer, jwks_url, audience, ca_path }))
+        Ok(Some(Self {
+            issuer,
+            jwks_url,
+            audience,
+            ca_path,
+        }))
     }
 
     pub async fn fetch_jwks(&self) -> Result<JwkSet> {
@@ -67,10 +72,13 @@ impl TrustedIssuer {
         if let Some(ca_path) = &self.ca_path {
             let pem = std::fs::read(ca_path)
                 .with_context(|| format!("lecture de ATELIER_JWT_CA_PATH ({ca_path})"))?;
-            let cert = reqwest::Certificate::from_pem(&pem).context("certificat CA invalide (PEM attendu)")?;
+            let cert = reqwest::Certificate::from_pem(&pem)
+                .context("certificat CA invalide (PEM attendu)")?;
             builder = builder.add_root_certificate(cert);
         }
-        let client = builder.build().context("construction du client HTTP pour le JWKS")?;
+        let client = builder
+            .build()
+            .context("construction du client HTTP pour le JWKS")?;
 
         client
             .get(&self.jwks_url)
@@ -89,7 +97,11 @@ impl TrustedIssuer {
 /// configure) fait refuser systematiquement toute requete authentifiee :
 /// evite de demarrer silencieusement en mode "tout est autorise".
 pub enum AuthState {
-    Configured { issuer: String, audience: String, jwks: JwkSet },
+    Configured {
+        issuer: String,
+        audience: String,
+        jwks: JwkSet,
+    },
     Disabled,
 }
 
@@ -99,7 +111,11 @@ impl AuthState {
             Some(trusted) => {
                 let jwks = trusted.fetch_jwks().await?;
                 tracing::info!(issuer = %trusted.issuer, audience = %trusted.audience, keys = jwks.keys.len(), "JWKS Kanidm charge");
-                Ok(AuthState::Configured { issuer: trusted.issuer, audience: trusted.audience, jwks })
+                Ok(AuthState::Configured {
+                    issuer: trusted.issuer,
+                    audience: trusted.audience,
+                    jwks,
+                })
             }
             None => {
                 tracing::warn!(
@@ -125,9 +141,22 @@ struct Claims {
     sub: String,
 }
 
-pub async fn require_auth(State(auth): State<Arc<AuthState>>, mut req: Request, next: Next) -> Response {
-    let AuthState::Configured { issuer, audience, jwks } = auth.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "authentification non configuree").into_response();
+pub async fn require_auth(
+    State(auth): State<Arc<AuthState>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let AuthState::Configured {
+        issuer,
+        audience,
+        jwks,
+    } = auth.as_ref()
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authentification non configuree",
+        )
+            .into_response();
     };
 
     let Some(token) = req
@@ -136,7 +165,11 @@ pub async fn require_auth(State(auth): State<Arc<AuthState>>, mut req: Request, 
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
     else {
-        return (StatusCode::UNAUTHORIZED, "en-tete Authorization: Bearer <jwt> requis").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "en-tete Authorization: Bearer <jwt> requis",
+        )
+            .into_response();
     };
 
     match validate_token(token, issuer, audience, jwks) {
@@ -153,8 +186,12 @@ pub async fn require_auth(State(auth): State<Arc<AuthState>>, mut req: Request, 
 
 fn validate_token(token: &str, issuer: &str, audience: &str, jwks: &JwkSet) -> Result<String> {
     let header = decode_header(token).context("en-tete JWT invalide")?;
-    let kid = header.kid.context("JWT sans champ kid, impossible de choisir la cle")?;
-    let jwk = jwks.find(&kid).context("kid absent du JWKS Kanidm charge au demarrage")?;
+    let kid = header
+        .kid
+        .context("JWT sans champ kid, impossible de choisir la cle")?;
+    let jwk = jwks
+        .find(&kid)
+        .context("kid absent du JWKS Kanidm charge au demarrage")?;
 
     let algorithm = algorithm_for_jwk(jwk)?;
     let decoding_key = DecodingKey::from_jwk(jwk).context("cle JWK invalide")?;

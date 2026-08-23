@@ -138,7 +138,9 @@ impl DevicePlugin for KvmDevicePlugin {
                 annotations: Default::default(),
             })
             .collect();
-        Ok(Response::new(AllocateResponse { container_responses }))
+        Ok(Response::new(AllocateResponse {
+            container_responses,
+        }))
     }
 
     async fn pre_start_container(
@@ -224,7 +226,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("ecoute sur {}", endpoint_path.display()))?;
     let incoming = UnixListenerStream::new(listener);
 
-    let plugin = KvmDevicePlugin { device_ids, kvm_path, tun_path, health_rx };
+    let plugin = KvmDevicePlugin {
+        device_ids,
+        kvm_path,
+        tun_path,
+        health_rx,
+    };
 
     let server = tokio::spawn(async move {
         if let Err(err) = Server::builder()

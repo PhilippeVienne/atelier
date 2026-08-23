@@ -21,6 +21,14 @@ use std::collections::HashMap;
 const IDENTITY_PROXY_ALIAS: &str = "identity-proxy";
 const MCP_GATEWAY_ALIAS: &str = "mcp-gateway";
 const REGISTRY_ALIAS: &str = "registry";
+/// Service global du cluster (meme niveau qu'OpenBao, pas un sidecar par
+/// pod — voir `deploy/dev/llm-proxy/`) : un seul LiteLLM partage par tous
+/// les Workshops, traduit les appels Anthropic Messages API de Claude Code
+/// vers le fournisseur bon marche configure (DeepSeek par defaut). Alias
+/// fixe comme les trois precedents, toujours actif des que configure —
+/// contrairement a l'alias `simulator` (`crate::proxy::EgressConfig`), qui
+/// lui est mutable et gate par un appel MCP explicite.
+const LLM_PROXY_ALIAS: &str = "llm-proxy";
 
 #[derive(Debug, Clone, Default)]
 pub struct InternalRoutes {
@@ -33,6 +41,7 @@ impl InternalRoutes {
             std::env::var("ATELIER_IDENTITY_PROXY_ADDR").ok(),
             std::env::var("ATELIER_MCP_GATEWAY_ADDR").ok(),
             std::env::var("ATELIER_REGISTRY_ALIAS_ADDR").ok(),
+            std::env::var("ATELIER_LLM_PROXY_ADDR").ok(),
         )
     }
 
@@ -40,6 +49,7 @@ impl InternalRoutes {
         identity_proxy_addr: Option<String>,
         mcp_gateway_addr: Option<String>,
         registry_addr: Option<String>,
+        llm_proxy_addr: Option<String>,
     ) -> anyhow::Result<Self> {
         let mut routes = HashMap::new();
         if let Some(addr) = identity_proxy_addr.filter(|s| !s.trim().is_empty()) {
@@ -50,6 +60,9 @@ impl InternalRoutes {
         }
         if let Some(addr) = registry_addr.filter(|s| !s.trim().is_empty()) {
             routes.insert(REGISTRY_ALIAS, parse_addr(&addr)?);
+        }
+        if let Some(addr) = llm_proxy_addr.filter(|s| !s.trim().is_empty()) {
+            routes.insert(LLM_PROXY_ALIAS, parse_addr(&addr)?);
         }
         Ok(Self { routes })
     }
@@ -86,6 +99,7 @@ mod tests {
             Some("127.0.0.1:3129".to_string()),
             Some("127.0.0.1:3130".to_string()),
             Some("127.0.0.1:3131".to_string()),
+            Some("127.0.0.1:3132".to_string()),
         )
         .unwrap();
         assert_eq!(
@@ -100,30 +114,51 @@ mod tests {
             routes.resolve("registry"),
             Some(("127.0.0.1".to_string(), 3131))
         );
+        assert_eq!(
+            routes.resolve("llm-proxy"),
+            Some(("127.0.0.1".to_string(), 3132))
+        );
     }
 
     #[test]
     fn case_insensitive() {
-        let routes = InternalRoutes::parse(Some("127.0.0.1:3129".to_string()), None, None).unwrap();
+        let routes =
+            InternalRoutes::parse(Some("127.0.0.1:3129".to_string()), None, None, None).unwrap();
         assert!(routes.resolve("Identity-Proxy").is_some());
     }
 
     #[test]
     fn unrelated_host_not_resolved() {
-        let routes = InternalRoutes::parse(Some("127.0.0.1:3129".to_string()), None, None).unwrap();
+        let routes =
+            InternalRoutes::parse(Some("127.0.0.1:3129".to_string()), None, None, None).unwrap();
         assert_eq!(routes.resolve("github.com"), None);
     }
 
     #[test]
     fn unset_env_disables_the_route() {
-        let routes = InternalRoutes::parse(None, None, None).unwrap();
+        let routes = InternalRoutes::parse(None, None, None, None).unwrap();
         assert_eq!(routes.resolve("identity-proxy"), None);
         assert_eq!(routes.resolve("mcp-gateway"), None);
         assert_eq!(routes.resolve("registry"), None);
+        assert_eq!(routes.resolve("llm-proxy"), None);
     }
 
     #[test]
     fn rejects_malformed_address() {
-        assert!(InternalRoutes::parse(Some("no-port-here".to_string()), None, None).is_err());
+        assert!(InternalRoutes::parse(Some("no-port-here".to_string()), None, None, None).is_err());
+    }
+
+    /// Distingue cet alias de `llm-proxy` (fixe, toujours actif des que
+    /// configure) de l'alias mutable `simulator` (`crate::proxy`), gate par
+    /// un appel MCP explicite : `llm-proxy` ne depend d'aucun etat runtime.
+    #[test]
+    fn llm_proxy_alias_is_independent_of_others() {
+        let routes =
+            InternalRoutes::parse(None, None, None, Some("10.0.0.5:4000".to_string())).unwrap();
+        assert_eq!(
+            routes.resolve("llm-proxy"),
+            Some(("10.0.0.5".to_string(), 4000))
+        );
+        assert_eq!(routes.resolve("identity-proxy"), None);
     }
 }

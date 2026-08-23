@@ -103,7 +103,8 @@ async fn main() -> anyhow::Result<()> {
             guest_cid: env_u32("ATELIER_VM_VSOCK_GUEST_CID", 3),
             uds_relative_path: format!(
                 "/{}",
-                std::env::var("ATELIER_VM_VSOCK_UDS_FILENAME").unwrap_or_else(|_| "vsock.sock".to_string())
+                std::env::var("ATELIER_VM_VSOCK_UDS_FILENAME")
+                    .unwrap_or_else(|_| "vsock.sock".to_string())
             ),
         }),
     };
@@ -119,16 +120,25 @@ async fn main() -> anyhow::Result<()> {
     // possible, comportement degrade mais explicite plutot qu'un echec
     // silencieux (un Workshop qui n'a jamais ete suspendu n'a simplement pas
     // encore de snapshot a restaurer).
-    let snapshot_dir = std::env::var("ATELIER_VM_SNAPSHOT_DIR").ok().map(PathBuf::from);
+    let snapshot_dir = std::env::var("ATELIER_VM_SNAPSHOT_DIR")
+        .ok()
+        .map(PathBuf::from);
     let snapshot_state_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.state"));
     let snapshot_mem_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.mem"));
 
     let mut vm = match (&snapshot_state_path, &snapshot_mem_path) {
         (Some(state), Some(mem)) if state.exists() && mem.exists() => {
             tracing::info!(?state, ?mem, "restoring microVM from persisted snapshot");
-            Vm::restore_persisted(&config, &kernel_path, &rootfs_path, Some(&network), state, mem)
-                .await
-                .context("restauration de la microVM depuis un snapshot persiste")?
+            Vm::restore_persisted(
+                &config,
+                &kernel_path,
+                &rootfs_path,
+                Some(&network),
+                state,
+                mem,
+            )
+            .await
+            .context("restauration de la microVM depuis un snapshot persiste")?
         }
         _ => {
             tracing::info!(?kernel_path, ?rootfs_path, "booting microVM");
@@ -145,7 +155,9 @@ async fn main() -> anyhow::Result<()> {
     let control_addr =
         std::env::var("ATELIER_VM_CONTROL_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
     let control_state = Arc::new(Mutex::new(tx));
-    let app = Router::new().route("/snapshot", post(snapshot_handler)).with_state(control_state);
+    let app = Router::new()
+        .route("/snapshot", post(snapshot_handler))
+        .with_state(control_state);
     let listener = tokio::net::TcpListener::bind(&control_addr)
         .await
         .with_context(|| format!("ecoute du serveur de controle sur {control_addr}"))?;
@@ -212,7 +224,11 @@ fn kernel_ip_boot_arg(network: &NetworkSetup) -> String {
 }
 
 fn prefix_to_netmask(prefix_len: u8) -> std::net::Ipv4Addr {
-    let mask: u32 = if prefix_len == 0 { 0 } else { u32::MAX << (32 - prefix_len) };
+    let mask: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len)
+    };
     std::net::Ipv4Addr::from(mask)
 }
 
@@ -224,8 +240,9 @@ fn prefix_to_netmask(prefix_len: u8) -> std::net::Ipv4Addr {
 /// scope a un seul Workshop a un instant donne, stocke sous son propre
 /// repertoire.
 async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> SnapshotResult {
-    let snapshot_dir = snapshot_dir
-        .ok_or_else(|| anyhow::anyhow!("ATELIER_VM_SNAPSHOT_DIR non configure, impossible de publier le snapshot"))?;
+    let snapshot_dir = snapshot_dir.ok_or_else(|| {
+        anyhow::anyhow!("ATELIER_VM_SNAPSHOT_DIR non configure, impossible de publier le snapshot")
+    })?;
     tokio::fs::create_dir_all(snapshot_dir).await?;
 
     let snapshot = vm.snapshot().await?;
@@ -256,21 +273,36 @@ async fn snapshot_handler(
     let (respond_to, rx) = oneshot::channel();
     let send_result = tx.lock().await.send(SnapshotRequest { respond_to }).await;
     if send_result.is_err() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "vm-supervisor is shutting down".to_string())
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vm-supervisor is shutting down".to_string(),
+        )
             .into_response();
     }
     match rx.await {
-        Ok(Ok(digest)) => (StatusCode::OK, Json(serde_json::json!({ "snapshotDigest": digest }))).into_response(),
+        Ok(Ok(digest)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "snapshotDigest": digest })),
+        )
+            .into_response(),
         Ok(Err(err)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "reponse perdue (process en cours d'arret)".to_string())
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reponse perdue (process en cours d'arret)".to_string(),
+        )
             .into_response(),
     }
 }
 
 fn env_path(var: &str, default: &str) -> PathBuf {
-    std::env::var(var).unwrap_or_else(|_| default.to_string()).into()
+    std::env::var(var)
+        .unwrap_or_else(|_| default.to_string())
+        .into()
 }
 
 fn env_u32(var: &str, default: u32) -> u32 {
-    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }

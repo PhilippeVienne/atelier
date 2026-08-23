@@ -43,7 +43,10 @@ async fn creates_tap_then_tears_it_down() {
         link_text.contains("169.254.0.1/30"),
         "le device TAP doit porter l'IP hote attendue: {link_text}"
     );
-    assert!(link_text.contains("UP"), "le device TAP doit etre up: {link_text}");
+    assert!(
+        link_text.contains("UP"),
+        "le device TAP doit etre up: {link_text}"
+    );
 
     network.teardown().await;
 
@@ -84,9 +87,15 @@ async fn restricts_tap_to_net_proxy_only() {
         .output()
         .expect("lancement de `iptables -S`");
     let rules = String::from_utf8_lossy(&list_output.stdout);
-    assert!(rules.contains("--dport 3128") && rules.contains("ACCEPT"), "regle net-proxy manquante: {rules}");
+    assert!(
+        rules.contains("--dport 3128") && rules.contains("ACCEPT"),
+        "regle net-proxy manquante: {rules}"
+    );
     assert!(rules.contains("--dport 53"), "regle DNS manquante: {rules}");
-    assert!(rules.contains("-j DROP"), "regle de rejet par defaut manquante: {rules}");
+    assert!(
+        rules.contains("-j DROP"),
+        "regle de rejet par defaut manquante: {rules}"
+    );
 
     let input_output = Command::new("iptables")
         .args(["-S", "INPUT"])
@@ -100,7 +109,10 @@ async fn restricts_tap_to_net_proxy_only() {
 
     network.teardown().await;
 
-    let chain_after = Command::new("iptables").args(["-S", &chain]).output().expect("lancement de `iptables -S`");
+    let chain_after = Command::new("iptables")
+        .args(["-S", &chain])
+        .output()
+        .expect("lancement de `iptables -S`");
     assert!(
         !chain_after.status.success(),
         "la chaine dediee doit avoir disparu apres teardown()"

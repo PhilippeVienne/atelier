@@ -4,7 +4,9 @@
 //! et ne peut agir que sur ses propres Workshops.
 
 use crate::auth::{require_auth, AuthState, AuthenticatedUser};
-use atelier_common::{DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopResources, WorkshopSpec};
+use atelier_common::{
+    DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopResources, WorkshopSpec,
+};
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -27,15 +29,29 @@ pub struct AppState {
 pub fn router(state: AppState, auth: AuthState) -> Router {
     let protected = Router::new()
         .route("/v1/workshops", post(create_workshop).get(list_workshops))
-        .route("/v1/workshops/{name}", get(get_workshop).delete(delete_workshop))
+        .route(
+            "/v1/workshops/{name}",
+            get(get_workshop).delete(delete_workshop),
+        )
         .route("/v1/workshops/{name}/suspend", post(suspend_workshop))
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
-        .route("/v1/workshops/{name}/portforward", get(crate::portforward::portforward))
-        .route("/v1/workshops/{name}/vscode/{*path}", any(crate::vscode::vscode_proxy))
-        .layer(axum::middleware::from_fn_with_state(Arc::new(auth), require_auth))
+        .route(
+            "/v1/workshops/{name}/portforward",
+            get(crate::portforward::portforward),
+        )
+        .route(
+            "/v1/workshops/{name}/vscode/{*path}",
+            any(crate::vscode::vscode_proxy),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(auth),
+            require_auth,
+        ))
         .with_state(state);
 
-    Router::new().route("/healthz", get(|| async { "ok" })).merge(protected)
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .merge(protected)
 }
 
 pub(crate) fn workshops_api(state: &AppState) -> Api<Workshop> {
@@ -56,12 +72,17 @@ pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Res
 /// IP du pod parent d'un Workshop en cours d'execution — precondition
 /// commune a `portforward` et `vscode` (les deux relaient vers un port
 /// ouvert par une microVM hebergee dans ce pod, via `net-proxy`).
-pub(crate) async fn resolve_running_pod_ip(state: &AppState, workshop: &Workshop) -> Result<String, ApiError> {
+pub(crate) async fn resolve_running_pod_ip(
+    state: &AppState,
+    workshop: &Workshop,
+) -> Result<String, ApiError> {
     let pod_name = workshop
         .status
         .as_ref()
         .and_then(|s| s.pod_name.clone())
-        .ok_or_else(|| ApiError::bad_request("le Workshop n'a pas de pod parent actif (suspendu ?)"))?;
+        .ok_or_else(|| {
+            ApiError::bad_request("le Workshop n'a pas de pod parent actif (suspendu ?)")
+        })?;
     let pods: Api<Pod> = Api::namespaced(state.client.clone(), &state.namespace);
     let pod = pods.get(&pod_name).await?;
     pod.status
@@ -122,7 +143,11 @@ async fn list_workshops(
     Extension(user): Extension<AuthenticatedUser>,
 ) -> Result<Json<Vec<Workshop>>, ApiError> {
     let all = workshops_api(&state).list(&Default::default()).await?;
-    let mine = all.items.into_iter().filter(|w| w.spec.owner_subject == user.0).collect();
+    let mine = all
+        .items
+        .into_iter()
+        .filter(|w| w.spec.owner_subject == user.0)
+        .collect();
     Ok(Json(mine))
 }
 
@@ -146,7 +171,9 @@ async fn delete_workshop(
     // Pose seulement deletionTimestamp : la suppression effective attend
     // que le controller leve le finalizer atelier.dev/cleanup (entite
     // Kanidm / role OpenBao nettoyes), voir crates/controller/src/reconcile.rs.
-    workshops_api(&state).delete(&name, &DeleteParams::default()).await?;
+    workshops_api(&state)
+        .delete(&name, &DeleteParams::default())
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -182,7 +209,11 @@ async fn patch_desired_state(
 
     let patch = serde_json::json!({ "spec": { "desiredState": desired_state } });
     let updated = api
-        .patch(name, &PatchParams::apply(FIELD_MANAGER), &Patch::Merge(&patch))
+        .patch(
+            name,
+            &PatchParams::apply(FIELD_MANAGER),
+            &Patch::Merge(&patch),
+        )
         .await?;
     Ok(Json(updated))
 }
@@ -202,7 +233,8 @@ fn validate_name(name: &str) -> Result<(), ApiError> {
     } else {
         Err(ApiError {
             status: StatusCode::BAD_REQUEST,
-            message: "nom invalide : lettres minuscules/chiffres/tirets, 1 a 63 caracteres".to_string(),
+            message: "nom invalide : lettres minuscules/chiffres/tirets, 1 a 63 caracteres"
+                .to_string(),
         })
     }
 }
@@ -214,15 +246,24 @@ pub struct ApiError {
 
 impl ApiError {
     fn not_found() -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: "workshop introuvable".to_string() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: "workshop introuvable".to_string(),
+        }
     }
 
     pub(crate) fn bad_request(message: &str) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: message.to_string() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.to_string(),
+        }
     }
 
     pub(crate) fn bad_gateway(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_GATEWAY, message: message.into() }
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+        }
     }
 }
 
@@ -246,6 +287,9 @@ impl From<kube::Error> for ApiError {
             }
         }
         tracing::error!(%err, "erreur kube inattendue");
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: "erreur interne".to_string() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "erreur interne".to_string(),
+        }
     }
 }

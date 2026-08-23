@@ -54,7 +54,10 @@ fn generate_test_key() -> TestKey {
         .args(["genrsa", "2048"])
         .output()
         .expect("openssl doit etre installe pour ce test");
-    assert!(output.status.success(), "openssl genrsa a echoue: {output:?}");
+    assert!(
+        output.status.success(),
+        "openssl genrsa a echoue: {output:?}"
+    );
 
     TestKey {
         encoding_key: EncodingKey::from_rsa_pem(&output.stdout).expect("cle PEM invalide"),
@@ -63,7 +66,10 @@ fn generate_test_key() -> TestKey {
 }
 
 fn sign_jwt(key: &TestKey, sub: &str) -> String {
-    let header = Header { kid: Some(key.kid.clone()), ..Header::new(Algorithm::RS256) };
+    let header = Header {
+        kid: Some(key.kid.clone()),
+        ..Header::new(Algorithm::RS256)
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -90,7 +96,8 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
     };
 
     let key = generate_test_key();
-    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
     let auth = AuthState::Configured {
         issuer: ISSUER.to_string(),
@@ -101,7 +108,13 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
 
-    let app = routes::router(AppState { client: client.clone(), namespace }, auth);
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace,
+        },
+        auth,
+    );
 
     let owner_token = sign_jwt(&key, "owner@test.atelier");
     let other_token = sign_jwt(&key, "someone-else@test.atelier");
@@ -129,59 +142,108 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED, "creation doit reussir");
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "creation doit reussir"
+    );
     let created: Value = body_json(response).await;
-    assert_eq!(created["spec"]["ownerSubject"], "owner@test.atelier", "owner_subject vient du JWT, pas du corps");
+    assert_eq!(
+        created["spec"]["ownerSubject"], "owner@test.atelier",
+        "owner_subject vient du JWT, pas du corps"
+    );
 
     // Le proprietaire voit son Workshop.
-    let response = app.clone().oneshot(get_request(&format!("/v1/workshops/{name}"), &owner_token)).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_request(&format!("/v1/workshops/{name}"), &owner_token))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     // Un autre sujet JWT ne le voit pas (404, pas 403 : cf. routes.rs).
-    let response = app.clone().oneshot(get_request(&format!("/v1/workshops/{name}"), &other_token)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND, "isolation par proprietaire");
+    let response = app
+        .clone()
+        .oneshot(get_request(&format!("/v1/workshops/{name}"), &other_token))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "isolation par proprietaire"
+    );
 
     // La liste du proprietaire contient le Workshop cree.
-    let response = app.clone().oneshot(get_request("/v1/workshops", &owner_token)).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_request("/v1/workshops", &owner_token))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let list: Value = body_json(response).await;
     assert!(
-        list.as_array().unwrap().iter().any(|w| w["metadata"]["name"] == name),
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["metadata"]["name"] == name),
         "la liste du proprietaire doit contenir le Workshop cree"
     );
 
     // La liste d'un autre sujet ne le contient pas.
-    let response = app.clone().oneshot(get_request("/v1/workshops", &other_token)).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_request("/v1/workshops", &other_token))
+        .await
+        .unwrap();
     let list: Value = body_json(response).await;
     assert!(
-        !list.as_array().unwrap().iter().any(|w| w["metadata"]["name"] == name),
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["metadata"]["name"] == name),
         "la liste d'un autre sujet ne doit pas contenir le Workshop d'un autre"
     );
 
     // suspend -> desiredState=Suspended, verifie directement via kube::Api.
     let response = app
         .clone()
-        .oneshot(post_request(&format!("/v1/workshops/{name}/suspend"), &owner_token))
+        .oneshot(post_request(
+            &format!("/v1/workshops/{name}/suspend"),
+            &owner_token,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let fetched = workshops.get(&name).await.unwrap();
-    assert_eq!(fetched.spec.desired_state, atelier_common::WorkshopDesiredState::Suspended);
+    assert_eq!(
+        fetched.spec.desired_state,
+        atelier_common::WorkshopDesiredState::Suspended
+    );
 
     // resume -> desiredState=Running.
     let response = app
         .clone()
-        .oneshot(post_request(&format!("/v1/workshops/{name}/resume"), &owner_token))
+        .oneshot(post_request(
+            &format!("/v1/workshops/{name}/resume"),
+            &owner_token,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let fetched = workshops.get(&name).await.unwrap();
-    assert_eq!(fetched.spec.desired_state, atelier_common::WorkshopDesiredState::Running);
+    assert_eq!(
+        fetched.spec.desired_state,
+        atelier_common::WorkshopDesiredState::Running
+    );
 
     // Un autre sujet ne peut pas suspendre le Workshop de quelqu'un d'autre.
     let response = app
         .clone()
-        .oneshot(post_request(&format!("/v1/workshops/{name}/suspend"), &other_token))
+        .oneshot(post_request(
+            &format!("/v1/workshops/{name}/suspend"),
+            &other_token,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -262,7 +324,10 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     let control_port = pick_free_port().await;
     let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
         .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
-        .env("ATELIER_NET_PROXY_CONTROL_ADDR", format!("127.0.0.1:{control_port}"))
+        .env(
+            "ATELIER_NET_PROXY_CONTROL_ADDR",
+            format!("127.0.0.1:{control_port}"),
+        )
         .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
         .env("ATELIER_VM_ADDR", "127.0.0.1")
         .env("ATELIER_EGRESS_ALLOWLIST", "*")
@@ -272,7 +337,8 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     wait_for_port(control_port).await;
 
     let key = generate_test_key();
-    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
     let auth = AuthState::Configured {
         issuer: ISSUER.to_string(),
@@ -295,20 +361,30 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     // status.podIp (peu importe qu'aucun conteneur n'y tourne reellement :
     // seule l'IP compte pour ce test, net-proxy tourne en local sur cette
     // meme adresse de boucle).
-    let mut workshop = Workshop::new(&name, atelier_common::WorkshopSpec {
-        devcontainer: atelier_common::DevcontainerSource {
-            repo: "https://example.invalid/repo.git".to_string(),
-            revision: "HEAD".to_string(),
-            config_path: ".devcontainer/devcontainer.json".to_string(),
+    let mut workshop = Workshop::new(
+        &name,
+        atelier_common::WorkshopSpec {
+            devcontainer: atelier_common::DevcontainerSource {
+                repo: "https://example.invalid/repo.git".to_string(),
+                revision: "HEAD".to_string(),
+                config_path: ".devcontainer/devcontainer.json".to_string(),
+            },
+            resources: atelier_common::WorkshopResources {
+                cpu: "1".into(),
+                memory: "512Mi".into(),
+                disk: None,
+            },
+            egress_allowlist: vec![],
+            tools: vec![],
+            identity_injection_rules: vec![],
+            owner_subject: "portforward-owner@test.atelier".to_string(),
+            desired_state: atelier_common::WorkshopDesiredState::Running,
         },
-        resources: atelier_common::WorkshopResources { cpu: "1".into(), memory: "512Mi".into(), disk: None },
-        egress_allowlist: vec![],
-        tools: vec![],
-        identity_injection_rules: vec![],
-        owner_subject: "portforward-owner@test.atelier".to_string(),
-        desired_state: atelier_common::WorkshopDesiredState::Running,
-    });
-    workshop = workshops.create(&Default::default(), &workshop).await.expect("creation du Workshop");
+    );
+    workshop = workshops
+        .create(&Default::default(), &workshop)
+        .await
+        .expect("creation du Workshop");
     workshops
         .patch_status(
             &name,
@@ -325,7 +401,11 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     // avec sa propre adresse CNI reelle, avant que le test ne puisse
     // controler ce qu'expose net-proxy.
     let pod = k8s_openapi::api::core::v1::Pod {
-        metadata: kube::api::ObjectMeta { name: Some(pod_name.clone()), namespace: Some(namespace.clone()), ..Default::default() },
+        metadata: kube::api::ObjectMeta {
+            name: Some(pod_name.clone()),
+            namespace: Some(namespace.clone()),
+            ..Default::default()
+        },
         spec: Some(k8s_openapi::api::core::v1::PodSpec {
             node_name: Some("atelier-test-fake-node".into()),
             containers: vec![k8s_openapi::api::core::v1::Container {
@@ -337,7 +417,9 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
         }),
         ..Default::default()
     };
-    pods.create(&Default::default(), &pod).await.expect("creation du Pod");
+    pods.create(&Default::default(), &pod)
+        .await
+        .expect("creation du Pod");
     pods.patch_status(
         &pod_name,
         &PatchParams::default(),
@@ -350,16 +432,21 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     // de concurrence avec `crud_and_ownership_isolation_against_real_cluster`.
     unsafe { std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string()) };
 
-    let app = routes::router(AppState { client: client.clone(), namespace: namespace.clone() }, auth);
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace: namespace.clone(),
+        },
+        auth,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
 
-    let url = format!(
-        "ws://127.0.0.1:{api_port}/v1/workshops/{name}/portforward?ports=tcp:{echo_port}"
-    );
+    let url =
+        format!("ws://127.0.0.1:{api_port}/v1/workshops/{name}/portforward?ports=tcp:{echo_port}");
     let request = {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut req = url.into_client_request().unwrap();
@@ -375,7 +462,11 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
 
     let mut frame = vec![0u8]; // canal 0 = donnees du premier (et seul) port demande
     frame.extend_from_slice(b"hello through api-server");
-    ws.send(tokio_tungstenite::tungstenite::Message::Binary(frame.into())).await.unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Binary(
+        frame.into(),
+    ))
+    .await
+    .unwrap();
 
     let reply = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
         .await
@@ -384,13 +475,21 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
         .expect("message valide");
     let reply_bytes = reply.into_data();
     assert_eq!(reply_bytes[0], 0, "canal de donnees attendu");
-    assert_eq!(&reply_bytes[1..], b"hello through api-server", "l'echo doit traverser api-server -> net-proxy -> le port cible");
+    assert_eq!(
+        &reply_bytes[1..],
+        b"hello through api-server",
+        "l'echo doit traverser api-server -> net-proxy -> le port cible"
+    );
 
     server.abort();
     net_proxy.start_kill().ok();
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
     let _ = workshops
-        .patch(&name, &PatchParams::default(), &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })))
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })),
+        )
         .await;
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
     let _ = workshop; // conserve pour eviter un warning "unused" selon la version du compilateur
@@ -431,7 +530,10 @@ async fn pick_free_port() -> u16 {
 
 async fn wait_for_port(port: u16) {
     for _ in 0..50 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -466,7 +568,10 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     let control_port = pick_free_port().await;
     let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
         .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
-        .env("ATELIER_NET_PROXY_CONTROL_ADDR", format!("127.0.0.1:{control_port}"))
+        .env(
+            "ATELIER_NET_PROXY_CONTROL_ADDR",
+            format!("127.0.0.1:{control_port}"),
+        )
         .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
         .env("ATELIER_VM_ADDR", "127.0.0.1")
         .env("ATELIER_EGRESS_ALLOWLIST", "*")
@@ -476,7 +581,8 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     wait_for_port(control_port).await;
 
     let key = generate_test_key();
-    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
     let auth = AuthState::Configured {
         issuer: ISSUER.to_string(),
@@ -494,20 +600,30 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
 
-    let workshop = Workshop::new(&name, atelier_common::WorkshopSpec {
-        devcontainer: atelier_common::DevcontainerSource {
-            repo: "https://example.invalid/repo.git".to_string(),
-            revision: "HEAD".to_string(),
-            config_path: ".devcontainer/devcontainer.json".to_string(),
+    let workshop = Workshop::new(
+        &name,
+        atelier_common::WorkshopSpec {
+            devcontainer: atelier_common::DevcontainerSource {
+                repo: "https://example.invalid/repo.git".to_string(),
+                revision: "HEAD".to_string(),
+                config_path: ".devcontainer/devcontainer.json".to_string(),
+            },
+            resources: atelier_common::WorkshopResources {
+                cpu: "1".into(),
+                memory: "512Mi".into(),
+                disk: None,
+            },
+            egress_allowlist: vec![],
+            tools: vec![],
+            identity_injection_rules: vec![],
+            owner_subject: "vscode-owner@test.atelier".to_string(),
+            desired_state: atelier_common::WorkshopDesiredState::Running,
         },
-        resources: atelier_common::WorkshopResources { cpu: "1".into(), memory: "512Mi".into(), disk: None },
-        egress_allowlist: vec![],
-        tools: vec![],
-        identity_injection_rules: vec![],
-        owner_subject: "vscode-owner@test.atelier".to_string(),
-        desired_state: atelier_common::WorkshopDesiredState::Running,
-    });
-    workshops.create(&Default::default(), &workshop).await.expect("creation du Workshop");
+    );
+    workshops
+        .create(&Default::default(), &workshop)
+        .await
+        .expect("creation du Workshop");
     workshops
         .patch_status(
             &name,
@@ -522,7 +638,11 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     // patch_status manuel sur `podIP` ne soit jamais ecrase par un vrai
     // kubelet.
     let pod = k8s_openapi::api::core::v1::Pod {
-        metadata: kube::api::ObjectMeta { name: Some(pod_name.clone()), namespace: Some(namespace.clone()), ..Default::default() },
+        metadata: kube::api::ObjectMeta {
+            name: Some(pod_name.clone()),
+            namespace: Some(namespace.clone()),
+            ..Default::default()
+        },
         spec: Some(k8s_openapi::api::core::v1::PodSpec {
             node_name: Some("atelier-test-fake-node".into()),
             containers: vec![k8s_openapi::api::core::v1::Container {
@@ -534,7 +654,9 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
         }),
         ..Default::default()
     };
-    pods.create(&Default::default(), &pod).await.expect("creation du Pod");
+    pods.create(&Default::default(), &pod)
+        .await
+        .expect("creation du Pod");
     pods.patch_status(
         &pod_name,
         &PatchParams::default(),
@@ -551,7 +673,13 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
         std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
     }
 
-    let app = routes::router(AppState { client: client.clone(), namespace: namespace.clone() }, auth);
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace: namespace.clone(),
+        },
+        auth,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
@@ -560,7 +688,9 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
 
     let http_client = reqwest::Client::new();
     let response = http_client
-        .get(format!("http://127.0.0.1:{api_port}/v1/workshops/{name}/vscode/static/foo.js"))
+        .get(format!(
+            "http://127.0.0.1:{api_port}/v1/workshops/{name}/vscode/static/foo.js"
+        ))
         .header("Authorization", format!("Bearer {owner_token}"))
         .send()
         .await
@@ -579,7 +709,11 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     net_proxy.start_kill().ok();
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
     let _ = workshops
-        .patch(&name, &PatchParams::default(), &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })))
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })),
+        )
         .await;
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
 }
@@ -613,7 +747,10 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     let control_port = pick_free_port().await;
     let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
         .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
-        .env("ATELIER_NET_PROXY_CONTROL_ADDR", format!("127.0.0.1:{control_port}"))
+        .env(
+            "ATELIER_NET_PROXY_CONTROL_ADDR",
+            format!("127.0.0.1:{control_port}"),
+        )
         .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
         .env("ATELIER_VM_ADDR", "127.0.0.1")
         .env("ATELIER_EGRESS_ALLOWLIST", "*")
@@ -623,7 +760,8 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     wait_for_port(control_port).await;
 
     let key = generate_test_key();
-    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
     let auth = AuthState::Configured {
         issuer: ISSUER.to_string(),
@@ -641,20 +779,30 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
 
-    let workshop = Workshop::new(&name, atelier_common::WorkshopSpec {
-        devcontainer: atelier_common::DevcontainerSource {
-            repo: "https://example.invalid/repo.git".to_string(),
-            revision: "HEAD".to_string(),
-            config_path: ".devcontainer/devcontainer.json".to_string(),
+    let workshop = Workshop::new(
+        &name,
+        atelier_common::WorkshopSpec {
+            devcontainer: atelier_common::DevcontainerSource {
+                repo: "https://example.invalid/repo.git".to_string(),
+                revision: "HEAD".to_string(),
+                config_path: ".devcontainer/devcontainer.json".to_string(),
+            },
+            resources: atelier_common::WorkshopResources {
+                cpu: "1".into(),
+                memory: "512Mi".into(),
+                disk: None,
+            },
+            egress_allowlist: vec![],
+            tools: vec![],
+            identity_injection_rules: vec![],
+            owner_subject: "vscode-ws-owner@test.atelier".to_string(),
+            desired_state: atelier_common::WorkshopDesiredState::Running,
         },
-        resources: atelier_common::WorkshopResources { cpu: "1".into(), memory: "512Mi".into(), disk: None },
-        egress_allowlist: vec![],
-        tools: vec![],
-        identity_injection_rules: vec![],
-        owner_subject: "vscode-ws-owner@test.atelier".to_string(),
-        desired_state: atelier_common::WorkshopDesiredState::Running,
-    });
-    workshops.create(&Default::default(), &workshop).await.expect("creation du Workshop");
+    );
+    workshops
+        .create(&Default::default(), &workshop)
+        .await
+        .expect("creation du Workshop");
     workshops
         .patch_status(
             &name,
@@ -665,7 +813,11 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
         .expect("ecriture de status.podName");
 
     let pod = k8s_openapi::api::core::v1::Pod {
-        metadata: kube::api::ObjectMeta { name: Some(pod_name.clone()), namespace: Some(namespace.clone()), ..Default::default() },
+        metadata: kube::api::ObjectMeta {
+            name: Some(pod_name.clone()),
+            namespace: Some(namespace.clone()),
+            ..Default::default()
+        },
         spec: Some(k8s_openapi::api::core::v1::PodSpec {
             node_name: Some("atelier-test-fake-node".into()),
             containers: vec![k8s_openapi::api::core::v1::Container {
@@ -677,7 +829,9 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
         }),
         ..Default::default()
     };
-    pods.create(&Default::default(), &pod).await.expect("creation du Pod");
+    pods.create(&Default::default(), &pod)
+        .await
+        .expect("creation du Pod");
     pods.patch_status(
         &pod_name,
         &PatchParams::default(),
@@ -691,7 +845,13 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
         std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
     }
 
-    let app = routes::router(AppState { client: client.clone(), namespace: namespace.clone() }, auth);
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace: namespace.clone(),
+        },
+        auth,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
@@ -699,7 +859,9 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     });
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", api_port)).await.unwrap();
+    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", api_port))
+        .await
+        .unwrap();
     let request = format!(
         "GET /v1/workshops/{name}/vscode/socket HTTP/1.1\r\n\
          Host: 127.0.0.1\r\n\
@@ -737,7 +899,11 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     net_proxy.start_kill().ok();
     let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
     let _ = workshops
-        .patch(&name, &PatchParams::default(), &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })))
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })),
+        )
         .await;
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
 }
@@ -751,7 +917,9 @@ async fn spawn_stub_upgrade_echo_server() -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        let Ok((socket, _)) = listener.accept().await else { return };
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
         let mut reader = BufReader::new(socket);
         loop {
             let mut line = String::new();
@@ -763,7 +931,8 @@ async fn spawn_stub_upgrade_echo_server() -> u16 {
             }
         }
         let mut socket = reader.into_inner();
-        let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        let response =
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
         if socket.write_all(response.as_bytes()).await.is_err() {
             return;
         }
@@ -785,7 +954,9 @@ async fn spawn_stub_upgrade_echo_server() -> u16 {
 /// Serveur HTTP minimal (une seule requete acceptee) qui joue le role de
 /// `code-server` pour ce test : enregistre la ligne de requete recue (pour
 /// verifier le retrait du prefixe) et repond toujours le meme corps.
-async fn spawn_stub_http_server(response_body: &'static str) -> (u16, std::sync::Arc<tokio::sync::Mutex<Option<String>>>) {
+async fn spawn_stub_http_server(
+    response_body: &'static str,
+) -> (u16, std::sync::Arc<tokio::sync::Mutex<Option<String>>>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let observed = std::sync::Arc::new(tokio::sync::Mutex::new(None));
@@ -793,7 +964,9 @@ async fn spawn_stub_http_server(response_body: &'static str) -> (u16, std::sync:
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        let Ok((socket, _)) = listener.accept().await else { return };
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
         let mut reader = BufReader::new(socket);
         let mut request_line = String::new();
         if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {

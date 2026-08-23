@@ -331,16 +331,14 @@ mod tests {
         let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
         let mut stream = TcpStream::connect((host, port)).await.unwrap();
         stream
-            .write_all(format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
             .await
             .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
-        response
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .parse()
-            .unwrap()
+        response.split_whitespace().nth(1).unwrap().parse().unwrap()
     }
 }

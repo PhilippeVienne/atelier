@@ -7,8 +7,8 @@ use k8s_openapi::api::core::v1::{
     PodSpec, PodTemplateSpec, ResourceRequirements, SecurityContext, ServiceAccount, Volume,
     VolumeMount,
 };
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -236,7 +236,11 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
     }
 
     let was_suspended = matches!(
-        workshop.status.as_ref().map(|s| s.phase.clone()).unwrap_or_default(),
+        workshop
+            .status
+            .as_ref()
+            .map(|s| s.phase.clone())
+            .unwrap_or_default(),
         WorkshopPhase::Suspended | WorkshopPhase::Suspending
     );
 
@@ -284,7 +288,10 @@ async fn ensure_suspended(
     let pod_name = format!("{name}-parent");
 
     let existing_pod = pods.get_opt(&pod_name).await?;
-    let mut snapshot_digest = workshop.status.as_ref().and_then(|s| s.snapshot_digest.clone());
+    let mut snapshot_digest = workshop
+        .status
+        .as_ref()
+        .and_then(|s| s.snapshot_digest.clone());
 
     let phase = match existing_pod {
         Some(pod) => {
@@ -297,7 +304,10 @@ async fn ensure_suspended(
         None => WorkshopPhase::Suspended,
     };
 
-    let image_digest = workshop.status.as_ref().and_then(|s| s.image_digest.clone());
+    let image_digest = workshop
+        .status
+        .as_ref()
+        .and_then(|s| s.image_digest.clone());
     let mut status = carry_forward_status(workshop, phase, image_digest, kanidm_entity_id);
     status.snapshot_digest = snapshot_digest;
     status.pod_name = None;
@@ -333,9 +343,15 @@ async fn request_snapshot(pod: &Pod) -> Option<String> {
     }
     match response.json::<serde_json::Value>().await {
         Ok(body) => {
-            let digest = body.get("snapshotDigest").and_then(|v| v.as_str()).map(str::to_string);
+            let digest = body
+                .get("snapshotDigest")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             if digest.is_none() {
-                tracing::warn!(?body, "reponse de vm-supervisor sans snapshotDigest exploitable");
+                tracing::warn!(
+                    ?body,
+                    "reponse de vm-supervisor sans snapshotDigest exploitable"
+                );
             }
             digest
         }
@@ -404,7 +420,11 @@ async fn ensure_image_build_rbac(
         ..Default::default()
     };
     service_accounts
-        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&service_account))
+        .patch(
+            job_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&service_account),
+        )
         .await?;
 
     let role = Role {
@@ -418,7 +438,11 @@ async fn ensure_image_build_rbac(
         }]),
     };
     roles
-        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&role))
+        .patch(
+            job_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&role),
+        )
         .await?;
 
     let role_binding = RoleBinding {
@@ -436,7 +460,11 @@ async fn ensure_image_build_rbac(
         }]),
     };
     role_bindings
-        .patch(job_name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(&role_binding))
+        .patch(
+            job_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&role_binding),
+        )
         .await?;
 
     Ok(())
@@ -479,9 +507,13 @@ async fn ensure_image_build_job(
     // — le secret est simplement absent pour un depot public, lu au besoin
     // sinon (voir plus bas, resolve_git_credentials).
     if let Some(openbao_config) = &ctx.openbao {
-        if let Err(err) =
-            openbao::ensure_workshop_role(openbao_config, name, ns, &[&job_name, &format!("{name}-parent")])
-                .await
+        if let Err(err) = openbao::ensure_workshop_role(
+            openbao_config,
+            name,
+            ns,
+            &[&job_name, &format!("{name}-parent")],
+        )
+        .await
         {
             tracing::error!(%err, "provisioning du role OpenBao (image-builder) echoue");
         }
@@ -495,7 +527,10 @@ async fn ensure_image_build_job(
         .unwrap_or(5000);
 
     let env = vec![
-        env_var("ATELIER_DEVCONTAINER_REPO", &workshop.spec.devcontainer.repo),
+        env_var(
+            "ATELIER_DEVCONTAINER_REPO",
+            &workshop.spec.devcontainer.repo,
+        ),
         env_var(
             "ATELIER_DEVCONTAINER_REVISION",
             &workshop.spec.devcontainer.revision,
@@ -507,7 +542,10 @@ async fn ensure_image_build_job(
         env_var("ATELIER_WORKSHOP_NAME", name),
         env_var("ATELIER_WORKSHOP_NAMESPACE", ns),
         env_var("ATELIER_REGISTRY_ADDR", &ctx.registry_addr),
-        env_var("ATELIER_REGISTRY_INSECURE", &ctx.registry_insecure.to_string()),
+        env_var(
+            "ATELIER_REGISTRY_INSECURE",
+            &ctx.registry_insecure.to_string(),
+        ),
         env_var("ATELIER_IMAGE_CACHE_DIR", storage::IMAGE_CACHE_MOUNT_PATH),
         // `crane` doit vivre sur un point de montage distinct de la racine
         // du conteneur : envbuilder efface le systeme de fichiers du
@@ -523,11 +561,21 @@ async fn ensure_image_build_job(
         // importe) sans que l'utilisateur ait besoin de l'ajouter a
         // `Workshop.spec.egress_allowlist` (voir `crates/net-proxy::internal`
         // et `image_ref_for_guest` dans `crates/image-builder/src/main.rs`).
-        env_var("ATELIER_BUILDER_REGISTRY_ALIAS", &format!("registry:{registry_port}")),
-        env_var("ATELIER_BUILDER_NET_PROXY_PORT", &net_proxy_port.to_string()),
+        env_var(
+            "ATELIER_BUILDER_REGISTRY_ALIAS",
+            &format!("registry:{registry_port}"),
+        ),
+        env_var(
+            "ATELIER_BUILDER_NET_PROXY_PORT",
+            &net_proxy_port.to_string(),
+        ),
     ]
     .into_iter()
-    .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
+    .chain(
+        ctx.openbao
+            .as_ref()
+            .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+    )
     .collect::<Vec<_>>();
 
     let cache_volume = Volume {
@@ -600,7 +648,10 @@ async fn ensure_image_build_job(
                             restart_policy: Some("Always".into()),
                             env: Some(vec![
                                 env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
-                                env_var("ATELIER_NET_PROXY_LISTEN_ADDR", &format!("0.0.0.0:{net_proxy_port}")),
+                                env_var(
+                                    "ATELIER_NET_PROXY_LISTEN_ADDR",
+                                    &format!("0.0.0.0:{net_proxy_port}"),
+                                ),
                                 // Alias interne hors allowlist : voir
                                 // `crates/net-proxy::internal` et le
                                 // commentaire sur `egress_allowlist`
@@ -665,7 +716,12 @@ async fn ensure_image_build_job(
         WorkshopPhase::BuildingImage
     };
 
-    Ok(carry_forward_status(workshop, phase, None, kanidm_entity_id))
+    Ok(carry_forward_status(
+        workshop,
+        phase,
+        None,
+        kanidm_entity_id,
+    ))
 }
 
 #[tracing::instrument(skip_all)]
@@ -861,43 +917,65 @@ async fn ensure_parent_pod(
                 Container {
                     name: "net-proxy".into(),
                     image: Some(NET_PROXY_IMAGE.into()),
-                    env: Some(vec![
-                        env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
-                        env_var("ATELIER_NET_PROXY_LISTEN_ADDR", &format!("0.0.0.0:{NET_PROXY_PORT}")),
-                        env_var("ATELIER_VM_ADDR", VM_GUEST_IP),
-                        // Tout l'egress autorise par net-proxy est chaine
-                        // vers identity-proxy des lors qu'il est configure
-                        // (voir docs/architecture/network-security.md,
-                        // "identity-proxy : jamais joint directement par la
-                        // VM") : c'est lui, pas la VM, qui decide ensuite
-                        // d'injecter un credential ou de relayer tel quel.
-                        env_var("ATELIER_IDENTITY_PROXY_ADDR", &format!("127.0.0.1:{IDENTITY_PROXY_PORT}")),
-                        // Alias interne, jamais dans l'allowlist de
-                        // l'utilisateur : voir `crates/net-proxy/src/internal.rs`.
-                        env_var("ATELIER_MCP_GATEWAY_ADDR", &format!("127.0.0.1:{MCP_GATEWAY_PORT}")),
-                    ]
-                    .into_iter()
-                    .chain(
-                        simulator_enabled
-                            .then(|| env_var("ATELIER_SIMULATOR_ADDR", &format!("127.0.0.1:{SIMULATOR_PORT}"))),
-                    )
-                    .collect::<Vec<_>>()),
+                    env: Some(
+                        vec![
+                            env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
+                            env_var(
+                                "ATELIER_NET_PROXY_LISTEN_ADDR",
+                                &format!("0.0.0.0:{NET_PROXY_PORT}"),
+                            ),
+                            env_var("ATELIER_VM_ADDR", VM_GUEST_IP),
+                            // Tout l'egress autorise par net-proxy est chaine
+                            // vers identity-proxy des lors qu'il est configure
+                            // (voir docs/architecture/network-security.md,
+                            // "identity-proxy : jamais joint directement par la
+                            // VM") : c'est lui, pas la VM, qui decide ensuite
+                            // d'injecter un credential ou de relayer tel quel.
+                            env_var(
+                                "ATELIER_IDENTITY_PROXY_ADDR",
+                                &format!("127.0.0.1:{IDENTITY_PROXY_PORT}"),
+                            ),
+                            // Alias interne, jamais dans l'allowlist de
+                            // l'utilisateur : voir `crates/net-proxy/src/internal.rs`.
+                            env_var(
+                                "ATELIER_MCP_GATEWAY_ADDR",
+                                &format!("127.0.0.1:{MCP_GATEWAY_PORT}"),
+                            ),
+                        ]
+                        .into_iter()
+                        .chain(simulator_enabled.then(|| {
+                            env_var(
+                                "ATELIER_SIMULATOR_ADDR",
+                                &format!("127.0.0.1:{SIMULATOR_PORT}"),
+                            )
+                        }))
+                        .collect::<Vec<_>>(),
+                    ),
                     ..Default::default()
                 },
                 Container {
                     name: "identity-proxy".into(),
                     image: Some(IDENTITY_PROXY_IMAGE.into()),
-                    env: Some(vec![
-                        env_var(
-                            "ATELIER_IDENTITY_PROXY_LISTEN_ADDR",
-                            &format!("0.0.0.0:{IDENTITY_PROXY_PORT}"),
-                        ),
-                        env_var("ATELIER_IDENTITY_INJECTION_RULES", &identity_injection_rules),
-                        env_var("ATELIER_WORKSHOP_NAME", name),
-                    ]
-                    .into_iter()
-                    .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
-                    .collect::<Vec<_>>()),
+                    env: Some(
+                        vec![
+                            env_var(
+                                "ATELIER_IDENTITY_PROXY_LISTEN_ADDR",
+                                &format!("0.0.0.0:{IDENTITY_PROXY_PORT}"),
+                            ),
+                            env_var(
+                                "ATELIER_IDENTITY_INJECTION_RULES",
+                                &identity_injection_rules,
+                            ),
+                            env_var("ATELIER_WORKSHOP_NAME", name),
+                        ]
+                        .into_iter()
+                        .chain(
+                            ctx.openbao
+                                .as_ref()
+                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+                        )
+                        .collect::<Vec<_>>(),
+                    ),
                     ..Default::default()
                 },
                 Container {
@@ -918,7 +996,11 @@ async fn ensure_parent_pod(
                             env_var("ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH", &vsock_uds_path),
                         ]
                         .into_iter()
-                        .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
+                        .chain(
+                            ctx.openbao
+                                .as_ref()
+                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+                        )
                         .collect::<Vec<_>>(),
                     ),
                     volume_mounts: Some(vec![jailer_mount]),

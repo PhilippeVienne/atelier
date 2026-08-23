@@ -48,7 +48,11 @@ fn fixtures() -> Option<Fixtures> {
 }
 
 fn prefix_to_netmask(prefix_len: u8) -> Ipv4Addr {
-    let mask: u32 = if prefix_len == 0 { 0 } else { u32::MAX << (32 - prefix_len) };
+    let mask: u32 = if prefix_len == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_len)
+    };
     Ipv4Addr::from(mask)
 }
 
@@ -122,8 +126,17 @@ async fn agent_devcontainer_boots_without_custom_init() {
         vsock: None,
     };
 
-    eprintln!("[diag] avant boot_with_network, t={:?}", std::time::Instant::now());
-    let vm = Vm::boot_with_network(&config, &fixtures.kernel_path, &fixtures.rootfs_path, &network).await;
+    eprintln!(
+        "[diag] avant boot_with_network, t={:?}",
+        std::time::Instant::now()
+    );
+    let vm = Vm::boot_with_network(
+        &config,
+        &fixtures.kernel_path,
+        &fixtures.rootfs_path,
+        &network,
+    )
+    .await;
 
     let mut vm = match vm {
         Ok(vm) => vm,
@@ -146,7 +159,9 @@ async fn agent_devcontainer_boots_without_custom_init() {
         match vm.is_running().await {
             Ok(true) => tokio::time::sleep(Duration::from_secs(2)).await,
             Ok(false) => {
-                eprintln!("[diag] la VM s'est arretee toute seule avant la fin du delai d'observation");
+                eprintln!(
+                    "[diag] la VM s'est arretee toute seule avant la fin du delai d'observation"
+                );
                 break;
             }
             Err(err) => {
@@ -162,7 +177,9 @@ async fn agent_devcontainer_boots_without_custom_init() {
     eprintln!("[diag] code_server_up={code_server_up} ministack_up={ministack_up}");
 
     let still_running = vm.is_running().await.unwrap_or(false);
-    eprintln!("[diag] VM encore en cours d'execution apres la fenetre d'observation : {still_running}");
+    eprintln!(
+        "[diag] VM encore en cours d'execution apres la fenetre d'observation : {still_running}"
+    );
 
     if still_running {
         let _ = vm.shutdown().await;

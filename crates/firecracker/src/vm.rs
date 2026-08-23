@@ -72,10 +72,16 @@ fn build_configuration_data(
     network: Option<&NetworkSetup>,
 ) -> Result<VmConfigurationData> {
     let kernel = resource_system
-        .create_resource(kernel_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+        .create_resource(
+            kernel_path.to_path_buf(),
+            ResourceType::Moved(MovedResourceType::Copied),
+        )
         .context("declaration de la ressource kernel")?;
     let rootfs = resource_system
-        .create_resource(rootfs_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+        .create_resource(
+            rootfs_path.to_path_buf(),
+            ResourceType::Moved(MovedResourceType::Copied),
+        )
         .context("declaration de la ressource rootfs")?;
 
     let network_interfaces = network
@@ -101,9 +107,15 @@ fn build_configuration_data(
         .as_ref()
         .map(|vsock| -> Result<VsockDevice> {
             let uds = resource_system
-                .create_resource(PathBuf::from(&vsock.uds_relative_path), ResourceType::Produced)
+                .create_resource(
+                    PathBuf::from(&vsock.uds_relative_path),
+                    ResourceType::Produced,
+                )
                 .context("declaration de la ressource uds vsock")?;
-            Ok(VsockDevice { guest_cid: vsock.guest_cid, uds })
+            Ok(VsockDevice {
+                guest_cid: vsock.guest_cid,
+                uds,
+            })
         })
         .transpose()?;
 
@@ -204,10 +216,9 @@ impl VmConfig {
     }
 
     fn executor(&self, socket_path: &str) -> Result<Executor> {
-        let jailer_args = JailerArguments::new(
-            VmmId::new(self.jail_id.clone()).context("jail_id invalide")?,
-        )
-        .chroot_base_dir(self.chroot_base_dir.clone());
+        let jailer_args =
+            JailerArguments::new(VmmId::new(self.jail_id.clone()).context("jail_id invalide")?)
+                .chroot_base_dir(self.chroot_base_dir.clone());
 
         Ok(JailedVmmExecutor::new(
             VmmArguments::new(VmmApiSocket::Enabled(socket_path.into())),
@@ -275,7 +286,13 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(&mut resource_system, config, kernel_path, rootfs_path, network)?;
+        let data = build_configuration_data(
+            &mut resource_system,
+            config,
+            kernel_path,
+            rootfs_path,
+            network,
+        )?;
 
         let executor = config.executor("/run/firecracker.socket")?;
         let installation = config.installation();
@@ -334,13 +351,25 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(&mut resource_system, config, kernel_path, rootfs_path, network)?;
+        let data = build_configuration_data(
+            &mut resource_system,
+            config,
+            kernel_path,
+            rootfs_path,
+            network,
+        )?;
 
         let snapshot = resource_system
-            .create_resource(snapshot_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+            .create_resource(
+                snapshot_path.to_path_buf(),
+                ResourceType::Moved(MovedResourceType::Copied),
+            )
             .context("declaration de la ressource snapshot")?;
         let mem_file = resource_system
-            .create_resource(mem_file_path.to_path_buf(), ResourceType::Moved(MovedResourceType::Copied))
+            .create_resource(
+                mem_file_path.to_path_buf(),
+                ResourceType::Moved(MovedResourceType::Copied),
+            )
             .context("declaration de la ressource memoire")?;
 
         let load_snapshot = LoadSnapshot {
@@ -361,10 +390,15 @@ impl Vm {
             executor,
             resource_system,
             installation,
-            VmConfiguration::RestoredFromSnapshot { load_snapshot, data },
+            VmConfiguration::RestoredFromSnapshot {
+                load_snapshot,
+                data,
+            },
         )
         .await
-        .map_err(to_anyhow("preparation de la microVM depuis un snapshot persiste"))?;
+        .map_err(to_anyhow(
+            "preparation de la microVM depuis un snapshot persiste",
+        ))?;
 
         inner
             .start(Duration::from_secs(5))
@@ -379,11 +413,7 @@ impl Vm {
     /// Restaure une microVM depuis un snapshot pris precedemment par
     /// [`Vm::snapshot`], dans un nouveau jail (un jail ne peut pas etre
     /// reutilise apres que son process ait quitte).
-    pub async fn restore(
-        &mut self,
-        snapshot: VmSnapshot,
-        config: &VmConfig,
-    ) -> Result<Self> {
+    pub async fn restore(&mut self, snapshot: VmSnapshot, config: &VmConfig) -> Result<Self> {
         let executor = config.executor("/run/firecracker.socket")?;
 
         let mut inner = snapshot
@@ -428,7 +458,10 @@ impl Vm {
     /// hote effectif (`jail_root/snapshot.state`) est calcule par fctools
     /// et expose ensuite via `VmSnapshot`.
     pub async fn snapshot(&mut self) -> Result<VmSnapshot> {
-        self.inner.pause().await.map_err(to_anyhow("mise en pause avant snapshot"))?;
+        self.inner
+            .pause()
+            .await
+            .map_err(to_anyhow("mise en pause avant snapshot"))?;
 
         let create_snapshot = CreateSnapshot {
             snapshot_type: Some(SnapshotType::Full),
@@ -450,7 +483,10 @@ impl Vm {
             .await
             .map_err(to_anyhow("creation du snapshot"))?;
 
-        self.inner.resume().await.map_err(to_anyhow("reprise apres snapshot"))?;
+        self.inner
+            .resume()
+            .await
+            .map_err(to_anyhow("reprise apres snapshot"))?;
 
         Ok(snapshot)
     }
@@ -491,7 +527,10 @@ impl Vm {
             .await
             .map_err(to_anyhow("arret de la microVM"));
 
-        self.inner.cleanup().await.map_err(to_anyhow("nettoyage du jail"))?;
+        self.inner
+            .cleanup()
+            .await
+            .map_err(to_anyhow("nettoyage du jail"))?;
 
         let outcome = shutdown_result?;
         ensure!(

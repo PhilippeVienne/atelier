@@ -70,8 +70,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
     let control_addr = std::env::var("ATELIER_NET_PROXY_CONTROL_ADDR")
         .unwrap_or_else(|_| DEFAULT_CONTROL_ADDR.to_string());
-    let vm_addr: Arc<str> =
-        std::env::var("ATELIER_VM_ADDR").unwrap_or_else(|_| DEFAULT_VM_ADDR.to_string()).into();
+    let vm_addr: Arc<str> = std::env::var("ATELIER_VM_ADDR")
+        .unwrap_or_else(|_| DEFAULT_VM_ADDR.to_string())
+        .into();
 
     let admin_addr = std::env::var("ATELIER_NET_PROXY_ADMIN_ADDR")
         .unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_string());
@@ -116,8 +117,9 @@ async fn main() -> anyhow::Result<()> {
         identity_proxy_alias = internal_routes.resolve("identity-proxy").is_some(),
         mcp_gateway_alias = internal_routes.resolve("mcp-gateway").is_some(),
         registry_alias = internal_routes.resolve("registry").is_some(),
+        llm_proxy_alias = internal_routes.resolve("llm-proxy").is_some(),
         identity_proxy_mandatory_hop = identity_proxy.is_some(),
-        "routes internes (identity-proxy/mcp-gateway/registry) configurees"
+        "routes internes (identity-proxy/mcp-gateway/registry/llm-proxy) configurees"
     );
 
     // Sidecar `simulator` du pod (LocalStack), voir `crates/mcp-gateway`

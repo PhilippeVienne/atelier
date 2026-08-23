@@ -46,18 +46,28 @@ pub fn router(state: AdminState) -> Router {
         .with_state(state)
 }
 
-async fn add_host(State(state): State<AdminState>, Json(request): Json<AddHostRequest>) -> &'static str {
+async fn add_host(
+    State(state): State<AdminState>,
+    Json(request): Json<AddHostRequest>,
+) -> &'static str {
     let host = request.host.trim().to_string();
     if host.is_empty() {
         return "host vide, ignore";
     }
     let mut list = state.allowlist.write().await;
     if list.iter().any(|entry| entry.eq_ignore_ascii_case(&host)) {
-        tracing::info!(host, "allowlist deja a jour (elargissement demande par mcp-gateway)");
+        tracing::info!(
+            host,
+            "allowlist deja a jour (elargissement demande par mcp-gateway)"
+        );
         return "deja present";
     }
     list.push(host.clone());
-    tracing::info!(host, count = list.len(), "allowlist elargie a chaud (request_egress)");
+    tracing::info!(
+        host,
+        count = list.len(),
+        "allowlist elargie a chaud (request_egress)"
+    );
     "ajoute"
 }
 
@@ -66,7 +76,9 @@ async fn add_host(State(state): State<AdminState>, Json(request): Json<AddHostRe
 /// (`simulator_target` absent, `Workshop.spec.tools` sans `enable_simulator`).
 async fn enable_simulator(State(state): State<AdminState>) -> &'static str {
     let Some(target) = state.simulator_target.clone() else {
-        tracing::warn!("enable_simulator demande mais aucun sidecar simulateur configure pour ce pod");
+        tracing::warn!(
+            "enable_simulator demande mais aucun sidecar simulateur configure pour ce pod"
+        );
         return "aucun simulateur configure pour ce Workshop";
     };
     *state.simulator.write().await = Some(target);
@@ -129,7 +141,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(*simulator.read().await, Some(("127.0.0.1".to_string(), 4566)));
+        assert_eq!(
+            *simulator.read().await,
+            Some(("127.0.0.1".to_string(), 4566))
+        );
     }
 
     #[tokio::test]
@@ -175,6 +190,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let list = allowlist.read().await;
-        assert_eq!(list.iter().filter(|h| h.as_str() == "github.com").count(), 1);
+        assert_eq!(
+            list.iter().filter(|h| h.as_str() == "github.com").count(),
+            1
+        );
     }
 }

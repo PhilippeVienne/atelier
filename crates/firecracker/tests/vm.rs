@@ -55,7 +55,8 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
     // `Permission denied`, meme avec les bonnes permissions/capabilities —
     // constate en pratique). `/var/tmp` est generalement sur le systeme de
     // fichiers racine, sans `nodev`.
-    let work_dir = PathBuf::from("/var/tmp").join(format!("atelier-vm-test-{}", std::process::id()));
+    let work_dir =
+        PathBuf::from("/var/tmp").join(format!("atelier-vm-test-{}", std::process::id()));
     tokio::fs::create_dir_all(&work_dir).await.unwrap();
     let chroot_base_dir = work_dir.join("jails");
 
@@ -108,7 +109,10 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
         .await
         .expect("la restauration depuis le snapshot doit reussir");
     assert!(
-        restored.is_running().await.expect("lecture de l'etat de la VM restauree"),
+        restored
+            .is_running()
+            .await
+            .expect("lecture de l'etat de la VM restauree"),
         "la microVM restauree doit tourner"
     );
 
@@ -172,7 +176,10 @@ async fn snapshot_persist_and_restore_without_source_vm() {
         .await
         .expect("le boot jaile de la microVM doit reussir");
 
-    let snapshot = vm.snapshot().await.expect("le snapshot de la microVM doit reussir");
+    let snapshot = vm
+        .snapshot()
+        .await
+        .expect("le snapshot de la microVM doit reussir");
 
     // Publication vers un "cache" simule : copie hors du jail d'origine,
     // qui va etre detruit juste apres.
@@ -190,7 +197,9 @@ async fn snapshot_persist_and_restore_without_source_vm() {
     // de boot d'origine (connus independamment, memes valeurs que
     // `base_config`) survivent — exactement ce qu'un nouveau process
     // `vm-supervisor`, dans un tout autre pod, aurait a sa disposition.
-    vm.shutdown().await.expect("l'arret de la VM source doit reussir");
+    vm.shutdown()
+        .await
+        .expect("l'arret de la VM source doit reussir");
 
     let restore_config = VmConfig {
         jail_id: format!("vmp-restore-{}", std::process::id()),
@@ -207,7 +216,10 @@ async fn snapshot_persist_and_restore_without_source_vm() {
     .await
     .expect("la restauration depuis un snapshot persiste (sans VM source vivante) doit reussir");
     assert!(
-        restored.is_running().await.expect("lecture de l'etat de la VM restauree"),
+        restored
+            .is_running()
+            .await
+            .expect("lecture de l'etat de la VM restauree"),
         "la microVM restauree depuis un snapshot persiste doit tourner"
     );
 

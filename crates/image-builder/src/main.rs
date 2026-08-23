@@ -75,10 +75,18 @@ async fn main() -> Result<()> {
     let git_credentials = resolve_git_credentials(&workshop_name).await;
 
     tracing::info!(repo = %source.repo, revision = %source.revision, %image_ref, git_auth = git_credentials.is_some(), "building devcontainer via envbuilder (microVM builder)");
-    build_via_microvm(&source, &image_ref, registry_insecure, &work_dir, git_credentials.as_ref()).await?;
+    build_via_microvm(
+        &source,
+        &image_ref,
+        registry_insecure,
+        &work_dir,
+        git_credentials.as_ref(),
+    )
+    .await?;
 
     tracing::info!(%image_ref, "exporting image filesystem");
-    let rootfs_dir = export_image_filesystem(&crane_bin, &image_ref, &work_dir, registry_insecure).await?;
+    let rootfs_dir =
+        export_image_filesystem(&crane_bin, &image_ref, &work_dir, registry_insecure).await?;
 
     tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
     inject_net_proxy_config(&rootfs_dir).await?;
@@ -128,7 +136,9 @@ async fn resolve_git_credentials(workshop_name: &str) -> Option<GitCredentials> 
     let token = client
         .login()
         .await
-        .inspect_err(|err| tracing::debug!(%err, "login OpenBao echoue (pas de secret git provisionne ?)"))
+        .inspect_err(
+            |err| tracing::debug!(%err, "login OpenBao echoue (pas de secret git provisionne ?)"),
+        )
         .ok()?;
     let password = client.read_field(&token, "git", "password").await.ok()?;
     let username = client
@@ -247,7 +257,9 @@ async fn build_via_microvm(
     .await;
 
     network.teardown().await;
-    tokio::fs::remove_file(&builder_rootfs_path_cleanup).await.ok();
+    tokio::fs::remove_file(&builder_rootfs_path_cleanup)
+        .await
+        .ok();
     result
 }
 
@@ -283,7 +295,9 @@ async fn resolve_builder_rootfs(work_dir: &Path) -> Result<PathBuf> {
     let rootfs_path = work_dir.join("builder-vm-rootfs.ext4");
     tokio::fs::copy(&base_path, &rootfs_path)
         .await
-        .with_context(|| format!("copie du rootfs de base de la microVM builder ({base_path:?})"))?;
+        .with_context(|| {
+            format!("copie du rootfs de base de la microVM builder ({base_path:?})")
+        })?;
 
     let base_size_mb = tokio::fs::metadata(&rootfs_path).await?.len() / 1024 / 1024;
     let status = Command::new("truncate")
@@ -293,7 +307,10 @@ async fn resolve_builder_rootfs(work_dir: &Path) -> Result<PathBuf> {
         .status()
         .await
         .context("agrandissement du fichier rootfs de la microVM builder")?;
-    ensure!(status.success(), "truncate a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "truncate a echoue avec le statut {status}"
+    );
 
     let status = Command::new("resize2fs")
         .arg(&rootfs_path)
@@ -302,7 +319,10 @@ async fn resolve_builder_rootfs(work_dir: &Path) -> Result<PathBuf> {
         .status()
         .await
         .context("lancement de resize2fs")?;
-    ensure!(status.success(), "resize2fs a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "resize2fs a echoue avec le statut {status}"
+    );
 
     Ok(rootfs_path)
 }
@@ -377,9 +397,14 @@ async fn run_builder_vm(args: RunBuilderVmArgs<'_>) -> Result<()> {
     };
 
     tracing::info!("booting builder microVM");
-    let mut vm = Vm::boot_with_network(&config, &args.kernel_path, &args.builder_rootfs_path, args.network)
-        .await
-        .context("boot de la microVM builder")?;
+    let mut vm = Vm::boot_with_network(
+        &config,
+        &args.kernel_path,
+        &args.builder_rootfs_path,
+        args.network,
+    )
+    .await
+    .context("boot de la microVM builder")?;
 
     // La VM s'eteint d'elle-meme (reboot(RB_AUTOBOOT) dans
     // atelier-builder-vm-init) une fois envbuilder termine : pas de canal de
@@ -436,8 +461,11 @@ fn image_ref_for_guest(image_ref: &str, host_ip: Ipv4Addr) -> String {
         Some((h, p)) => (h, Some(p)),
         None => (host_port, None),
     };
-    let is_loopback =
-        host == "localhost" || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    let is_loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
     if !is_loopback {
         return image_ref.to_string();
     }
@@ -448,7 +476,9 @@ fn image_ref_for_guest(image_ref: &str, host_ip: Ipv4Addr) -> String {
 }
 
 fn env_path(var: &str, default: &str) -> PathBuf {
-    std::env::var(var).unwrap_or_else(|_| default.to_string()).into()
+    std::env::var(var)
+        .unwrap_or_else(|_| default.to_string())
+        .into()
 }
 
 /// Aplatit l'image poussee en tarball (`crane export`) et l'extrait dans un
@@ -475,7 +505,10 @@ async fn export_image_filesystem(
         .status()
         .await
         .with_context(|| format!("lancement du binaire crane ({crane_bin})"))?;
-    ensure!(status.success(), "crane export a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "crane export a echoue avec le statut {status}"
+    );
 
     let rootfs_dir = work_dir.join("rootfs");
     tokio::fs::create_dir_all(&rootfs_dir).await?;
@@ -487,7 +520,10 @@ async fn export_image_filesystem(
         .status()
         .await
         .context("extraction du tarball de l'image")?;
-    ensure!(status.success(), "extraction tar a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "extraction tar a echoue avec le statut {status}"
+    );
 
     tokio::fs::remove_file(&tar_path).await.ok();
     Ok(rootfs_dir)
@@ -571,7 +607,10 @@ async fn package_ext4(rootfs_dir: &Path, ext4_path: &Path) -> Result<()> {
         .status()
         .await
         .context("allocation du fichier ext4")?;
-    ensure!(status.success(), "truncate a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "truncate a echoue avec le statut {status}"
+    );
 
     let status = Command::new("mke2fs")
         .args(["-F", "-t", "ext4", "-d"])
@@ -588,7 +627,9 @@ async fn package_ext4(rootfs_dir: &Path, ext4_path: &Path) -> Result<()> {
 }
 
 async fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = tokio::fs::read(path).await.context("lecture du fichier ext4 pour digest")?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .context("lecture du fichier ext4 pour digest")?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("sha256:{:x}", hasher.finalize()))

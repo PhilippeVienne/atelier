@@ -109,8 +109,16 @@ impl NetworkSetup {
         // ne rien laisser trainer, meme si `restrict_to_net_proxy` n'a
         // jamais ete appelee (no-op dans ce cas, la chaine n'existe pas).
         let chain = self.iptables_chain_name();
-        let _ = run("iptables", &["-D", "INPUT", "-i", &self.tap_name, "-j", &chain]).await;
-        let _ = run("iptables", &["-D", "FORWARD", "-i", &self.tap_name, "-j", "DROP"]).await;
+        let _ = run(
+            "iptables",
+            &["-D", "INPUT", "-i", &self.tap_name, "-j", &chain],
+        )
+        .await;
+        let _ = run(
+            "iptables",
+            &["-D", "FORWARD", "-i", &self.tap_name, "-j", "DROP"],
+        )
+        .await;
         let _ = run("iptables", &["-F", &chain]).await;
         let _ = run("iptables", &["-X", &chain]).await;
     }
@@ -151,11 +159,31 @@ impl NetworkSetup {
             ],
         )
         .await?;
-        run("iptables", &["-A", &chain, "-p", "udp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT"]).await?;
-        run("iptables", &["-A", &chain, "-p", "tcp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT"]).await?;
+        run(
+            "iptables",
+            &[
+                "-A", &chain, "-p", "udp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT",
+            ],
+        )
+        .await?;
+        run(
+            "iptables",
+            &[
+                "-A", &chain, "-p", "tcp", "-d", &host_ip, "--dport", "53", "-j", "ACCEPT",
+            ],
+        )
+        .await?;
         run("iptables", &["-A", &chain, "-j", "DROP"]).await?;
-        run("iptables", &["-A", "INPUT", "-i", &self.tap_name, "-j", &chain]).await?;
-        run("iptables", &["-A", "FORWARD", "-i", &self.tap_name, "-j", "DROP"]).await?;
+        run(
+            "iptables",
+            &["-A", "INPUT", "-i", &self.tap_name, "-j", &chain],
+        )
+        .await?;
+        run(
+            "iptables",
+            &["-A", "FORWARD", "-i", &self.tap_name, "-j", "DROP"],
+        )
+        .await?;
         Ok(())
     }
 }
@@ -175,6 +203,9 @@ async fn run(bin: &str, args: &[&str]) -> Result<()> {
         .status()
         .await
         .with_context(|| format!("lancement de {bin}"))?;
-    ensure!(status.success(), "{bin} {args:?} a echoue avec le statut {status}");
+    ensure!(
+        status.success(),
+        "{bin} {args:?} a echoue avec le statut {status}"
+    );
     Ok(())
 }

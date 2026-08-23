@@ -69,7 +69,13 @@ mod tests {
     #[test]
     fn defaults_to_tcp() {
         let specs = parse_ports_query("8443").unwrap();
-        assert_eq!(specs, vec![PortSpec { protocol: Protocol::Tcp, port: 8443 }]);
+        assert_eq!(
+            specs,
+            vec![PortSpec {
+                protocol: Protocol::Tcp,
+                port: 8443
+            }]
+        );
     }
 
     #[test]
@@ -78,8 +84,14 @@ mod tests {
         assert_eq!(
             specs,
             vec![
-                PortSpec { protocol: Protocol::Tcp, port: 8443 },
-                PortSpec { protocol: Protocol::Udp, port: 53 },
+                PortSpec {
+                    protocol: Protocol::Tcp,
+                    port: 8443
+                },
+                PortSpec {
+                    protocol: Protocol::Udp,
+                    port: 53
+                },
             ]
         );
     }

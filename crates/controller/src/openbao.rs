@@ -83,7 +83,10 @@ pub async fn ensure_workshop_role(
         .map_err(|e| anyhow::anyhow!("ecriture de la policy OpenBao: {e}"))?;
 
     client
-        .put(format!("{}/v1/auth/kubernetes/role/{role_name}", config.addr))
+        .put(format!(
+            "{}/v1/auth/kubernetes/role/{role_name}",
+            config.addr
+        ))
         .header("X-Vault-Token", &config.token)
         .json(&serde_json::json!({
             "bound_service_account_names": service_accounts,
@@ -103,7 +106,10 @@ pub async fn ensure_workshop_role(
 /// un 404 (deja absent) n'est pas une erreur ; toute autre erreur est
 /// remontee pour que le finalizer retente plutot que de laisser un role
 /// orphelin (surface d'acces residuelle a des secrets).
-pub async fn delete_workshop_role(config: &OpenBaoConfig, workshop_name: &str) -> anyhow::Result<()> {
+pub async fn delete_workshop_role(
+    config: &OpenBaoConfig,
+    workshop_name: &str,
+) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let role_name = format!("workshop-{workshop_name}");
 

@@ -97,8 +97,11 @@ async fn main() -> anyhow::Result<()> {
     // net-proxy relaie la requete telle quelle recue de la VM (voir
     // `crate::proxy::forward` dans net-proxy), Host header compris, donc
     // potentiellement "mcp-gateway" (le nom de l'alias) plutot qu'une IP.
-    let http_config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts(["mcp-gateway", "127.0.0.1", "localhost"]);
+    let http_config = StreamableHttpServerConfig::default().with_allowed_hosts([
+        "mcp-gateway",
+        "127.0.0.1",
+        "localhost",
+    ]);
 
     let service: StreamableHttpService<Gateway, LocalSessionManager> = StreamableHttpService::new(
         move || Ok(Gateway::new(Arc::clone(&config))),
@@ -119,7 +122,10 @@ async fn main() -> anyhow::Result<()> {
 /// fichier peut deja exister d'un process precedent (redemarrage du
 /// conteneur) : supprime avant de re-lier, sans quoi `bind` echoue en
 /// `AddrInUse`.
-async fn run_vsock_listener(listen_path: &str, config: Arc<gateway::GatewayConfig>) -> anyhow::Result<()> {
+async fn run_vsock_listener(
+    listen_path: &str,
+    config: Arc<gateway::GatewayConfig>,
+) -> anyhow::Result<()> {
     let _ = tokio::fs::remove_file(listen_path).await;
     let listener = UnixListener::bind(listen_path)?;
     tracing::info!(%listen_path, "serveur MCP vsock en ecoute");

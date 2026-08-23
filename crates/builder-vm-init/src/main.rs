@@ -70,10 +70,22 @@ fn run() -> Result<()> {
 }
 
 fn mount_pseudo_filesystems() -> Result<()> {
-    mount(Some("proc"), "/proc", Some("proc"), MsFlags::empty(), None::<&str>)
-        .context("montage de /proc")?;
-    mount(Some("sysfs"), "/sys", Some("sysfs"), MsFlags::empty(), None::<&str>)
-        .context("montage de /sys")?;
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .context("montage de /proc")?;
+    mount(
+        Some("sysfs"),
+        "/sys",
+        Some("sysfs"),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .context("montage de /sys")?;
     Ok(())
 }
 
@@ -118,7 +130,16 @@ fn configure_network(params: &HashMap<String, String>) -> Result<()> {
     step("lancement de: ip link set lo up");
     run_cmd("ip", &["link", "set", "lo", "up"])?;
     step("lancement de: ip addr add ... dev eth0");
-    run_cmd("ip", &["addr", "add", &format!("{guest_ip}/{prefix}"), "dev", "eth0"])?;
+    run_cmd(
+        "ip",
+        &[
+            "addr",
+            "add",
+            &format!("{guest_ip}/{prefix}"),
+            "dev",
+            "eth0",
+        ],
+    )?;
     step("lancement de: ip link set eth0 up");
     run_cmd("ip", &["link", "set", "eth0", "up"])?;
     Ok(())
@@ -126,7 +147,10 @@ fn configure_network(params: &HashMap<String, String>) -> Result<()> {
 
 fn net_proxy_url(params: &HashMap<String, String>) -> Result<String> {
     let host_ip = require(params, "host_ip")?;
-    let port = params.get("net_proxy_port").map(String::as_str).unwrap_or("3128");
+    let port = params
+        .get("net_proxy_port")
+        .map(String::as_str)
+        .unwrap_or("3128");
     Ok(format!("http://{host_ip}:{port}"))
 }
 
@@ -152,7 +176,10 @@ fn run_envbuilder(params: &HashMap<String, String>) -> Result<()> {
     } else {
         format!("{repo}#{revision}")
     };
-    let cache_repo = image_ref.rsplit_once(':').map(|(repo, _tag)| repo).unwrap_or(image_ref);
+    let cache_repo = image_ref
+        .rsplit_once(':')
+        .map(|(repo, _tag)| repo)
+        .unwrap_or(image_ref);
     let proxy_url = net_proxy_url(params)?;
 
     // Chemin canonique attendu par envbuilder lui-meme (il s'auto-embarque
@@ -170,7 +197,10 @@ fn run_envbuilder(params: &HashMap<String, String>) -> Result<()> {
         // ("KANIKO_DIR is not set to /.envbuilder. Bailing!").
         .env("KANIKO_DIR", "/.envbuilder")
         .env("ENVBUILDER_GIT_URL", git_url)
-        .env("ENVBUILDER_DEVCONTAINER_JSON_PATH", devcontainer_json_filename)
+        .env(
+            "ENVBUILDER_DEVCONTAINER_JSON_PATH",
+            devcontainer_json_filename,
+        )
         .env("ENVBUILDER_PUSH_IMAGE", "true")
         .env("ENVBUILDER_CACHE_REPO", cache_repo)
         .env("ENVBUILDER_EXIT_ON_BUILD_FAILURE", "true")

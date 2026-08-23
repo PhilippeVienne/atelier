@@ -100,7 +100,8 @@ async fn run_udp(config: DnsConfig) -> anyhow::Result<()> {
         let upstream = config.upstream.clone();
         tokio::spawn(async move {
             let snapshot = allowlist.read().await.clone();
-            if let Some(response) = handle_query(&message, &snapshot, &upstream, client_addr).await {
+            if let Some(response) = handle_query(&message, &snapshot, &upstream, client_addr).await
+            {
                 let _ = listen.send_to(&response, client_addr).await;
             }
         });
@@ -268,9 +269,7 @@ fn parse_question(message: &[u8]) -> anyhow::Result<Question> {
         bail!("QNAME vide");
     }
 
-    let qtype_bytes = message
-        .get(offset..offset + 2)
-        .context("QTYPE tronque")?;
+    let qtype_bytes = message.get(offset..offset + 2).context("QTYPE tronque")?;
     let qtype = u16::from_be_bytes([qtype_bytes[0], qtype_bytes[1]]);
 
     Ok(Question {

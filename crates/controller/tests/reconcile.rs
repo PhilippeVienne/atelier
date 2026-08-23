@@ -113,7 +113,10 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
         .iter()
         .find(|e| e.name == "ATELIER_DEVCONTAINER_REPO")
         .expect("ATELIER_DEVCONTAINER_REPO doit etre transmise au job");
-    assert_eq!(repo_env.value.as_deref(), Some("https://example.invalid/repo.git"));
+    assert_eq!(
+        repo_env.value.as_deref(),
+        Some("https://example.invalid/repo.git")
+    );
     let cache_dir_env = env
         .iter()
         .find(|e| e.name == "ATELIER_IMAGE_CACHE_DIR")
@@ -129,7 +132,8 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
         .await
         .expect("le PVC de cache doit avoir ete cree");
     assert!(
-        pvc.metadata.owner_references.is_none() || pvc.metadata.owner_references.unwrap().is_empty(),
+        pvc.metadata.owner_references.is_none()
+            || pvc.metadata.owner_references.unwrap().is_empty(),
         "le PVC de cache est partage, il ne doit pas etre owned par un Workshop"
     );
 
@@ -239,12 +243,19 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         .expect("le pod doit avoir une owner reference vers le Workshop");
     assert_eq!(owners[0].name, name);
     assert_eq!(
-        pod.spec.as_ref().and_then(|s| s.service_account_name.clone()),
+        pod.spec
+            .as_ref()
+            .and_then(|s| s.service_account_name.clone()),
         Some(expected_pod_name.clone()),
         "le pod parent doit utiliser son propre ServiceAccount dedie"
     );
     let containers = &pod.spec.as_ref().expect("pod spec").containers;
-    for expected in ["vm-supervisor", "net-proxy", "identity-proxy", "mcp-gateway"] {
+    for expected in [
+        "vm-supervisor",
+        "net-proxy",
+        "identity-proxy",
+        "mcp-gateway",
+    ] {
         assert!(
             containers.iter().any(|c| c.name == expected),
             "le pod parent doit avoir un conteneur {expected}"
@@ -327,7 +338,10 @@ async fn apply_suspend_then_resume_releases_and_recreates_pod_only() {
         .await
         .expect("apply() de suspension");
     assert!(
-        matches!(status.phase, WorkshopPhase::Suspending | WorkshopPhase::Suspended),
+        matches!(
+            status.phase,
+            WorkshopPhase::Suspending | WorkshopPhase::Suspended
+        ),
         "phase attendue Suspending ou Suspended, obtenu {:?}",
         status.phase
     );
@@ -370,9 +384,16 @@ async fn apply_suspend_then_resume_releases_and_recreates_pod_only() {
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    assert_eq!(status.phase, WorkshopPhase::Suspended, "timeout en attendant Suspended");
+    assert_eq!(
+        status.phase,
+        WorkshopPhase::Suspended,
+        "timeout en attendant Suspended"
+    );
     assert!(
-        pods.get_opt(&pod_name).await.expect("get_opt pod").is_none(),
+        pods.get_opt(&pod_name)
+            .await
+            .expect("get_opt pod")
+            .is_none(),
         "le pod parent doit avoir disparu une fois suspendu"
     );
 
@@ -392,7 +413,10 @@ async fn apply_suspend_then_resume_releases_and_recreates_pod_only() {
         .await
         .expect("apply() de reprise");
     assert!(
-        matches!(status.phase, WorkshopPhase::Resuming | WorkshopPhase::Running),
+        matches!(
+            status.phase,
+            WorkshopPhase::Resuming | WorkshopPhase::Running
+        ),
         "phase attendue Resuming ou Running, obtenu {:?}",
         status.phase
     );
@@ -477,7 +501,10 @@ async fn apply_provisions_openbao_role_when_configured() {
         .get(&expected_pod_name)
         .await
         .expect("le ServiceAccount dedie doit avoir ete cree");
-    assert_eq!(sa.metadata.name.as_deref(), Some(expected_pod_name.as_str()));
+    assert_eq!(
+        sa.metadata.name.as_deref(),
+        Some(expected_pod_name.as_str())
+    );
 
     // Obtient un vrai token pour ce ServiceAccount (equivalent a ce que
     // Kubernetes projette automatiquement dans un pod qui l'utilise).
@@ -485,7 +512,10 @@ async fn apply_provisions_openbao_role_when_configured() {
         .args(["create", "token", &expected_pod_name, "-n", ns])
         .output()
         .expect("kubectl doit etre disponible");
-    assert!(output.status.success(), "kubectl create token a echoue: {output:?}");
+    assert!(
+        output.status.success(),
+        "kubectl create token a echoue: {output:?}"
+    );
     let sa_token = String::from_utf8(output.stdout).unwrap().trim().to_string();
 
     let http = reqwest::Client::new();
@@ -566,7 +596,10 @@ async fn apply_provisions_kanidm_entity_when_configured() {
         .expect("apply() ne doit pas echouer");
 
     let expected_entity = format!("atelier-workshop-{name}");
-    assert_eq!(status.kanidm_entity_id.as_deref(), Some(expected_entity.as_str()));
+    assert_eq!(
+        status.kanidm_entity_id.as_deref(),
+        Some(expected_entity.as_str())
+    );
 
     let entity = kanidm
         .idm_service_account_get(&expected_entity)
@@ -574,7 +607,11 @@ async fn apply_provisions_kanidm_entity_when_configured() {
         .expect("lecture du service account Kanidm")
         .expect("le service account doit avoir ete cree dans Kanidm");
     assert_eq!(
-        entity.attrs.get("name").and_then(|v| v.first()).map(String::as_str),
+        entity
+            .attrs
+            .get("name")
+            .and_then(|v| v.first())
+            .map(String::as_str),
         Some(expected_entity.as_str())
     );
 
@@ -588,8 +625,5 @@ async fn apply_provisions_kanidm_entity_when_configured() {
         .idm_service_account_delete(&expected_entity)
         .await
         .ok();
-    workshops
-        .delete(&name, &foreground_delete())
-        .await
-        .ok();
+    workshops.delete(&name, &foreground_delete()).await.ok();
 }
