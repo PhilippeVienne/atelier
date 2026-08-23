@@ -386,8 +386,8 @@ graph TD
 
 ### 9.0. Scripting & Automatisation de l'Environnement Dev
 * **Fichiers créés / modifiés** : `deploy/dev/local-stack.sh`, `deploy/dev/teardown-stack.sh`
-  - [ ] **6.0.1** : Mettre à jour `deploy/dev/local-stack.sh` pour orchestrer le démarrage complet de toute la stack dev (Postgres, S3, Forgejo, Redis, OpenBao, LiteLLM).
-  - [ ] **6.0.2** : Créer `deploy/dev/teardown-stack.sh` pour détruire et nettoyer proprement toutes les ressources dev en une seule commande.
+  - [-/claude-code/sess-6f3eef77-e] **6.0.1** : Mettre à jour `deploy/dev/local-stack.sh` pour orchestrer le démarrage complet de toute la stack dev (Postgres, S3, Forgejo, Redis, OpenBao, LiteLLM). *(Le script actuel référence encore Kanidm, remplacé par Keycloak — voir `deploy/dev/keycloak/`. Il manque aussi Postgres, S3, Forgejo, PKI et l'ingress Traefik, tous déployés manuellement au fil des sessions précédentes, voir `docs/PROGRESS.md`.)*
+  - [-/claude-code/sess-6f3eef77-e] **6.0.2** : Créer `deploy/dev/teardown-stack.sh` pour détruire et nettoyer proprement toutes les ressources dev en une seule commande.
 
 ### 9.1. Arborescence complète des templates du Chart `charts/atelier`
 * **Structure des templates à implémenter** :
