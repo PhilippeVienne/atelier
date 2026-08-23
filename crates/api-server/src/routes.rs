@@ -45,8 +45,24 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             any(crate::vscode::vscode_proxy_root),
         )
         .route(
+            "/v1/workshops/{name}/vscode/",
+            any(crate::vscode::vscode_proxy_root),
+        )
+        .route(
             "/v1/workshops/{name}/vscode/{*path}",
             any(crate::vscode::vscode_proxy),
+        )
+        .route(
+            "/v1/workshops/{name}/terminal",
+            any(crate::terminal::terminal_proxy_root),
+        )
+        .route(
+            "/v1/workshops/{name}/terminal/",
+            any(crate::terminal::terminal_proxy_root),
+        )
+        .route(
+            "/v1/workshops/{name}/terminal/{*path}",
+            any(crate::terminal::terminal_proxy),
         )
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(auth),
@@ -69,6 +85,11 @@ pub(crate) fn workshops_api(state: &AppState) -> Api<Workshop> {
 /// de confirmer a un client non autorise qu'un nom donne existe deja.
 pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
     if workshop.spec.owner_subject != user.0 {
+        tracing::warn!(
+            workshop_owner = %workshop.spec.owner_subject,
+            jwt_user = %user.0,
+            "ensure_owner: sujet JWT ne match pas le proprietaire du Workshop"
+        );
         return Err(ApiError::not_found());
     }
     Ok(())

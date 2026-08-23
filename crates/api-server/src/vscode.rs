@@ -44,7 +44,16 @@ pub async fn vscode_proxy_root(
     Path(name): Path<String>,
     req: Request<Body>,
 ) -> Result<Response, ApiError> {
-    vscode_proxy_impl(state, user, name, String::new(), req).await
+    proxy_to_guest_port(
+        state,
+        user,
+        name,
+        String::new(),
+        code_server_port(),
+        "vscode",
+        req,
+    )
+    .await
 }
 
 pub async fn vscode_proxy(
@@ -53,32 +62,47 @@ pub async fn vscode_proxy(
     Path((name, path)): Path<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response, ApiError> {
-    vscode_proxy_impl(state, user, name, path, req).await
+    proxy_to_guest_port(state, user, name, path, code_server_port(), "vscode", req).await
 }
 
-async fn vscode_proxy_impl(
+/// Pont HTTP+WebSocket generique vers un port de la microVM agent, reutilise
+/// pour tous les services embarques dans le devcontainer (`code-server` sur
+/// `code_server_port()`, terminal `ttyd` sur `crate::terminal::terminal_port()`,
+/// voir `crate::terminal`) : meme mecanisme de bout en bout (portforward ->
+/// duplex -> hyper client avec upgrades), seul le port cible et le prefixe
+/// d'URL a retirer/reecrire (voir `Location` plus bas) changent.
+pub(crate) async fn proxy_to_guest_port(
     state: AppState,
     user: AuthenticatedUser,
     name: String,
     path: String,
+    port: u16,
+    url_prefix: &str,
     mut req: Request<Body>,
 ) -> Result<Response, ApiError> {
+    tracing::debug!(name = %name, path = %path, port, user = %user.0, "proxy_to_guest_port appele");
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
     let pod_ip = resolve_running_pod_ip(&state, &workshop).await?;
 
-    let stream = open_forwarded_tcp_stream(&pod_ip, code_server_port())
+    let stream = open_forwarded_tcp_stream(&pod_ip, port)
         .await
         .map_err(|err| {
-            ApiError::bad_gateway(format!("connexion a code-server impossible: {err}"))
+            tracing::warn!(%err, pod_ip, port, "connexion au guest impossible (portforward)");
+            ApiError::bad_gateway(format!("connexion au guest impossible: {err}"))
         })?;
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
         .map_err(|err| {
-            ApiError::bad_gateway(format!("handshake HTTP avec code-server echoue: {err}"))
+            tracing::warn!(%err, "handshake HTTP avec le guest echoue");
+            ApiError::bad_gateway(format!("handshake HTTP avec le guest echoue: {err}"))
         })?;
-    tokio::spawn(conn.with_upgrades());
+    tokio::spawn(async move {
+        if let Err(err) = conn.with_upgrades().await {
+            tracing::warn!(%err, "connexion hyper vers le guest terminee en erreur");
+        }
+    });
 
     let is_upgrade = req.headers().get(http::header::UPGRADE).is_some();
     let server_upgrade = is_upgrade.then(|| hyper::upgrade::on(&mut req));
@@ -91,16 +115,25 @@ async fn vscode_proxy_impl(
     parts.uri = new_path_and_query
         .parse()
         .map_err(|_| ApiError::bad_request("chemin invalide"))?;
-    parts.headers.remove(http::header::HOST);
+    // Codee en dur sur le port de code-server (127.0.0.1:8080) avant cette
+    // correction : fonctionnait par coincidence pour `code-server`, mais
+    // cassait silencieusement le pont vers `ttyd` (port 7681) — l'en-tete
+    // doit refleter le port reellement cible, pas un seul des deux
+    // services embarques.
+    parts.headers.insert(
+        http::header::HOST,
+        http::HeaderValue::from_str(&format!("127.0.0.1:{port}"))
+            .map_err(|_| ApiError::bad_request("port invalide"))?,
+    );
     if !is_upgrade {
         parts.headers.remove(http::header::CONNECTION);
     }
     let outbound = Request::from_parts(parts, body);
 
-    let mut upstream_response = sender
-        .send_request(outbound)
-        .await
-        .map_err(|err| ApiError::bad_gateway(format!("requete vers code-server echouee: {err}")))?;
+    let mut upstream_response = sender.send_request(outbound).await.map_err(|err| {
+        tracing::warn!(%err, "requete vers le guest echouee (send_request)");
+        ApiError::bad_gateway(format!("requete vers le guest echouee: {err}"))
+    })?;
 
     if is_upgrade && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS {
         let client_upgrade = hyper::upgrade::on(&mut upstream_response);
@@ -133,7 +166,7 @@ async fn vscode_proxy_impl(
 
     let (parts, incoming_body) = upstream_response.into_parts();
     let mut builder = Response::builder().status(parts.status);
-    let prefix = format!("/v1/workshops/{name}/vscode");
+    let prefix = format!("/v1/workshops/{name}/{url_prefix}");
     for (hdr_name, value) in parts.headers.iter() {
         if hdr_name == http::header::CONNECTION || hdr_name == http::header::TRANSFER_ENCODING {
             continue;
