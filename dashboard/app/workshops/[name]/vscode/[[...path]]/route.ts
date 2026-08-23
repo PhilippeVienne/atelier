@@ -20,6 +20,10 @@ async function proxy(req: Request, { params }: { params: Promise<{ name: string;
   const { name, path } = await params;
 
   const url = new URL(req.url);
+  if ((!path || path.length === 0) && !url.pathname.endsWith("/")) {
+    return Response.redirect(`${url.origin}${url.pathname}/${url.search}`, 307);
+  }
+
   const targetPath = (path ?? []).join("/");
   const target = `${API_SERVER_URL}/v1/workshops/${encodeURIComponent(name)}/vscode/${targetPath}${url.search}`;
 
@@ -41,6 +45,17 @@ async function proxy(req: Request, { params }: { params: Promise<{ name: string;
 
   const responseHeaders = new Headers(response.headers);
   for (const key of HOP_BY_HOP) responseHeaders.delete(key);
+
+  const location = responseHeaders.get("location");
+  if (location) {
+    const apiPrefix = `/v1/workshops/${encodeURIComponent(name)}/vscode`;
+    const dashPrefix = `/workshops/${encodeURIComponent(name)}/vscode`;
+    if (location.startsWith(apiPrefix)) {
+      responseHeaders.set("location", dashPrefix + location.slice(apiPrefix.length));
+    } else if (location.startsWith("/")) {
+      responseHeaders.set("location", dashPrefix + location);
+    }
+  }
 
   return new Response(response.body, {
     status: response.status,

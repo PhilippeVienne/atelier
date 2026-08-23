@@ -38,10 +38,29 @@ fn code_server_port() -> u16 {
         .unwrap_or(8080)
 }
 
+pub async fn vscode_proxy_root(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(name): Path<String>,
+    req: Request<Body>,
+) -> Result<Response, ApiError> {
+    vscode_proxy_impl(state, user, name, String::new(), req).await
+}
+
 pub async fn vscode_proxy(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     Path((name, path)): Path<(String, String)>,
+    req: Request<Body>,
+) -> Result<Response, ApiError> {
+    vscode_proxy_impl(state, user, name, path, req).await
+}
+
+async fn vscode_proxy_impl(
+    state: AppState,
+    user: AuthenticatedUser,
+    name: String,
+    path: String,
     mut req: Request<Body>,
 ) -> Result<Response, ApiError> {
     let workshop = workshops_api(&state).get(&name).await?;
@@ -95,9 +114,6 @@ pub async fn vscode_proxy(
             .body(Body::empty())
             .map_err(|err| ApiError::bad_gateway(format!("reponse d'upgrade invalide: {err}")))?;
 
-        // Relai brut, sans reinterpreter les frames WebSocket (meme
-        // philosophie que `net-proxy::proxy::tunnel` pour `CONNECT`) : une
-        // fois les deux cotes upgrades, ce n'est plus que des octets.
         tokio::spawn(async move {
             match (server_upgrade.await, client_upgrade.await) {
                 (Ok(server_io), Ok(client_io)) => {
@@ -117,11 +133,21 @@ pub async fn vscode_proxy(
 
     let (parts, incoming_body) = upstream_response.into_parts();
     let mut builder = Response::builder().status(parts.status);
-    for (name, value) in parts.headers.iter() {
-        if name == http::header::CONNECTION || name == http::header::TRANSFER_ENCODING {
+    let prefix = format!("/v1/workshops/{name}/vscode");
+    for (hdr_name, value) in parts.headers.iter() {
+        if hdr_name == http::header::CONNECTION || hdr_name == http::header::TRANSFER_ENCODING {
             continue;
         }
-        builder = builder.header(name, value);
+        if hdr_name == http::header::LOCATION {
+            if let Ok(loc) = value.to_str() {
+                if loc.starts_with('/') && !loc.starts_with(&prefix) {
+                    let rewritten = format!("{prefix}{loc}");
+                    builder = builder.header(hdr_name, rewritten);
+                    continue;
+                }
+            }
+        }
+        builder = builder.header(hdr_name, value);
     }
     builder
         .body(Body::new(incoming_body))

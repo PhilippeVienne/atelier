@@ -41,6 +41,10 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             get(crate::portforward::portforward),
         )
         .route(
+            "/v1/workshops/{name}/vscode",
+            any(crate::vscode::vscode_proxy_root),
+        )
+        .route(
             "/v1/workshops/{name}/vscode/{*path}",
             any(crate::vscode::vscode_proxy),
         )
