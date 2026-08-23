@@ -478,6 +478,8 @@ async fn apply_provisions_openbao_role_when_configured() {
         }),
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_auth_token: None,
     };
 
     workshops
@@ -586,6 +588,8 @@ async fn apply_provisions_kanidm_entity_when_configured() {
         openbao: None,
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_auth_token: None,
     };
 
     let created = workshops

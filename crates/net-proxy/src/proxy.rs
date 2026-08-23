@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
 use crate::allowlist;
-use crate::http::{self, RequestHead};
+use crate::http;
 use crate::internal::InternalRoutes;
 use crate::upstream::UpstreamProxy;
 
@@ -85,7 +85,13 @@ pub async fn handle_connection(
         return if head.method.eq_ignore_ascii_case("CONNECT") {
             tunnel(client, &target_host, target_port, peer, None, &[]).await
         } else {
-            forward(client, &head, &target_host, target_port, peer, None, &[]).await
+            // Forme origine, pas verbatim : certains serveurs (constate
+            // avec `uvicorn`/LiteLLM, alias `llm-proxy`) ne savent pas
+            // parser une cible en forme absolue et renvoient 404 sur tout
+            // — voir `http::to_origin_form`. Sans effet sur les alias deja
+            // testes (axum/hyper, qui tolerent les deux formes).
+            let raw = http::to_origin_form(&head);
+            forward(client, &raw, &target_host, target_port, peer, None, &[]).await
         };
     }
 
@@ -95,7 +101,8 @@ pub async fn handle_connection(
             return if head.method.eq_ignore_ascii_case("CONNECT") {
                 tunnel(client, &target_host, target_port, peer, None, &[]).await
             } else {
-                forward(client, &head, &target_host, target_port, peer, None, &[]).await
+                let raw = http::to_origin_form(&head);
+                forward(client, &raw, &target_host, target_port, peer, None, &[]).await
             };
         }
     }
@@ -156,7 +163,7 @@ pub async fn handle_connection(
     } else if let Some(identity_proxy) = config.identity_proxy.as_deref() {
         forward(
             client,
-            &head,
+            &head.raw,
             identity_proxy.host(),
             identity_proxy.port(),
             peer,
@@ -167,7 +174,7 @@ pub async fn handle_connection(
     } else {
         forward(
             client,
-            &head,
+            &head.raw,
             &host,
             port,
             peer,
@@ -218,7 +225,7 @@ async fn tunnel(
 /// via un tunnel `CONNECT`, si configure), puis relaie le reste.
 async fn forward(
     mut client: BufReader<TcpStream>,
-    head: &RequestHead,
+    request_bytes: &[u8],
     host: &str,
     port: u16,
     peer: SocketAddr,
@@ -235,7 +242,7 @@ async fn forward(
     };
 
     upstream
-        .write_all(&head.raw)
+        .write_all(request_bytes)
         .await
         .context("envoi de la requete a la destination")?;
 

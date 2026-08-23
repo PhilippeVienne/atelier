@@ -104,6 +104,44 @@ pub fn destination(head: &RequestHead) -> anyhow::Result<(String, u16)> {
     split_host_port(host_header, 80)
 }
 
+/// Reecrit la ligne de requete en forme origine (`METHODE /chemin HTTP/1.1`,
+/// en-tetes inchanges) a partir d'une requete en forme absolue
+/// (`METHODE http://hote/chemin HTTP/1.1`) — pour les destinations de
+/// confiance (alias internes `net-proxy`) dont on ne controle pas
+/// l'implementation HTTP : certains serveurs ASGI/WSGI (constate en
+/// pratique avec `uvicorn`, contrairement a `axum`/`hyper`, qui tolerent
+/// les deux formes) ne savent pas parser une cible en forme absolue et
+/// renvoient un `404` sur n'importe quel chemin. Pas d'effet si la requete
+/// est deja en forme origine ou si c'est un `CONNECT` (jamais appelee dans
+/// ce cas).
+pub fn to_origin_form(head: &RequestHead) -> Vec<u8> {
+    let Some(rest) = head
+        .target
+        .strip_prefix("http://")
+        .or_else(|| head.target.strip_prefix("https://"))
+    else {
+        return head.raw.clone();
+    };
+    let path = match rest.find('/') {
+        Some(idx) => &rest[idx..],
+        None => "/",
+    };
+
+    let first_line_end = head.raw.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let first_line = String::from_utf8_lossy(&head.raw[..first_line_end]);
+    // Preserve la version HTTP annoncee par le client (3e jeton de la ligne
+    // de requete) plutot que d'en supposer une — seule la cible (2e jeton)
+    // change, forme absolue -> forme origine.
+    let version = first_line
+        .trim_end()
+        .splitn(3, ' ')
+        .nth(2)
+        .unwrap_or("HTTP/1.1");
+    let mut rewritten = format!("{} {} {}\r\n", head.method, path, version).into_bytes();
+    rewritten.extend_from_slice(&head.raw[first_line_end..]);
+    rewritten
+}
+
 fn split_host_port(authority: &str, default_port: u16) -> anyhow::Result<(String, u16)> {
     if authority.is_empty() {
         bail!("autorite vide");
@@ -149,6 +187,28 @@ mod tests {
             destination(&head).unwrap(),
             ("example.org".to_string(), 8080)
         );
+    }
+
+    #[tokio::test]
+    async fn to_origin_form_rewrites_absolute_target() {
+        let head = parse("GET http://llm-proxy/v1/models HTTP/1.1\r\nHost: llm-proxy\r\nAuthorization: Bearer x\r\n\r\n").await;
+        let rewritten = to_origin_form(&head);
+        assert_eq!(
+            rewritten,
+            b"GET /v1/models HTTP/1.1\r\nHost: llm-proxy\r\nAuthorization: Bearer x\r\n\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn to_origin_form_defaults_to_root_path_without_trailing_slash() {
+        let head = parse("GET http://llm-proxy HTTP/1.1\r\nHost: llm-proxy\r\n\r\n").await;
+        assert!(to_origin_form(&head).starts_with(b"GET / HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn to_origin_form_leaves_origin_form_requests_untouched() {
+        let head = parse("GET /foo HTTP/1.1\r\nHost: llm-proxy\r\n\r\n").await;
+        assert_eq!(to_origin_form(&head), head.raw);
     }
 
     #[tokio::test]
