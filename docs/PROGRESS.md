@@ -29,13 +29,13 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
-| `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) ; pont HTTP+WebSocket vers `code-server` (`/v1/workshops/{name}/vscode/*`, voir section dediee "UI dashboard") |
+| `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) ; pont HTTP+WebSocket generique vers n'importe quel port du guest (`proxy_to_guest_port`) : `code-server` (`/v1/workshops/{name}/vscode/*`) et terminal `ttyd` (`/v1/workshops/{name}/terminal/*`), les deux verifies dans un vrai navigateur contre une vraie microVM — voir sections "UI dashboard" et "Terminal navigateur (`ttyd`)" |
 | `net-proxy` — egress (allowlist + proxy parent + passerelle transparente) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`), **et deux ports d'ecoute transparents** (redirection iptables, Host header/SNI, zero configuration guest necessaire — voir section dediee ci-dessous). Deploye comme sidecar du Job `image-builder` et comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (4/4 conteneurs `Running`, build complet d'un devcontainer reel reussi entierement via le chemin transparent) |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock, 3 tools) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao), `request_egress` (elargissement a chaud de l'allowlist `net-proxy`) et `enable_simulator` (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous |
-| `dashboard` | Fonctionnel (CRUD + page de gestion + "ouvrir VS Code") | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Page de detail par Workshop + bouton "Ouvrir VS Code" (nouvel onglet, `code-server` via le pont HTTP+WS de `api-server`, voir section dediee) ; serveur Next custom (`server.ts`) pour le WebSocket propre de `code-server`. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
+| `dashboard` | Fonctionnel (CRUD + page de gestion + VS Code + terminal) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Page de detail par Workshop + boutons "Ouvrir VS Code" et "Terminal" (`code-server` et `ttyd` via le pont HTTP+WS de `api-server`, voir sections dediees), terminal egalement en iframe sur la page ; serveur Next custom (`server.ts`) pour le WebSocket propre de ces deux services, et refresh token OAuth2 transparent pour que l'expiration du JWT (900s) ne coupe plus une session ouverte. `code-server` et le terminal verifies dans un vrai navigateur pilote contre une vraie microVM (commande interactive executee dans le guest), six bugs reels corriges au passage. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | `llm-proxy` (LiteLLM, service global du cluster) | Fonctionnel (base) | `deploy/dev/llm-proxy/` (Deployment/Service, meme niveau qu'OpenBao, pas un sidecar par pod) traduit les appels Anthropic Messages API de Claude Code vers DeepSeek par defaut (alias `sonnet-premium` vers le vrai Anthropic). Alias `net-proxy` `llm-proxy` + injection `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` dans `/etc/environment` (`image-builder`), toujours actifs des que configures cote `controller`. Verifie reellement contre kind : `/health/readiness` 200, `/v1/models` et `/v1/messages` traduits et routes jusqu'a DeepSeek a travers l'alias `net-proxy` (401 reel de DeepSeek avec une cle factice, preuve du pipeline complet). Voir section dediee "LLM Proxy" ci-dessous |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub `atelier` | Publie (public) | Controller/api-server/dashboard/etc — CI GitHub Actions, images GHCR, site de doc MkDocs, licence AGPLv3 |
@@ -962,6 +962,109 @@ multiplexe, pas HTTP-aware).
   8080 par convention (`ATELIER_VSCODE_PORT` overridable, surtout utile
   pour les tests), pas encore un champ du CRD `Workshop`.
 
+## Terminal navigateur (`ttyd`) : premiere validation reelle du pont guest, six bugs
+
+Objectif du lot : un terminal riche dans le navigateur pour chaque Workshop,
+et reparer le bouton "Ouvrir VS Code" qui ne repondait plus. Les deux
+partagent exactement le meme chemin (`api-server` -> `portforward` ->
+`net-proxy` -> guest), c'est donc le lot qui a **valide pour la premiere fois
+ce pont contre de vrais services dans une vraie microVM** — la section "UI
+dashboard" ci-dessus annoncait cette verification comme restant a faire.
+
+Elle a fait tomber six bugs reels, dont quatre bloquants qui se presentaient
+tous au navigateur sous la meme forme indiscernable (`1006`, ou rien du tout).
+
+- **`crates/api-server`** : `vscode_proxy_impl` devient `proxy_to_guest_port`
+  (port cible + prefixe d'URL en parametres) ; `terminal.rs` (nouveau) s'en
+  sert pour `ttyd` (port 7681, `ATELIER_TERMINAL_PORT`), qui embarque son
+  propre client xterm.js.
+- **`dashboard/lib/guest-proxy.ts`** (nouveau) : le Route Handler HTTP de
+  `code-server` extrait et partage avec le terminal.
+- **`dashboard`** : bouton "Terminal ↗" + iframe sur la page de detail,
+  meme condition `canConnect` que VS Code.
+
+### Les six bugs
+
+1. **Regle `iptables` de retour de connexion manquante** — la chaine dediee
+   par TAP filtrait `INPUT` par liste blanche de *ports de destination*, ce
+   qui jetait silencieusement le retour (SYN-ACK) de toute connexion que
+   `net-proxy` initie lui-meme *vers* le guest : le port de destination est
+   alors un port ephemere cote `net-proxy`, jamais dans la liste. Tout le
+   mecanisme de port-forward (`code-server`, `ttyd`) restait bloque jusqu'au
+   `Connection timed out (os error 110)` alors que le service ecoutait
+   normalement dans le guest. Diagnostique sur infra reelle (beaucoup de
+   `SYN_SENT` ne passant jamais `ESTABLISHED` dans `/proc/net/tcp` du pod),
+   corrige par un `-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT` en
+   premiere regle de la chaine. **C'etait la cause du "rien ne repond
+   jamais", pour VS Code comme pour le terminal.**
+2. **Next.js fermait nos upgrades WebSocket** — Next installe *son propre*
+   listener `upgrade` sur notre serveur custom des la premiere requete HTTP
+   servie (`getRequestHandler()` appelle `setupWebSocketHandler()`, qui
+   recupere le serveur via `req.socket.server`,
+   `node_modules/next/dist/server/next.js`). Son handler fait
+   `if (matchedOutput) return socket.end()`
+   (`node_modules/next/dist/server/lib/router-server.js`) — or nos chemins
+   d'upgrade correspondent bien au Route Handler catch-all
+   `app/workshops/[name]/(vscode|terminal)/[[...path]]/route.ts`. Next
+   fermait donc la socket du navigateur en parallele de notre handler.
+   Deterministe, mais seulement *apres* la premiere requete HTTP du
+   process : d'ou une flakiness apparente qui a coute cher (un client `ws`
+   nu contre un serveur fraichement redemarre reussissait 6/6, le meme test
+   echouait 2/2 une fois une page chargee). Corrige en neutralisant
+   l'auto-attachement et en deleguant a `app.getUpgradeHandler()` (API
+   publique) tout ce qui ne nous concerne pas — ce qui repare au passage le
+   **HMR de Next**, que notre propre handler detruisait en boucle.
+3. **`ERR_CONTENT_DECODING_FAILED`** — `fetch` (undici) decompresse le corps
+   selon `Content-Encoding` mais laisse cet en-tete, et `Content-Length`,
+   intacts sur `response.headers` ; les relayer faisait tenter au navigateur
+   de decompresser un corps deja en clair. Les deux sont desormais retires
+   (`code-server` et `ttyd` servent tous deux compresse).
+4. **Sous-protocole `tty` non relaye** — `ttyd` negocie explicitement
+   `Sec-WebSocket-Protocol: tty`, et un navigateur ferme la connexion
+   (`1006`) si le `101` ne confirme pas le sous-protocole demande. Relaye
+   desormais dans les deux sens (`handleProtocols` sur une `WebSocketServer`
+   `noServer` par requete, valeur reelle negociee par l'amont).
+5. **En-tete `Host` code en dur sur `127.0.0.1:8080`** — fonctionnait par
+   coincidence pour `code-server`, qui ecoute sur ce port, mais cassait
+   silencieusement le pont vers `ttyd`. Reflete maintenant le port
+   reellement cible.
+6. **`Workshop.spec.resources` jamais cable vers la VM** — trouve en
+   creusant pourquoi `code-server` restait injoignable : `vm-supervisor`
+   utilisait toujours 256 MiB / 1 vCPU quoi que declare le Workshop. Corrige
+   dans `crates/controller/src/reconcile.rs` (`memory_to_mib` /
+   `cpu_to_vcpu_count` + 7 tests unitaires, commit `57109e9`).
+
+Ajoute par-dessus, sur demande explicite ("il faut que le front soit immune a
+ce genre de soucis") : **refresh token OAuth2 transparent**. Le JWT Kanidm
+expire a 900s, et une session terminal/VS Code ouverte plus longtemps se
+mettait a echouer en boucle silencieuse — encore un `1006`, indiscernable
+d'un vrai probleme reseau, et une vraie source de confusion pendant le debug.
+`getAccessToken()` echange desormais le refresh token cote serveur des que
+l'access token approche de son expiration, et `SessionKeepAlive` (monte dans
+`TopNav`) ping `/api/auth/refresh` toutes les 4 min avec rattrapage sur
+`visibilitychange` (les navigateurs bridant les timers d'un onglet en
+arriere-plan). Les deux cookies restent `httpOnly` : aucun token n'atteint le
+JS du navigateur.
+
+### Verification reelle (vrai navigateur, pas un client `ws`)
+
+Le manque de test navigateur est precisement ce qui avait laisse passer le
+bug 2 : un client `ws` Node.js reussissait, l'`<iframe>` du dashboard non.
+Verifie avec Chromium pilote (cookies de session reels, vrai client `ttyd`) :
+
+- Terminal connecte, prompt du shell recu, **commande interactive executee
+  dans la microVM** (`echo`, `uname -sr` -> Linux 5.10.223, `nproc` -> 2,
+  `free -m` -> ~2 GB, ce qui confirme au passage le bug 6 corrige : plus les
+  256 MiB / 1 vCPU codes en dur).
+- `code-server` : `.monaco-workbench` charge, page Welcome affichee.
+- HMR de Next : une seule ouverture, zero erreur, plus de reconnexion en
+  boucle.
+
+Reste ouvert : quelques `404` en console cote `code-server` (workbench
+fonctionnel malgre tout), non investigues. Le port de `ttyd` est fixe par
+convention (`ATELIER_TERMINAL_PORT` overridable), pas encore un champ du CRD
+`Workshop` — meme situation que `ATELIER_VSCODE_PORT`.
+
 ## LLM Proxy : LiteLLM global (DeepSeek low-cost + Anthropic premium)
 
 Objectif : reduire le cout d'inference de Claude Code (et de tout autre
@@ -1393,6 +1496,44 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   le fait `deb-systemd-helper` pour les paquets (qui, lui, n'est pas
   intercepte).
 
+- Une chaine `iptables` qui filtre par liste blanche de *ports de
+  destination* jette le trafic retour des connexions qu'on initie soi-meme
+  (le port de destination y est un port ephemere, jamais dans la liste). Il
+  faut un `-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT` en premiere
+  regle, sinon la connexion part mais son SYN-ACK n'arrive jamais et le
+  symptome (`Connection timed out`) fait chercher du cote du service cible,
+  qui lui va parfaitement bien.
+- Un serveur Next.js custom n'a pas l'exclusivite de l'evenement `upgrade` :
+  Next accroche son propre listener sur *notre* serveur des la premiere
+  requete HTTP servie (via `req.socket.server`), et ce listener fait
+  `socket.end()` sur tout chemin qui correspond a une route Next — un
+  Route Handler catch-all suffit. Deleguer explicitement a
+  `app.getUpgradeHandler()` ce qui ne nous concerne pas, et neutraliser
+  l'auto-attachement pour le reste.
+- Un bug qui n'apparait qu'*apres* la premiere requete HTTP d'un process
+  ressemble a s'y meprendre a de la flakiness. Avant de conclure
+  "intermittent", chercher l'etat du process qui change entre deux essais :
+  ici un test qui reussissait 6/6 sur un serveur fraichement redemarre
+  echouait 2/2 une fois une page chargee.
+- `fetch` (undici) decompresse le corps selon `Content-Encoding` mais laisse
+  cet en-tete et `Content-Length` intacts sur `response.headers`. Un proxy
+  qui les relaie tels quels produit un `ERR_CONTENT_DECODING_FAILED` cote
+  navigateur : les retirer tous les deux.
+- Un client WebSocket qui a demande un sous-protocole
+  (`Sec-WebSocket-Protocol`, ex. `tty` pour `ttyd`) ferme la connexion en
+  `1006` si le `101` ne le confirme pas. Un proxy WebSocket doit relayer le
+  sous-protocole dans les deux sens, pas seulement les octets.
+- Tester un pont WebSocket avec un client `ws` Node.js ne remplace pas un
+  vrai navigateur : plusieurs bugs de ce lot (fermeture par Next, absence de
+  sous-protocole) ne se manifestaient que via l'`<iframe>` et le vrai client
+  du service. Un navigateur pilote (Chromium headless, cookies de session
+  injectes) est peu couteux a mettre en place et aurait fait gagner
+  beaucoup de temps.
+- Cote dashboard, `npm run dev` est `tsx watch server.ts` : lancer
+  `npx tsx server.ts` a la main ne surveille pas le fichier, et on teste
+  alors une version obsolete de `server.ts` sans s'en rendre compte
+  (plusieurs resultats "incoherents" venaient de la).
+
 ## Prochaines etapes (par priorite)
 
 1. ~~Brancher la microVM "builder" dans `image-builder`/`reconcile.rs`~~ —
@@ -1486,11 +1627,15 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
 9. ~~Devcontainer de demo `ministack-workshop`~~ : boot Firecracker reel
    **verifie**, ~~UI dashboard dediee~~ **construite cette session** (voir
    section dediee "UI dashboard" ci-dessus : page de gestion par Workshop,
-   pont HTTP+WS `api-server` -> `code-server`, preset de creation). Reste
-   ouvert : creer un vrai `Workshop` K8s pointant sur
+   pont HTTP+WS `api-server` -> `code-server`, preset de creation).
+   ~~Reste ouvert : creer un vrai `Workshop` K8s pointant sur
    [`atelier-workspace`](https://github.com/PhilippeVienne/atelier-workspace)
    (depot desormais public, plus de blocage d'auth git) pour la premiere
-   validation reellement complete du pont "Ouvrir VS Code" de bout en bout.
+   validation reellement complete du pont "Ouvrir VS Code" de bout en
+   bout~~ — **fait**, voir "Terminal navigateur (`ttyd`)" ci-dessus :
+   `code-server` et `ttyd` verifies dans un vrai navigateur contre un vrai
+   Workshop, six bugs reels corriges sur le chemin. Reste ouvert : quelques
+   `404` en console cote `code-server`, non investigues.
 10. ~~LLM Proxy~~ — **base faite cette session** (LiteLLM global, DeepSeek
     par defaut + Anthropic premium), voir section dediee ci-dessus. Reste
     ouvert : verification avec une vraie cle DeepSeek et depuis l'interieur
