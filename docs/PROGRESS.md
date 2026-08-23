@@ -810,14 +810,22 @@ netns Docker avec `net-proxy` — jamais depuis un guest reellement boote par
 
 ## Devcontainer de demo `ministack-workshop` : le boot Firecracker de l'agent exige systemd
 
+> **Mise a jour** : ce devcontainer de demo vit desormais dans un depot
+> public dedie, [github.com/PhilippeVienne/atelier-workspace](https://github.com/PhilippeVienne/atelier-workspace)
+> (plus sous `demo/ministack-workshop/` de ce depot) — un `Workshop` peut
+> donc le cloner sans identifiants git, le blocage d'auth mentionne plus
+> bas dans cette section est resolu par ce demenagement, pas par le
+> mecanisme d'identifiants git construit cote `image-builder` (toujours
+> disponible pour de vrais depots prives).
+
 Question ouverte depuis la conception de `vm-supervisor` (qui boote le
 rootfs d'un devcontainer arbitraire **sans** `init=` personnalise,
 contrairement a la microVM "builder") : le PID 1 par defaut d'une image
 devcontainer standard demarre-t-il seulement, et fait-il tourner quoi que
 ce soit tout seul ? Verifie reellement cette session avec
-`demo/ministack-workshop` (devcontainer combinant docker-in-docker,
-`ministack`, Claude Code, `code-server` — voir
-`demo/ministack-workshop/README.md`) :
+`ministack-workshop` (devcontainer combinant docker-in-docker,
+`ministack`, Claude Code, `code-server` — voir son
+[README](https://github.com/PhilippeVienne/atelier-workspace/blob/main/README.md)) :
 
 - **Rootfs construit a la main, meme procedure qu'`image-builder`** (export
   d'image Docker + `mke2fs -F -t ext4 -d`, cf. `crates/image-builder/src/main.rs`),
@@ -839,7 +847,7 @@ ce soit tout seul ? Verifie reellement cette session avec
   rejoue par le noyau : sans lui, aucun mecanisme ne lance
   `dockerd`/`ministack`/`code-server`.
 - **Corrige** : `systemd`/`systemd-sysv` ajoutes a l'image
-  (`demo/ministack-workshop/.devcontainer/Dockerfile`), nos services
+  (`.devcontainer/Dockerfile` du depot `atelier-workspace`), nos services
   demarres via deux unites systemd dediees
   (`atelier-ministack.service`/`atelier-code-server.service`,
   `WantedBy=multi-user.target`) plutot que via `postStartCommand`, qui
@@ -945,9 +953,10 @@ multiplexe, pas HTTP-aware).
 - **Limite assumee** : verifie manuellement contre un Workshop de test
   (Pod avec `podIP` controle a la main, meme technique que les tests
   automatises) et un service de remplacement pour `code-server` — pas
-  encore contre un vrai `code-server` reel ni un vrai `Workshop` complet
-  (bloque sur le meme point que `demo/ministack-workshop` : auth git sur
-  un depot prive, cf. section dediee plus haut). Port `code-server` fixe a
+  encore contre un vrai `code-server` reel ni un vrai `Workshop` complet —
+  desormais possible sans blocage d'auth git puisque `ministack-workshop`
+  est un depot public (cf. section dediee plus haut), reste a le faire.
+  Port `code-server` fixe a
   8080 par convention (`ATELIER_VSCODE_PORT` overridable, surtout utile
   pour les tests), pas encore un champ du CRD `Workshop`.
 
@@ -1311,10 +1320,10 @@ multiplexe, pas HTTP-aware).
    **verifie**, ~~UI dashboard dediee~~ **construite cette session** (voir
    section dediee "UI dashboard" ci-dessus : page de gestion par Workshop,
    pont HTTP+WS `api-server` -> `code-server`, preset de creation). Reste
-   ouvert : creer un vrai `Workshop` K8s pointant sur le depot
-   `ministack-workshop` (bloque sur l'auth git a un depot prive, mecanisme
-   cote `image-builder` en cours ailleurs, pas encore verifie de bout en
-   bout avec ce pont) pour la premiere validation reellement complete.
+   ouvert : creer un vrai `Workshop` K8s pointant sur
+   [`atelier-workspace`](https://github.com/PhilippeVienne/atelier-workspace)
+   (depot desormais public, plus de blocage d'auth git) pour la premiere
+   validation reellement complete du pont "Ouvrir VS Code" de bout en bout.
 10. LLM Proxy (Claude Code, ou tout autre agent, a besoin d'inference —
     routage vers OpenAI/Grok/Vertex/Bedrock, credentials injectes selon le
     meme modele qu'`identity-proxy`/`mcp-gateway`) : besoin identifie cette
