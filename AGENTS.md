@@ -16,8 +16,11 @@ Ce document régit les règles de développement et de collaboration applicables
 
 3. **Collaboration Multi-Agents Concurrente & Continuité** :
    - Plusieurs agents peuvent travailler simultanément ou séquentiellement sur le dépôt.
-   - Inspectez systématiquement `git status`, `git diff` et [`docs/PROGRESS.md`](docs/PROGRESS.md) avant toute modification ou commit.
-   - **Le travail peut être interrompu à tout moment et repris par un autre agent**. Chaque étape complétée doit être immédiatement consignée dans `docs/PROGRESS.md` avec sa preuve de test.
+   - Inspectez systématiquement `git status`, `git diff`, [`docs/PROGRESS.md`](docs/PROGRESS.md) et [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) avant toute modification.
+   - **Règle de Verrouillage de Tâche Nominatif (`[-/<family>/<session_id>]`)** :
+     - Tout agent qui commence à travailler sur une tâche `[ ]` **DOIT IMMÉDIATEMENT la marquer `[-/<agent_family>/<session_id>]` dans `PLAN-ACTION-GLOBAL.md`** (ex: `[-/antigravity/c192a786]` ou `[-/claude-code/sess-4a8b]`). Cela permet à tout autre agent ou observateur de savoir exactement qui traite la tâche et si la session est toujours active.
+     - Il est **STRICTEMENT INTERDIT** d'entamer une tâche si une tâche antérieure est encore marquée en cours sans justification.
+     - Une fois la tâche validée empiriquement, la marquer `[x]` et ajouter une entrée datée dans `docs/PROGRESS.md`.
 
 4. **Acceptation du CLA** :
    - Toute contribution produite par ou avec l'assistance d'un agent IA et soumise au dépôt est régie par les termes du [Contributor License Agreement (`CLA.md`)](CLA.md), accordant au mainteneur le droit de re-licencier ou double-licencier le projet.
@@ -62,7 +65,7 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
 ### 📖 Quand lire quelle spécification ?
 1. **Document Cadre Transversal** : [`docs/specs/00-architecture-principles-substitutability.md`](docs/specs/00-architecture-principles-substitutability.md)
    - *À lire dès qu'un choix d'infrastructure est fait (Postgres/RDS, Keycloak/Auth0, Forgejo/GitHub, OpenBao/Vault, RustFS/S3).*
-2. **Sur les travaux de Base de Données, OIDC & Git** :
+2. **Sur les travaux de Base de Données, OIDC, Git & Basic Auth** :
    - *Lire [`docs/specs/01-keycloak-forgejo-postgres.md`](docs/specs/01-keycloak-forgejo-postgres.md) avant de modifier `crates/api-server/src/auth.rs`, `crates/controller/src/openbao.rs` ou les schémas SQL.*
 3. **Sur les travaux de Déploiement Kubernetes & Helm** :
    - *Lire [`docs/specs/02-helm-deployment-admin-doc.md`](docs/specs/02-helm-deployment-admin-doc.md) avant d'éditer `charts/atelier/` ou `docs/admin-guide.md`.*
@@ -108,6 +111,6 @@ cargo test --workspace
 ## 📝 Mise à jour de la Documentation & Progression
 
 Chaque modification d'architecture ou ajout de composant doit être documenté dans :
-- [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) (cocher la case `[x]`).
+- [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) (passer de `[-/<family>/<id>]` à `[x]`).
 - [`docs/PROGRESS.md`](docs/PROGRESS.md) (entrée datée dans la section dédiée avec commande de test et preuve empirique).
 - [`README.md`](README.md) et [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) le cas échéant.

@@ -24,6 +24,11 @@ deploy/dev/firecracker/assets/
 deploy/dev/envbuilder/envbuilder
 deploy/dev/crane/crane
 
+# Certificats et cles generes par la PKI locale de dev
+deploy/dev/pki/ca/
+deploy/dev/pki/certs/
+
 # GitLab Pages / MkDocs build outputs
 public/
 site/
+
