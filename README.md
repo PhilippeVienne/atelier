@@ -75,3 +75,8 @@ docker run -d --name atelier-otel-collector-dev -p 4317:4317 \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run -p atelier-controller --bin atelier-controller
 ```
 
+## 📄 Licence
+
+Ce projet est distribué sous la licence **GNU Affero General Public License v3.0** ([AGPLv3](LICENSE)).
+
+
