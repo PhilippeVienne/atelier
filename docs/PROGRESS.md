@@ -1912,3 +1912,34 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   - **Basic Auth VS Code/`ttyd`** : chaîne complète côté ce dépôt fonctionnelle et testée (controller → OpenBao → net-proxy → api-server), **mais incomplète en pratique** : le devcontainer (repo séparé `atelier-workspace`) ne consomme pas encore l'endpoint metadata pour configurer le Basic Auth de `ttyd`/`code-server` — vérifié en cherchant toute référence à `session-auth`/`169.254.0.1:3132`/`credential atelier` dans les clones locaux disponibles de ce repo (`/tmp/atelier-workspace-new`, `/tmp/claude-1000/atelier-workspace`) : aucune trouvée. Marqué `[~]` (partiel) dans le DoD plutôt que `[x]`, pour ne pas déclarer M1 clos à tort sur ce point précis.
 - **Statut** : ⚠️ DoD de M1 validé à 5/6 items complets ; le 6ème (Basic Auth guest) nécessite une intervention dans le dépôt `atelier-workspace`, hors du périmètre de cette session.
 
+### [2026-08-24] Jalon M2 - Tâches 2.1.1, 2.1.2, 2.1.3, 2.1.4 : client S3 (`storage.rs`), archivage et rejeu de session en streaming
+- **Composant impacté** : `crates/api-server/src/storage.rs` (nouveau module), `crates/api-server/src/lib.rs`, `crates/api-server/Cargo.toml`, `crates/api-server/tests/storage.rs` (nouveau test d'intégration).
+- **Contexte** : premier des deux agents parallèles verrouillés sur la section 5.1 du plan (le second, `[-/claude-code/sess-6f3eef77-d]`, travaille sur `crates/controller`/`crates/net-proxy` pour l'injection Git HTTPS — aucun fichier en commun).
+- **Modifications réalisées** :
+  - **2.1.1** : trait `StorageBackend` (`#[async_trait::async_trait]`, dyn-compatible pour permettre une future implémentation alternative — principe de substitutabilité du projet) avec `upload_stream`/`download_stream`/`delete_object` sur un type unique `BoxedAsyncRead = Pin<Box<dyn AsyncRead + Send + Sync>>`. `S3StorageBackend` implémente ce trait au-dessus d'`aws-sdk-s3`, client construit explicitement via `aws_sdk_s3::config::Builder` (`endpoint_url`, `Credentials::new` statiques, `force_path_style`) plutôt que via la découverte AWS standard (IMDS/profils), qui ne s'applique pas à un endpoint personnalisé type RustFS/MinIO.
+  - **2.1.2** : `storage::config_from_env` suit exactement la convention de `openbao::config_from_env`/`TrustedIssuer::from_env` : `S3_ENDPOINT` absent → `Ok(None)` (stockage désactivé) ; présent → `S3_REGION`/`S3_BUCKET_SESSIONS`/`S3_BUCKET_SNAPSHOTS`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` deviennent obligatoires (erreur explicite sinon), `S3_FORCE_PATH_STYLE` optionnel (`false` par défaut).
+  - **2.1.3** : `S3StorageBackend::upload_session_archive(workshop_name, session_id, source: impl AsyncRead)` compresse `source` en zstd en streaming via `async-compression` (`ZstdEncoder` opérant directement sur un `AsyncRead`, jamais de chargement intégral en mémoire), sous la clé conventionnelle `workshops/<workshop_name>/sessions/<session_id>.zst` (préfixe par Workshop pour un listing/nettoyage ciblé sans connaître à l'avance les `session_id`).
+  - **2.1.4** : `S3StorageBackend::get_session_stream(s3_key)` récupère l'objet et le décompresse en streaming (`ZstdDecoder`), renvoie un `AsyncRead` consommable progressivement par l'appelant (pas de `Vec<u8>` chargé entièrement).
+  - **Choix de conception notable, découvert en testant réellement contre RustFS** : un `put_object` avec un corps HTTP en streaming de taille inconnue (`SdkBody::from_body_1_x` sur un flux `http_body`) échoue systématiquement avec « Only request bodies with a known size can be aws-chunked encoded » — la taille compressée d'une session en cours de rejeu n'est jamais connue à l'avance. `upload_stream` est donc implémenté via un **televersement multipart S3** (`create_multipart_upload`/`upload_part` par blocs de 8 Mio/`complete_multipart_upload`), la seule méthode compatible avec un corps de taille totale inconnue (chaque part a une taille individuelle connue) ; abandon (`abort_multipart_upload`) sur toute erreur en cours de route, et repli sur un `put_object` classique à corps vide pour un flux source vide (un multipart upload ne peut pas se compléter sans au moins une part).
+  - Dépendances ajoutées à `crates/api-server/Cargo.toml` : `async-compression` (zstd streaming, `tokio`+`zstd` features — préférée à la crate `zstd` nue pour éviter de gérer nous-mêmes un thread bloquant autour de libzstd), `bytes`, `async-trait`, `sha2` (dev, cohérent avec `crates/vm-supervisor`/`crates/image-builder`) ; activation de la feature `rt-tokio` sur `aws-sdk-s3` (déjà présente comme dépendance non consommée) — nécessaire à la fois pour l'implémentation par défaut du sleep/retry async du client (sinon panique au premier appel réseau) et pour `ByteStream::into_async_read` (rejeu en streaming de `get_object`).
+- **Preuve empirique / Test exécuté** (contre le vrai serveur RustFS de dev, pas de mock) :
+  ```
+  kubectl port-forward svc/atelier-s3-dev 9000:9000 &
+  export S3_ENDPOINT=http://127.0.0.1:9000 S3_REGION=us-east-1 \
+         AWS_ACCESS_KEY_ID=atelier-rustfs-access-key AWS_SECRET_ACCESS_KEY=atelier-rustfs-secret-key \
+         S3_BUCKET_SESSIONS=atelier-sessions S3_BUCKET_SNAPSHOTS=atelier-snapshots S3_FORCE_PATH_STYLE=true
+
+  cargo test -p atelier-api-server --test storage
+  # test upload_and_replay_session_archive_preserves_integrity ... ok
+  # Contenu déterministe (LCG à graine fixe, pas de générateur aléatoire) d'environ 5 Mo :
+  # upload_session_archive -> get_session_stream -> lecture complète jusqu'à EOF -> SHA-256 identique avant/après.
+
+  unset S3_ENDPOINT   # vérifie le gate (pas de panic, juste "test ignore")
+  cargo test -p atelier-api-server --test storage   # ok, 1 passed (skip effectif)
+
+  cargo test -p atelier-api-server   # 6 (routes.rs, vrai cluster/OpenBao) + 1 (storage.rs, vrai RustFS) passed
+  cargo fmt --all -- --check         # silencieux
+  cargo clippy --workspace --all-targets -- -D warnings   # 0 warning
+  ```
+- **Statut** : ✅ Validé pour les 4 tâches listées (2.1.1 à 2.1.4).
+

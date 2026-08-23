@@ -27,12 +27,20 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
-# Pas encore consommes (reserve au Jalon M2, stockage S3 hybride des
-# archives de session) : ajoutes ici pour suivre exactement la liste de
-# dependances de la tache 1.2.1 (docs/specs/PLAN-ACTION-GLOBAL.md).
-aws-sdk-s3 = { version = "1.71", default-features = false, features = ["rustls"] }
+# Stockage S3 hybride des archives de session (Jalon M2, cf.
+# crates/api-server/src/storage.rs). "rt-tokio" fournit l'implementation
+# par defaut du sleep/retry async requise par le client (sinon panique a
+# l'execution) et `ByteStream::into_async_read` pour le rejeu en streaming.
+aws-sdk-s3 = { version = "1.71", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-config = { version = "1.5", default-features = false, features = ["rustls"] }
 base64 = "0.22"
+# Compression/decompression zstd en streaming (tache 2.1.3/2.1.4) : API
+# async-native (AsyncRead -> AsyncRead), pas besoin de charger le flux en
+# memoire ni de gerer nous-memes un thread bloquant pour libzstd.
+async-compression = { version = "0.4.43", features = ["tokio", "zstd"] }
+bytes = "1"
+async-trait = "0.1.92"
 
 [dev-dependencies]
+sha2 = "0.10"
 tower = "0.5"

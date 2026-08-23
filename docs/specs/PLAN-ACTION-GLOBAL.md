@@ -224,10 +224,10 @@ graph TD
 
 ### 5.1. Client S3 Rust dans `api-server` (`aws-sdk-s3` / `opendal`)
 * **Fichier impacté** : `crates/api-server/src/storage.rs` (Nouveau module)
-  - [-/claude-code/sess-6f3eef77-c] **2.1.1** : Définir le trait `StorageBackend` (`upload_stream`, `download_stream`, `delete_object`) et l'implémentation `S3StorageBackend`.
-  - [-/claude-code/sess-6f3eef77-c] **2.1.2** : Implémenter le chargement dynamique des variables `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET_SESSIONS`, `S3_BUCKET_SNAPSHOTS`, `S3_FORCE_PATH_STYLE`.
-  - [-/claude-code/sess-6f3eef77-c] **2.1.3** : Implémenter `upload_session_archive(workshop_name, session_id, stream)` avec compression zstd en streaming.
-  - [-/claude-code/sess-6f3eef77-c] **2.1.4** : Implémenter `get_session_stream(s3_key)` pour le rejeu de session dans l'API.
+  - [x] **2.1.1** : Définir le trait `StorageBackend` (`upload_stream`, `download_stream`, `delete_object`) et l'implémentation `S3StorageBackend`. *(Fait le 2026-08-24 : trait `async_trait` object-safe dans `crates/api-server/src/storage.rs`, `upload_stream` implémenté en televersement multipart S3 — nécessaire car un `put_object` a corps en streaming de taille inconnue echoue sur RustFS/S3 avec « Only request bodies with a known size can be aws-chunked encoded ».)*
+  - [x] **2.1.2** : Implémenter le chargement dynamique des variables `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET_SESSIONS`, `S3_BUCKET_SNAPSHOTS`, `S3_FORCE_PATH_STYLE`. *(Fait le 2026-08-24 : `storage::config_from_env`, même convention `Ok(None)`/erreur explicite que `openbao::config_from_env` et `TrustedIssuer::from_env` ; `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` lus explicitement, pas via la découverte AWS standard.)*
+  - [x] **2.1.3** : Implémenter `upload_session_archive(workshop_name, session_id, stream)` avec compression zstd en streaming. *(Fait le 2026-08-24 : `async-compression` (`ZstdEncoder` sur `AsyncRead`), clé `workshops/<workshop_name>/sessions/<session_id>.zst`.)*
+  - [x] **2.1.4** : Implémenter `get_session_stream(s3_key)` pour le rejeu de session dans l'API. *(Fait le 2026-08-24 : `ZstdDecoder` sur le flux `download_stream`, retourne un `AsyncRead` consommable progressivement, jamais chargé entièrement en mémoire.)*
 
 ### 5.2. Forge Git HTTPS (Forgejo / GitHub / GitLab) & Injection `identity-proxy`
 * **Fichier impacté** : [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs)
