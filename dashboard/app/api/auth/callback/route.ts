@@ -41,12 +41,15 @@ export async function GET(request: NextRequest) {
     return loginError(request, `echange du code aupres de Kanidm echoue (${tokenRes.status}) ${body}`);
   }
 
-  const { access_token: accessToken } = (await tokenRes.json()) as { access_token?: string };
+  const { access_token: accessToken, refresh_token: refreshToken } = (await tokenRes.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+  };
   if (!accessToken) {
     return loginError(request, "reponse token Kanidm sans access_token");
   }
 
-  await createSession(accessToken);
+  await createSession(accessToken, refreshToken);
   return NextResponse.redirect(new URL("/", request.nextUrl.origin));
 }
 
