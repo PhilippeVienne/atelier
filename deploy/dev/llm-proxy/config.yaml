@@ -1,0 +1,35 @@
+# Configuration LiteLLM (voir deploy/dev/llm-proxy/README.md) : traduit les
+# appels Anthropic Messages API de Claude Code (`/v1/messages`) vers un
+# fournisseur bon marche par defaut (DeepSeek), avec un alias explicite vers
+# le vrai Anthropic Sonnet pour les taches complexes. Les cles des
+# fournisseurs (`os.environ/...`) viennent du Secret Kubernetes
+# `atelier-llm-proxy-dev`, jamais de ce fichier.
+model_list:
+  # Alias capte par defaut par Claude Code (nom de modele Anthropic
+  # standard) : redirige silencieusement vers DeepSeek, c'est le coeur de
+  # la reduction de cout.
+  - model_name: claude-3-5-sonnet-20241022
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # Meme cible, alias explicite pour un `claude --model deepseek-dev`
+  # delibere plutot qu'implicite.
+  - model_name: deepseek-dev
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # Vrai Anthropic, a la demande (`claude --model sonnet-premium`) pour les
+  # arbitrages d'architecture complexes ou le modele low-cost ne suffit pas.
+  - model_name: sonnet-premium
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  # Evite les rejets sur des arguments specifiques a l'API Anthropic que le
+  # backend cible (DeepSeek, via une traduction OpenAI-compatible) ne
+  # reconnait pas.
+  drop_params: true
+  set_verbose: false

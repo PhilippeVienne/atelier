@@ -565,6 +565,20 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     environment.push_str(&format!(
         "HTTP_PROXY={proxy_url}\nHTTPS_PROXY={proxy_url}\nhttp_proxy={proxy_url}\nhttps_proxy={proxy_url}\nNO_PROXY=169.254.0.1\nno_proxy=169.254.0.1\n"
     ));
+    // LLM Proxy (service global du cluster, `deploy/dev/llm-proxy/`) :
+    // route les appels Anthropic Messages API de Claude Code vers
+    // `net-proxy` (alias `llm-proxy`, `crates/net-proxy/src/internal.rs`),
+    // jamais un nom DNS reel — rien a ajouter a l'allowlist egress.
+    // `ANTHROPIC_API_KEY` vide desactive explicitement toute cle locale
+    // eventuellement presente sur l'image de base, pour forcer le passage
+    // par `ANTHROPIC_AUTH_TOKEN`. N'ecrit rien si le service n'est pas
+    // configure cote controller (`ATELIER_LLM_PROXY_AUTH_TOKEN` absent) —
+    // meme convention que le reste des fonctionnalites optionnelles.
+    if let Ok(llm_proxy_auth_token) = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN") {
+        environment.push_str(&format!(
+            "ANTHROPIC_BASE_URL=http://llm-proxy\nANTHROPIC_AUTH_TOKEN={llm_proxy_auth_token}\nANTHROPIC_API_KEY=\n"
+        ));
+    }
     tokio::fs::write(&environment_path, environment)
         .await
         .with_context(|| format!("ecriture de {environment_path:?}"))?;

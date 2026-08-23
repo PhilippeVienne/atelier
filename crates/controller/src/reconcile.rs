@@ -110,6 +110,16 @@ pub struct ReconcileCtx {
     pub openbao: Option<openbao::OpenBaoConfig>,
     pub registry_addr: String,
     pub registry_insecure: bool,
+    /// Adresse du service global LiteLLM (`deploy/dev/llm-proxy/`, meme
+    /// niveau qu'OpenBao : une seule instance partagee par tous les
+    /// Workshops, pas un sidecar par pod). `None` : fonctionnalite
+    /// desactivee, aucun alias `llm-proxy` ni injection `ANTHROPIC_*` —
+    /// meme convention que `openbao`.
+    pub llm_proxy_addr: Option<String>,
+    /// Jeton envoye par Claude Code (`ANTHROPIC_AUTH_TOKEN`) et attendu par
+    /// LiteLLM (`LITELLM_MASTER_KEY`) — partage par tous les Workshops dans
+    /// ce lot, voir "Limites assumees" de `docs/PROGRESS.md`.
+    pub llm_proxy_auth_token: Option<String>,
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -121,6 +131,8 @@ pub async fn run() -> anyhow::Result<()> {
     let registry_insecure = std::env::var("ATELIER_REGISTRY_INSECURE")
         .map(|v| v == "true")
         .unwrap_or(false);
+    let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
+    let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok();
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -133,6 +145,8 @@ pub async fn run() -> anyhow::Result<()> {
                 openbao,
                 registry_addr,
                 registry_insecure,
+                llm_proxy_addr,
+                llm_proxy_auth_token,
             }),
         )
         .for_each(|res| async move {
@@ -576,6 +590,15 @@ async fn ensure_image_build_job(
             .as_ref()
             .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
     )
+    // Necessaire au moment du build pour ecrire ANTHROPIC_AUTH_TOKEN dans
+    // `/etc/environment` (`inject_net_proxy_config`, crates/image-builder) —
+    // pas `ATELIER_LLM_PROXY_ADDR` : l'alias `llm-proxy` est resolu au
+    // runtime par le `net-proxy` du pod parent, pas au moment du build.
+    .chain(
+        ctx.llm_proxy_auth_token
+            .as_ref()
+            .map(|token| env_var("ATELIER_LLM_PROXY_AUTH_TOKEN", token)),
+    )
     .collect::<Vec<_>>();
 
     let cache_volume = Volume {
@@ -949,6 +972,15 @@ async fn ensure_parent_pod(
                                 &format!("127.0.0.1:{SIMULATOR_PORT}"),
                             )
                         }))
+                        // Service global du cluster (voir `deploy/dev/llm-proxy/`),
+                        // pas un sidecar de ce pod : toujours cable des que
+                        // configure, contrairement a `simulator` (gate par
+                        // `Workshop.spec.tools`) — voir `ReconcileCtx::llm_proxy_addr`.
+                        .chain(
+                            ctx.llm_proxy_addr
+                                .as_ref()
+                                .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr)),
+                        )
                         .collect::<Vec<_>>(),
                     ),
                     ..Default::default()

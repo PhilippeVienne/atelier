@@ -26,6 +26,8 @@ fn ctx_without_kanidm(client: Client) -> ReconcileCtx {
         openbao: None,
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_auth_token: None,
     }
 }
 

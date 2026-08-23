@@ -1,0 +1,62 @@
+# Service global du cluster (meme niveau qu'OpenBao, cf.
+# deploy/dev/openbao/dev-pod.yaml) : une seule instance LiteLLM partagee par
+# tous les Workshops, pas un sidecar par pod. Le ConfigMap
+# `atelier-llm-proxy-config` et le Secret `atelier-llm-proxy-dev` sont crees
+# separement (voir README.md) : jamais de cle en clair dans ce fichier.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atelier-llm-proxy
+  namespace: default
+  labels:
+    app: atelier-llm-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atelier-llm-proxy
+  template:
+    metadata:
+      labels:
+        app: atelier-llm-proxy
+    spec:
+      containers:
+        - name: litellm
+          # Tag epingle (pas `:latest`) pour un deploiement deterministe.
+          image: ghcr.io/berriai/litellm:main-stable
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          ports:
+            - containerPort: 4000
+          envFrom:
+            - secretRef:
+                name: atelier-llm-proxy-dev
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 4000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: atelier-llm-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-llm-proxy
+  namespace: default
+spec:
+  selector:
+    app: atelier-llm-proxy
+  ports:
+    - port: 4000
+      targetPort: 4000
