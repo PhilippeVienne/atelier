@@ -1,0 +1,9 @@
+# Cles privees, requetes CSR et certificats generes localement
+ca/*.key
+ca/*.crt
+ca/*.srl
+certs/*.key
+certs/*.crt
+certs/*.csr
+certs/*.cnf
+certs/*.ext
