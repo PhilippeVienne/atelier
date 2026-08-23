@@ -1,7 +1,7 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { KANIDM_URL, OAUTH2_CLIENT_ID } from "@/lib/config";
+import { OAUTH2_CLIENT_ID, oidcTokenUrl } from "@/lib/config";
 
 const SESSION_COOKIE = "atelier_session";
 const REFRESH_COOKIE = "atelier_refresh";
@@ -14,10 +14,10 @@ const PKCE_COOKIE = "atelier_oauth_pkce";
 const REFRESH_SKEW_MS = 30_000;
 
 // httpOnly : le token n'est jamais lisible par le JS cote navigateur (seule
-// defense necessaire ici, c'est deja un JWT signe par Kanidm — inutile de
-// le rechiffrer, atelier-api-server le revalide integralement a chaque
-// requete). `secure` desactive en dev pour fonctionner sur http://localhost
-// sans certificat.
+// defense necessaire ici, c'est deja un JWT signe par le fournisseur OIDC —
+// inutile de le rechiffrer, atelier-api-server le revalide integralement a
+// chaque requete). `secure` desactive en dev pour fonctionner sur
+// http://localhost sans certificat.
 const isProd = process.env.NODE_ENV === "production";
 
 function jwtExpiry(token: string): Date | undefined {
@@ -47,10 +47,12 @@ export async function createSession(accessToken: string, refreshToken?: string):
     });
     if (refreshToken) {
       // Pas de date d'expiration explicite ici : la duree de vie du refresh
-      // token est decidee par Kanidm, pas lisible cote client (ce n'est pas
-      // un JWT) — le cookie survit donc jusqu'a la fermeture du navigateur ou
-      // `destroySession()`, et un refresh qui echoue (token revoque/expire
-      // cote Kanidm) declenche de toute facon une vraie deconnexion.
+      // token est decidee par le fournisseur OIDC (Keycloak l'expose en JWT
+      // egalement en pratique, mais rien ne le garantit pour un fournisseur
+      // OIDC generique — pas de decodage suppose ici) — le cookie survit
+      // donc jusqu'a la fermeture du navigateur ou `destroySession()`, et un
+      // refresh qui echoue (token revoque/expire cote fournisseur) declenche
+      // de toute facon une vraie deconnexion.
       store.set(REFRESH_COOKIE, refreshToken, {
         httpOnly: true,
         secure: isProd,
@@ -90,12 +92,14 @@ export async function destroySession(): Promise<void> {
 }
 
 /**
- * Echange le refresh token contre un nouvel access token aupres de Kanidm
- * (`grant_type=refresh_token`) et met a jour la session en place — c'est ce
- * qui rend le front immun a l'expiration du JWT (900s cote Kanidm) tant que
- * l'utilisateur reste actif : plus besoin de se reconnecter manuellement en
- * plein milieu d'une session de terminal/VS Code. Verifie reellement contre
- * un vrai Kanidm (`POST /oauth2/token`, `200`, nouveau `access_token` +
+ * Echange le refresh token contre un nouvel access token aupres du
+ * fournisseur OIDC (`grant_type=refresh_token`, endpoint token standard —
+ * `/protocol/openid-connect/token` pour Keycloak, voir `lib/config.ts`) et
+ * met a jour la session en place — c'est ce qui rend le front immun a
+ * l'expiration du JWT tant que l'utilisateur reste actif : plus besoin de
+ * se reconnecter manuellement en plein milieu d'une session de
+ * terminal/VS Code. Verifie reellement contre un vrai Keycloak (`POST
+ * .../protocol/openid-connect/token`, `200`, nouveau `access_token` +
  * `refresh_token` en rotation).
  */
 async function refreshAccessToken(): Promise<string | null> {
@@ -103,7 +107,7 @@ async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = store.get(REFRESH_COOKIE)?.value;
   if (!refreshToken) return null;
 
-  const res = await fetch(new URL("/oauth2/token", KANIDM_URL), {
+  const res = await fetch(oidcTokenUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -116,7 +120,9 @@ async function refreshAccessToken(): Promise<string | null> {
 
   if (!res || !res.ok) {
     // Refresh token lui-meme expire/revoque : plus rien a tenter, seule une
-    // vraie reconnexion peut resoudre ca — nettoyer plutot que laisser une
+    // vraie reconnexion peut resoudre ca (Keycloak revoque le refresh token
+    // si le SSO session max lifetime est atteint, ou si le token est deja
+    // arrive en fin de vie/deja consomme) — nettoyer plutot que laisser une
     // session zombie qui echouerait silencieusement en boucle.
     await destroySession();
     return null;
@@ -164,7 +170,7 @@ export async function requireAccessToken(): Promise<string> {
 // Cookie ephemere (5 min) correlant /api/auth/login -> /api/auth/callback :
 // state anti-CSRF + code_verifier PKCE. `sameSite: lax` est necessaire (pas
 // `strict`) puisque ce cookie doit survivre a la redirection top-level
-// initiee par Kanidm au retour du flux.
+// initiee par le fournisseur OIDC au retour du flux.
 export async function storePkceParams(state: string, verifier: string): Promise<void> {
   const store = await cookies();
   store.set(PKCE_COOKIE, JSON.stringify({ state, verifier }), {

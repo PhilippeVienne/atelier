@@ -20,7 +20,7 @@ export default async function LoginPage({
         <div className="flex flex-col gap-1.5">
           <h1 className="text-2xl font-semibold tracking-tight">Atelier</h1>
           <p className="text-muted text-sm">
-            Connexion via l&apos;identite Kanidm de votre organisation.
+            Connexion via l&apos;identite unique (OIDC) de votre organisation.
           </p>
         </div>
         {error && (
@@ -32,7 +32,7 @@ export default async function LoginPage({
           href="/api/auth/login"
           className="w-full rounded-full bg-accent text-accent-foreground px-6 py-2.5 font-medium hover:bg-accent-hover transition-colors"
         >
-          Se connecter avec Kanidm
+          Se connecter
         </a>
       </div>
     </main>

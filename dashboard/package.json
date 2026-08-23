@@ -4,7 +4,7 @@
   "license": "AGPL-3.0-only",
   "private": true,
   "scripts": {
-    "dev": "NODE_EXTRA_CA_CERTS=\"${NODE_EXTRA_CA_CERTS:-$(pwd)/../deploy/dev/kanidm/data/ca.pem}\" tsx watch server.ts",
+    "dev": "NODE_EXTRA_CA_CERTS=\"${NODE_EXTRA_CA_CERTS:-$(pwd)/../deploy/dev/pki/ca/atelier-ca.crt}\" tsx watch server.ts",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
     "lint": "eslint"

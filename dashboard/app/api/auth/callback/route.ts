@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { KANIDM_URL, OAUTH2_CLIENT_ID, oauth2RedirectUri } from "@/lib/config";
+import { OAUTH2_CLIENT_ID, oauth2RedirectUri, oidcTokenUrl } from "@/lib/config";
 import { consumePkceParams, createSession } from "@/lib/session";
 
 export async function GET(request: NextRequest) {
@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   const pkce = await consumePkceParams();
 
   if (oauthError) {
-    return loginError(request, `Kanidm a refuse la connexion : ${oauthError}`);
+    return loginError(request, `le fournisseur OIDC a refuse la connexion : ${oauthError}`);
   }
   if (!code || !state) {
     return loginError(request, "reponse OAuth2 incomplete (code/state manquant)");
@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
   }
 
   const redirectUri = oauth2RedirectUri(request.nextUrl.origin);
-  const tokenRes = await fetch(new URL("/oauth2/token", KANIDM_URL), {
+  const tokenRes = await fetch(oidcTokenUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -38,7 +38,10 @@ export async function GET(request: NextRequest) {
 
   if (!tokenRes.ok) {
     const body = await tokenRes.text().catch(() => "");
-    return loginError(request, `echange du code aupres de Kanidm echoue (${tokenRes.status}) ${body}`);
+    return loginError(
+      request,
+      `echange du code aupres du fournisseur OIDC echoue (${tokenRes.status}) ${body}`,
+    );
   }
 
   const { access_token: accessToken, refresh_token: refreshToken } = (await tokenRes.json()) as {
@@ -46,7 +49,7 @@ export async function GET(request: NextRequest) {
     refresh_token?: string;
   };
   if (!accessToken) {
-    return loginError(request, "reponse token Kanidm sans access_token");
+    return loginError(request, "reponse token du fournisseur OIDC sans access_token");
   }
 
   await createSession(accessToken, refreshToken);

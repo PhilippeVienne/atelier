@@ -5,10 +5,10 @@
 // deja tous les assets HTTP normaux) ne peut pas hijacker une connexion pour
 // un upgrade WebSocket. Voir `node_modules/next/dist/docs/01-app/02-guides/custom-server.md`.
 //
-// Le cookie de session (`atelier_session`, JWT Kanidm en clair — voir
-// `lib/session.ts`) est lu ici directement dans les en-tetes de la requete
-// d'upgrade : aucune API Next (`cookies()`) n'est disponible hors du
-// contexte d'une requete geree par le framework.
+// Le cookie de session (`atelier_session`, JWT du fournisseur OIDC en
+// clair — voir `lib/session.ts`) est lu ici directement dans les en-tetes
+// de la requete d'upgrade : aucune API Next (`cookies()`) n'est disponible
+// hors du contexte d'une requete geree par le framework.
 import { createServer } from "node:http";
 import next from "next";
 import { WebSocket, WebSocketServer } from "ws";

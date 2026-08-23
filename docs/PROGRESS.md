@@ -1846,4 +1846,31 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   ```
 - **Statut** : ✅ Validé pour les 3 tâches listées, plus une régression corrigée avant tout impact utilisateur constaté.
 
+### [2026-08-23 22:15] Jalon M1 - Tâches 1.4.1, 1.4.2, 1.4.3 : dashboard découplé de Kanidm, flux OIDC générique (Keycloak)
+- **Composant impacté** : `dashboard/lib/config.ts`, `dashboard/lib/session.ts`, `dashboard/app/api/auth/{login,callback}/route.ts`, `dashboard/app/login/page.tsx`, `dashboard/server.ts`, `dashboard/package.json`, `dashboard/README.md`.
+- **Modifications réalisées** :
+  - `KANIDM_URL`/`ATELIER_KANIDM_URL` renommés en `OIDC_ISSUER_URL`/`ATELIER_OIDC_ISSUER_URL` — cette base pointe maintenant sur l'URL du **realm** (`http://127.0.0.1:8080/realms/atelier` en dev), pas la racine du serveur comme pour Kanidm.
+  - Les chemins Kanidm-spécifiques (`/ui/oauth2`, `/oauth2/token`) remplacés par les chemins OIDC standards de Keycloak, mais rendus **configurables séparément** plutôt que résolus via `/.well-known/openid-configuration` : nouvelles variables `ATELIER_OIDC_AUTHORIZE_PATH` (défaut `/protocol/openid-connect/auth`) et `ATELIER_OIDC_TOKEN_PATH` (défaut `/protocol/openid-connect/token`), combinées à `OIDC_ISSUER_URL` via deux nouvelles fonctions `oidcAuthorizeUrl()`/`oidcTokenUrl()` dans `config.ts`.
+  - **Décision technique notable** : ces deux fonctions concatènent les chaînes (`${base}${path}`) plutôt que d'utiliser `new URL(path, base)` — `OIDC_ISSUER_URL` contient déjà un chemin non-vide (`/realms/atelier`), et `URL(path, base)` avec un `path` commençant par `/` **remplace** le chemin de la base au lieu de l'y ajouter, ce qui aurait silencieusement perdu le segment `/realms/atelier` et cassé toute résolution contre Keycloak.
+  - Choix de l'option (a) du plan (chemins configurables) plutôt que (b) (découverte OIDC dynamique) : évite un appel réseau + cache supplémentaire pour un flux qui n'a besoin que de deux endpoints stables ; un fournisseur OIDC non-Keycloak n'a qu'à surcharger les deux variables de chemin.
+  - `session.ts` (`refreshAccessToken()`) et `callback/route.ts` utilisent tous deux `oidcTokenUrl()` : un seul point de vérité pour le chemin token, plus de duplication Kanidm-spécifique.
+  - `ATELIER_OAUTH2_CLIENT_ID` par défaut passé de `atelier` à `atelier-dashboard` (client public PKCE réellement pré-configuré dans `deploy/dev/keycloak/realm-export.json`).
+  - `package.json` (`NODE_EXTRA_CA_CERTS` du script `dev`) et `README.md` : chemin CA basculé sur `deploy/dev/pki/ca/atelier-ca.crt` (PKI locale multi-services, `deploy/dev/pki/README.md`) — plus de `deploy/dev/kanidm/data/ca.pem`.
+  - Wording UI (`app/login/page.tsx`) et commentaires (`server.ts`, `session.ts`) désormais génériques OIDC au lieu de "Kanidm".
+- **Preuve empirique / Test exécuté** (contre le vrai Keycloak de dev, pas de mock) :
+  ```
+  kubectl port-forward svc/atelier-keycloak-dev 8090:8080 &   # 8080 local deja occupe par un autre service
+  curl http://127.0.0.1:8090/realms/atelier/.well-known/openid-configuration   # 200, confirme les endpoints attendus
+
+  # Flux complet simule via curl, memes endpoints/parametres que login/callback route.ts :
+  # 1) GET /realms/atelier/protocol/openid-connect/auth avec PKCE S256 -> 200, vraie page de login Keycloak
+  # 2) POST du formulaire de login (atelier-test-user) -> 302 avec un vrai `code` d'autorisation
+  # 3) POST /realms/atelier/protocol/openid-connect/token (grant_type=authorization_code, code_verifier) -> 200, access_token + refresh_token
+  # 4) POST /realms/atelier/protocol/openid-connect/token (grant_type=refresh_token) -> 200, nouveau access_token + refresh_token en rotation (exactement le mecanisme de refreshAccessToken())
+
+  cd dashboard && npm run build   # succes (TypeScript strict, Next 16 App Router)
+  cd dashboard && npm run lint    # succes, 0 warning
+  ```
+  Limite rencontrée : le serveur `next dev` (`server.ts`, custom pour le WebSocket) refuse de démarrer une seconde instance sur le même répertoire (verrou Next), et une instance déjà lancée par une session précédente tournait sur le port par défaut sans accès au Keycloak forwardé sur 8090 — la validation du flux HTTP réel a donc été faite via des appels `curl` directs reproduisant fidèlement les requêtes émises par `login/route.ts`/`callback/route.ts`/`session.ts` (mêmes URLs, mêmes paramètres, même grammaire de requête), plutôt qu'un clic navigateur bout-en-bout sur l'app elle-même. Le rechargement à chaud (HMR) de l'instance déjà active a par ailleurs confirmé que la nouvelle URL d'autorisation générée par `login/route.ts` préservait bien le segment `/realms/atelier`.
+- **Statut** : ✅ Validé pour les 3 tâches listées.
 

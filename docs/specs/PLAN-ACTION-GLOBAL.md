@@ -190,9 +190,9 @@ graph TD
 
 ### 4.4. Application `dashboard/` (Next.js 16, OIDC PKCE & BFF)
 * **Fichiers impactés** : `dashboard/lib/config.ts`, `dashboard/lib/session.ts`, `dashboard/app/api/auth/*`
-  - [-/claude-code/sess-6f3eef77-b] **1.4.1** : Renommer et généraliser les variables `ATELIER_KANIDM_URL` en `ATELIER_OIDC_ISSUER_URL`.
-  - [-/claude-code/sess-6f3eef77-b] **1.4.2** : Valider l'interopérabilité avec les endpoints Keycloak (`/protocol/openid-connect/auth`, `/protocol/openid-connect/token`, `/protocol/openid-connect/certs`).
-  - [-/claude-code/sess-6f3eef77-b] **1.4.3** : Adapter le rafraîchissement transparent du JWT (`refresh_token`) via `SessionKeepalive`.
+  - [x] **1.4.1** : Renommer et généraliser les variables `ATELIER_KANIDM_URL` en `ATELIER_OIDC_ISSUER_URL`.
+  - [x] **1.4.2** : Valider l'interopérabilité avec les endpoints Keycloak (`/protocol/openid-connect/auth`, `/protocol/openid-connect/token`, `/protocol/openid-connect/certs`).
+  - [x] **1.4.3** : Adapter le rafraîchissement transparent du JWT (`refresh_token`) via `SessionKeepalive`.
 
 ### 🧪 Tests & Preuves Attendues pour M1
 1. `cargo test -p atelier-common` : Valide la conformité du CRD sans champ Kanidm.
