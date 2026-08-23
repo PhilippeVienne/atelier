@@ -805,6 +805,13 @@ async fn ensure_parent_pod(
         {
             tracing::error!(%err, "provisioning du role OpenBao echoue");
         }
+        // Best-effort et non bloquant, comme le role ci-dessus : `net-proxy`
+        // relit lui-meme ce secret (voir `openbao::ensure_session_auth`), un
+        // echec ici ne fait que retarder la disponibilite du Basic Auth
+        // guest, pas la reconciliation du Workshop.
+        if let Err(err) = openbao::ensure_session_auth(openbao_config, name).await {
+            tracing::error!(%err, "provisioning du secret session_auth OpenBao echoue");
+        }
     }
 
     // Le PVC de cache existe deja (cree lors de la phase BuildingImage),
@@ -1015,6 +1022,7 @@ async fn ensure_parent_pod(
                                 "ATELIER_MCP_GATEWAY_ADDR",
                                 &format!("127.0.0.1:{MCP_GATEWAY_PORT}"),
                             ),
+                            env_var("ATELIER_WORKSHOP_NAME", name),
                         ]
                         .into_iter()
                         .chain(simulator_enabled.then(|| {
@@ -1031,6 +1039,17 @@ async fn ensure_parent_pod(
                             ctx.llm_proxy_addr
                                 .as_ref()
                                 .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr)),
+                        )
+                        // Permet a net-proxy de lire lui-meme le secret
+                        // `session_auth` (mot de passe Basic Auth guest, voir
+                        // `openbao::ensure_session_auth`) via son propre login
+                        // Kubernetes-auth, plutot que de le faire transiter en
+                        // clair par une variable d'environnement du pod — voir
+                        // `crates/net-proxy/src/session_auth.rs`.
+                        .chain(
+                            ctx.openbao
+                                .as_ref()
+                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
                         )
                         .collect::<Vec<_>>(),
                     ),

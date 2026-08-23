@@ -41,14 +41,17 @@ mod dns;
 mod forward;
 mod http;
 mod internal;
+mod metadata;
 mod portforward;
 mod proxy;
+mod session_auth;
 mod tls_sni;
 mod upstream;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use atelier_common::OpenBaoClient;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
@@ -62,6 +65,9 @@ const DEFAULT_DNS_LISTEN_ADDR: &str = "0.0.0.0:53";
 const DEFAULT_VM_ADDR: &str = "127.0.0.1";
 /// Lie a `127.0.0.1` uniquement (voir `crate::admin`) : jamais `0.0.0.0`.
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:9001";
+/// Joignable par la VM comme le reste des ports cote guest (voir
+/// `crate::metadata`) : jamais `127.0.0.1`.
+const DEFAULT_METADATA_ADDR: &str = "0.0.0.0:3132";
 /// Cibles des regles `iptables -t nat ... REDIRECT` posees par
 /// `crates/firecracker::network::NetworkSetup::enable_transparent_gateway` :
 /// la VM n'a jamais besoin de connaitre ces ports (ni meme l'existence de
@@ -177,6 +183,52 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(err) = axum::serve(admin_listener, admin_router).await {
             tracing::error!(%err, "serveur d'administration arrete en erreur");
+        }
+    });
+
+    // Mot de passe de session (Basic Auth guest), voir `crate::session_auth`
+    // et `crate::metadata` : desactive (le guest recoit `503` en boucle) si
+    // OpenBao n'est pas configure, meme convention que le reste des
+    // fonctionnalites optionnelles.
+    let session_auth_cache: session_auth::SessionAuthCache = Arc::new(RwLock::new(None));
+    match (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("ATELIER_WORKSHOP_NAME"),
+    ) {
+        (Ok(openbao_addr), Ok(workshop_name)) => {
+            let client = OpenBaoClient::from_env(openbao_addr, workshop_name);
+            tokio::spawn(session_auth::refresh_loop(
+                client,
+                Arc::clone(&session_auth_cache),
+            ));
+        }
+        (Ok(_), Err(_)) => {
+            // Configuration incoherente (ne devrait pas arriver en
+            // production : le controller pose toujours les deux ensemble,
+            // voir `crates/controller/src/reconcile.rs`) : on degrade
+            // seulement cette fonctionnalite plutot que de faire echouer
+            // tout net-proxy (egress/DNS restent utiles sans Basic Auth
+            // guest).
+            tracing::warn!(
+                "OPENBAO_ADDR present mais ATELIER_WORKSHOP_NAME absent, mot de passe de session desactive"
+            );
+        }
+        (Err(_), _) => {
+            tracing::warn!(
+                "OPENBAO_ADDR absent, net-proxy demarre sans mot de passe de session (Basic Auth guest desactive)"
+            );
+        }
+    }
+    let metadata_addr = std::env::var("ATELIER_NET_PROXY_METADATA_ADDR")
+        .unwrap_or_else(|_| DEFAULT_METADATA_ADDR.to_string());
+    let metadata_router = metadata::router(metadata::MetadataState {
+        session_auth: session_auth_cache,
+    });
+    let metadata_listener = TcpListener::bind(&metadata_addr).await?;
+    tracing::info!(%metadata_addr, "serveur metadata guest (session-auth) en ecoute");
+    tokio::spawn(async move {
+        if let Err(err) = axum::serve(metadata_listener, metadata_router).await {
+            tracing::error!(%err, "serveur metadata guest arrete en erreur");
         }
     });
 

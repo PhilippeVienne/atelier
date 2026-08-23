@@ -168,11 +168,11 @@ graph TD
 * **Fichiers supprimés / modifiés** :
   - [x] **1.3.2** : Supprimer définitivement le fichier `crates/controller/src/kanidm.rs`.
   - [x] **1.3.3** : Dans [`crates/controller/src/lib.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/lib.rs), retirer `pub mod kanidm;`.
-  - [ ] **1.3.4** : Dans [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs) :
-    - Implémenter `generate_session_auth(workshop_name)` : génère un mot de passe aléatoire de 32 caractères et l'écrit dans `secret/data/workshops/<name>/session_auth`.
-  - [ ] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
+  - [x] **1.3.4** : Dans [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs) :
+    - Implémenter `generate_session_auth(workshop_name)` : génère un mot de passe aléatoire de 32 caractères et l'écrit dans `secret/data/workshops/<name>/session_auth`. *(Implémenté sous le nom `ensure_session_auth`, get-or-create idempotent.)*
+  - [x] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
     - Supprimer tout appel à `kanidm`. *(Fait — voir 1.3.2/1.3.3.)*
-    - Injecter le mot de passe de session dans la ligne de commande de lancement de la microVM (`code-server --auth password` et `ttyd --credential atelier:<password>`).
+    - Injecter le mot de passe de session dans la ligne de commande de lancement de la microVM (`code-server --auth password` et `ttyd --credential atelier:<password>`). *(Décision validée avec l'utilisateur : pas d'injection directe dans une ligne de commande — `net-proxy` sert le secret au guest via un endpoint metadata HTTP sur l'adresse link-local `169.254.0.1`, voir `crates/net-proxy/src/session_auth.rs` + `crates/net-proxy/src/metadata.rs`. Le controller ne fait que provisionner le secret OpenBao + les env `OPENBAO_ADDR`/`ATELIER_WORKSHOP_NAME` du conteneur `net-proxy`. Reste, hors de ce dépôt : côté devcontainer (repo `atelier-workspace`), faire consommer `GET http://169.254.0.1:3132/session-auth` par les services `ttyd`/`code-server` au démarrage — voir docs/PROGRESS.md.)*
   - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs), exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
   - [ ] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).
 

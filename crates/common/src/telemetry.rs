@@ -31,7 +31,7 @@ impl Drop for TelemetryGuard {
     }
 }
 
-/// Plusieurs dependances (kube, kanidm_client, ...) compilent chacune leur
+/// Plusieurs dependances (kube, reqwest, ...) compilent chacune leur
 /// propre choix par defaut de provider crypto rustls (`aws-lc-rs`, `ring`),
 /// ce qui rend le choix automatique ambigu au premier usage TLS et fait
 /// paniquer rustls. On tranche explicitement une fois pour tout le

@@ -2,13 +2,13 @@
 //! Kubernetes scopes au ServiceAccount du pod parent de ce Workshop.
 //!
 //! Pont d'identite retenu : la methode d'auth **Kubernetes** d'OpenBao, pas
-//! une federation JWT/OIDC via Kanidm. Le pod parent s'authentifie avec son
-//! propre ServiceAccount (token projete, verifie par OpenBao via TokenReview
+//! une federation JWT/OIDC. Le pod parent s'authentifie avec son propre
+//! ServiceAccount (token projete, verifie par OpenBao via TokenReview
 //! aupres de l'API Kubernetes) : aucun secret a distribuer/stocker pour
-//! amorcer la confiance. Kanidm reste la source de verite pour l'identite
-//! humaine/utilisateur (`WorkshopSpec.owner_subject`) et pour l'identite
-//! d'environnement exposee ailleurs (`WorkshopStatus.kanidm_entity_id`),
-//! mais ce n'est pas elle qui porte ce pont-la.
+//! amorcer la confiance. L'identite humaine/utilisateur
+//! (`WorkshopSpec.owner_subject`) reste portee par le fournisseur OIDC
+//! (Keycloak ou equivalent, voir `crates/api-server/src/auth.rs`), separement
+//! de ce pont-la.
 //!
 //! Le secret que `identity-proxy` recupere ensuite via ce chemin est
 //! lui-meme l'identite de sortie de l'environnement (ex: la cle d'API que
@@ -127,6 +127,70 @@ pub async fn delete_workshop_role(
     .await?;
 
     Ok(())
+}
+
+/// S'assure qu'un secret `session_auth` (mot de passe aleatoire de 32
+/// caracteres) existe pour ce Workshop sous
+/// `secret/data/workshops/<name>/session_auth`, champ `password`, et
+/// renvoie sa valeur. Idempotent : si le secret existe deja (cas courant a
+/// chaque reconcile), il est relu tel quel plutot que regenere — un
+/// resume/reprovisioning ne doit pas invalider le mot de passe deja
+/// communique/utilise par une session en cours.
+///
+/// Ce secret est ensuite lu directement par `net-proxy` (pas transmis en
+/// clair par le controller dans la spec du pod) : `net-proxy` s'authentifie
+/// aupres d'OpenBao avec le meme role Kubernetes-auth que le reste du
+/// Workshop (voir `ensure_workshop_role`, `secret/data/workshops/<name>/*`
+/// couvre deja ce chemin) et l'expose au guest via son endpoint metadata
+/// (`crates/net-proxy/src/session_auth.rs`), a l'adresse link-local
+/// `169.254.0.1` — jamais via une variable d'environnement du pod, qui
+/// serait lisible par quiconque peut lire la spec du pod (`kubectl get pod
+/// -o yaml`), pas seulement le guest.
+pub async fn ensure_session_auth(
+    config: &OpenBaoConfig,
+    workshop_name: &str,
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/v1/secret/data/workshops/{workshop_name}/session_auth",
+        config.addr
+    );
+
+    let existing = client
+        .get(&url)
+        .header("X-Vault-Token", &config.token)
+        .send()
+        .await?;
+
+    if existing.status().is_success() {
+        let body: serde_json::Value = existing.json().await.map_err(|e| {
+            anyhow::anyhow!("reponse de lecture du secret session_auth invalide: {e}")
+        })?;
+        if let Some(password) = body["data"]["data"]["password"].as_str() {
+            return Ok(password.to_string());
+        }
+    }
+
+    let password = generate_session_password();
+    client
+        .put(&url)
+        .header("X-Vault-Token", &config.token)
+        .json(&serde_json::json!({ "data": { "password": password } }))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("ecriture du secret session_auth OpenBao: {e}"))?;
+
+    Ok(password)
+}
+
+fn generate_session_password() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..32)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
 }
 
 async fn delete_if_present(client: &reqwest::Client, url: &str, token: &str) -> anyhow::Result<()> {
