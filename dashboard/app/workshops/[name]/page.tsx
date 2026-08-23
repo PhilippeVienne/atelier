@@ -78,6 +78,16 @@ export default async function WorkshopDetailPage({
               Ouvrir VS Code ↗
             </a>
           )}
+          {canConnect && (
+            <a
+              href={`/workshops/${encodeURIComponent(name)}/terminal/`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-surface-hover transition-colors"
+            >
+              Terminal ↗
+            </a>
+          )}
           {canSuspend && (
             <form action={suspend.bind(null, name)}>
               <button
@@ -114,6 +124,17 @@ export default async function WorkshopDetailPage({
           </h2>
           <EventsLog name={name} initialEvents={events} live={busy} />
         </div>
+
+        {canConnect && (
+          <div className="flex flex-col gap-3">
+            <h2 className="text-sm font-medium text-muted uppercase tracking-wide">Terminal</h2>
+            <iframe
+              src={`/workshops/${encodeURIComponent(name)}/terminal/`}
+              title="Terminal"
+              className="w-full h-[420px] rounded-xl border border-border bg-black"
+            />
+          </div>
+        )}
       </main>
     </>
   );
