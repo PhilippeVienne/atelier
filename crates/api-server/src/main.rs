@@ -7,6 +7,7 @@ use kube::Client;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let _telemetry = atelier_common::telemetry::init("atelier-api-server");
 
     let client = Client::try_default().await?;

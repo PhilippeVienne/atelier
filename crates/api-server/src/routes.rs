@@ -8,8 +8,9 @@ use atelier_common::{DevcontainerSource, Workshop, WorkshopDesiredState, Worksho
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::Client;
 use serde::Deserialize;
@@ -30,6 +31,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/suspend", post(suspend_workshop))
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/portforward", get(crate::portforward::portforward))
+        .route("/v1/workshops/{name}/vscode/{*path}", any(crate::vscode::vscode_proxy))
         .layer(axum::middleware::from_fn_with_state(Arc::new(auth), require_auth))
         .with_state(state);
 
@@ -49,6 +51,23 @@ pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Res
         return Err(ApiError::not_found());
     }
     Ok(())
+}
+
+/// IP du pod parent d'un Workshop en cours d'execution — precondition
+/// commune a `portforward` et `vscode` (les deux relaient vers un port
+/// ouvert par une microVM hebergee dans ce pod, via `net-proxy`).
+pub(crate) async fn resolve_running_pod_ip(state: &AppState, workshop: &Workshop) -> Result<String, ApiError> {
+    let pod_name = workshop
+        .status
+        .as_ref()
+        .and_then(|s| s.pod_name.clone())
+        .ok_or_else(|| ApiError::bad_request("le Workshop n'a pas de pod parent actif (suspendu ?)"))?;
+    let pods: Api<Pod> = Api::namespaced(state.client.clone(), &state.namespace);
+    let pod = pods.get(&pod_name).await?;
+    pod.status
+        .as_ref()
+        .and_then(|s| s.pod_ip.clone())
+        .ok_or_else(|| ApiError::bad_request("le pod parent n'a pas encore d'adresse IP"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +219,10 @@ impl ApiError {
 
     pub(crate) fn bad_request(message: &str) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: message.to_string() }
+    }
+
+    pub(crate) fn bad_gateway(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_GATEWAY, message: message.into() }
     }
 }
 

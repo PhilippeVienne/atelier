@@ -177,7 +177,7 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         match vm.is_running().await {
             Ok(true) => {
                 iter += 1;
-                if iter % 5 == 0 {
+                if iter.is_multiple_of(5) {
                     eprintln!("[diag] toujours en cours, iter={iter}");
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await

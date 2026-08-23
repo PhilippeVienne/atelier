@@ -237,11 +237,8 @@ fn drain_console_pipes(inner: &mut FcVm) {
 
 async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(stream_name: &'static str, reader: R) {
     let mut lines = BufReader::new(reader).lines();
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => tracing::debug!(console = stream_name, %line, "sortie console du guest"),
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::debug!(console = stream_name, %line, "sortie console du guest");
     }
 }
 

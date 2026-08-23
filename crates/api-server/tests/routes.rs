@@ -28,12 +28,28 @@ use tower::ServiceExt;
 const ISSUER: &str = "https://kanidm.test/oauth2/openid/atelier";
 const AUDIENCE: &str = "atelier";
 
+/// `portforward_relays_through_api_server_to_net_proxy` et
+/// `vscode_proxy_relays_http_through_api_server_to_test_server` mutent
+/// toutes les deux des variables d'environnement globales au process
+/// (`ATELIER_NET_PROXY_CONTROL_PORT`/`ATELIER_VSCODE_PORT`, lues par
+/// `atelier-api-server` au moment de traiter une requete) — `cargo test`
+/// execute les tests d'un meme binaire en parallele par defaut, d'ou ce
+/// verrou pour serialiser ces deux-la entre eux (les autres tests de ce
+/// fichier ne touchent pas ces variables).
+static ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn env_lock() -> &'static tokio::sync::Mutex<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 struct TestKey {
     encoding_key: EncodingKey,
     kid: String,
 }
 
 fn generate_test_key() -> TestKey {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let output = std::process::Command::new("openssl")
         .args(["genrsa", "2048"])
         .output()
@@ -62,6 +78,7 @@ fn sign_jwt(key: &TestKey, sub: &str) -> String {
 }
 
 async fn try_client() -> Option<Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Client::try_default().await.ok()
 }
 
@@ -239,6 +256,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
         return;
     }
 
+    let _env_guard = env_lock().lock().await;
     let echo_port = spawn_echo_server().await;
 
     let control_port = pick_free_port().await;
@@ -419,4 +437,385 @@ async fn wait_for_port(port: u16) {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     panic!("net-proxy n'a jamais ouvert son port de controle {port}");
+}
+
+/// Pont HTTP+WS vers "code-server" (`crate::vscode`), en conditions
+/// reelles : meme mise en scene que le test port-forward ci-dessus (vrai
+/// `net-proxy`, vrai Workshop/Pod sur kind), mais la cible finale est ici
+/// un vrai petit serveur HTTP (a la place de `code-server`) — verifie que
+/// le prefixe `/v1/workshops/{name}/vscode` est bien retire avant
+/// d'atteindre cette cible (`code-server` a besoin de recevoir des chemins
+/// qui se comportent comme s'il etait a la racine, voir commentaire de
+/// module de `crates/api-server/src/vscode.rs`).
+#[tokio::test]
+async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
+    let Some(client) = try_client().await else {
+        eprintln!("pas de kubeconfig accessible, test ignore");
+        return;
+    };
+    let net_proxy_bin = std::env::var("ATELIER_TEST_NET_PROXY_BIN")
+        .unwrap_or_else(|_| "../../target/debug/atelier-net-proxy".to_string());
+    if !std::path::Path::new(&net_proxy_bin).exists() {
+        eprintln!("binaire net-proxy introuvable ({net_proxy_bin}), test ignore (cargo build -p atelier-net-proxy)");
+        return;
+    }
+
+    let _env_guard = env_lock().lock().await;
+    let (stub_port, observed_path) = spawn_stub_http_server("bonjour depuis code-server").await;
+
+    let control_port = pick_free_port().await;
+    let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
+        .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
+        .env("ATELIER_NET_PROXY_CONTROL_ADDR", format!("127.0.0.1:{control_port}"))
+        .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
+        .env("ATELIER_VM_ADDR", "127.0.0.1")
+        .env("ATELIER_EGRESS_ALLOWLIST", "*")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("lancement du binaire net-proxy");
+    wait_for_port(control_port).await;
+
+    let key = generate_test_key();
+    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    jwk.common.key_id = Some(key.kid.clone());
+    let auth = AuthState::Configured {
+        issuer: ISSUER.to_string(),
+        audience: AUDIENCE.to_string(),
+        jwks: JwkSet { keys: vec![jwk] },
+    };
+    let owner_token = sign_jwt(&key, "vscode-owner@test.atelier");
+
+    let namespace = "default".to_string();
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
+    let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), &namespace);
+    let name = format!("api-vscode-test-{}", std::process::id());
+    let pod_name = format!("{name}-parent");
+
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+
+    let workshop = Workshop::new(&name, atelier_common::WorkshopSpec {
+        devcontainer: atelier_common::DevcontainerSource {
+            repo: "https://example.invalid/repo.git".to_string(),
+            revision: "HEAD".to_string(),
+            config_path: ".devcontainer/devcontainer.json".to_string(),
+        },
+        resources: atelier_common::WorkshopResources { cpu: "1".into(), memory: "512Mi".into(), disk: None },
+        egress_allowlist: vec![],
+        tools: vec![],
+        identity_injection_rules: vec![],
+        owner_subject: "vscode-owner@test.atelier".to_string(),
+        desired_state: atelier_common::WorkshopDesiredState::Running,
+    });
+    workshops.create(&Default::default(), &workshop).await.expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "status": { "phase": "Running", "podName": pod_name } })),
+        )
+        .await
+        .expect("ecriture de status.podName");
+
+    // Voir le commentaire equivalent du test port-forward : un node_name
+    // inexistant garde le Pod `Pending` a jamais, pour que notre
+    // patch_status manuel sur `podIP` ne soit jamais ecrase par un vrai
+    // kubelet.
+    let pod = k8s_openapi::api::core::v1::Pod {
+        metadata: kube::api::ObjectMeta { name: Some(pod_name.clone()), namespace: Some(namespace.clone()), ..Default::default() },
+        spec: Some(k8s_openapi::api::core::v1::PodSpec {
+            node_name: Some("atelier-test-fake-node".into()),
+            containers: vec![k8s_openapi::api::core::v1::Container {
+                name: "placeholder".into(),
+                image: Some("registry.k8s.io/pause:3.9".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    pods.create(&Default::default(), &pod).await.expect("creation du Pod");
+    pods.patch_status(
+        &pod_name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({ "status": { "podIP": "127.0.0.1" } })),
+    )
+    .await
+    .expect("ecriture de status.podIP");
+
+    // SAFETY (test) : proteges par `env_lock()` (voir sa doc) contre la
+    // concurrence avec le test port-forward, seul autre test de ce binaire
+    // a muter des variables d'environnement globales.
+    unsafe {
+        std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string());
+        std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
+    }
+
+    let app = routes::router(AppState { client: client.clone(), namespace: namespace.clone() }, auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let http_client = reqwest::Client::new();
+    let response = http_client
+        .get(format!("http://127.0.0.1:{api_port}/v1/workshops/{name}/vscode/static/foo.js"))
+        .header("Authorization", format!("Bearer {owner_token}"))
+        .send()
+        .await
+        .expect("requete vers le pont vscode");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(body, "bonjour depuis code-server");
+
+    assert_eq!(
+        observed_path.lock().await.as_deref(),
+        Some("GET /static/foo.js HTTP/1.1"),
+        "le prefixe /v1/workshops/{{name}}/vscode doit avoir ete retire avant d'atteindre la cible"
+    );
+
+    server.abort();
+    net_proxy.start_kill().ok();
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = workshops
+        .patch(&name, &PatchParams::default(), &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })))
+        .await;
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+}
+
+/// Meme pont que ci-dessus, mais pour le chemin d'upgrade WebSocket (celui
+/// qu'emprunte le canal "live" propre de `code-server`, pas seulement ses
+/// assets statiques) : verifie que `hyper::upgrade::on` cote requete
+/// entrante ET cote reponse amont sont bien relies par
+/// `tokio::io::copy_bidirectional` (`crates/api-server/src/vscode.rs`).
+/// Client volontairement en TCP brut (pas un vrai client WebSocket) : on ne
+/// teste ici que le relai d'octets bidirectionnel une fois upgrade, pas le
+/// framing WebSocket lui-meme (deja hors de portee de ce pont, qui ne
+/// reinterprete jamais les frames — meme philosophie que `net-proxy` pour
+/// `CONNECT`).
+#[tokio::test]
+async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
+    let Some(client) = try_client().await else {
+        eprintln!("pas de kubeconfig accessible, test ignore");
+        return;
+    };
+    let net_proxy_bin = std::env::var("ATELIER_TEST_NET_PROXY_BIN")
+        .unwrap_or_else(|_| "../../target/debug/atelier-net-proxy".to_string());
+    if !std::path::Path::new(&net_proxy_bin).exists() {
+        eprintln!("binaire net-proxy introuvable ({net_proxy_bin}), test ignore (cargo build -p atelier-net-proxy)");
+        return;
+    }
+
+    let _env_guard = env_lock().lock().await;
+    let stub_port = spawn_stub_upgrade_echo_server().await;
+
+    let control_port = pick_free_port().await;
+    let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
+        .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
+        .env("ATELIER_NET_PROXY_CONTROL_ADDR", format!("127.0.0.1:{control_port}"))
+        .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
+        .env("ATELIER_VM_ADDR", "127.0.0.1")
+        .env("ATELIER_EGRESS_ALLOWLIST", "*")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("lancement du binaire net-proxy");
+    wait_for_port(control_port).await;
+
+    let key = generate_test_key();
+    let mut jwk = Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    jwk.common.key_id = Some(key.kid.clone());
+    let auth = AuthState::Configured {
+        issuer: ISSUER.to_string(),
+        audience: AUDIENCE.to_string(),
+        jwks: JwkSet { keys: vec![jwk] },
+    };
+    let owner_token = sign_jwt(&key, "vscode-ws-owner@test.atelier");
+
+    let namespace = "default".to_string();
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
+    let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), &namespace);
+    let name = format!("api-vscode-ws-test-{}", std::process::id());
+    let pod_name = format!("{name}-parent");
+
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+
+    let workshop = Workshop::new(&name, atelier_common::WorkshopSpec {
+        devcontainer: atelier_common::DevcontainerSource {
+            repo: "https://example.invalid/repo.git".to_string(),
+            revision: "HEAD".to_string(),
+            config_path: ".devcontainer/devcontainer.json".to_string(),
+        },
+        resources: atelier_common::WorkshopResources { cpu: "1".into(), memory: "512Mi".into(), disk: None },
+        egress_allowlist: vec![],
+        tools: vec![],
+        identity_injection_rules: vec![],
+        owner_subject: "vscode-ws-owner@test.atelier".to_string(),
+        desired_state: atelier_common::WorkshopDesiredState::Running,
+    });
+    workshops.create(&Default::default(), &workshop).await.expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "status": { "phase": "Running", "podName": pod_name } })),
+        )
+        .await
+        .expect("ecriture de status.podName");
+
+    let pod = k8s_openapi::api::core::v1::Pod {
+        metadata: kube::api::ObjectMeta { name: Some(pod_name.clone()), namespace: Some(namespace.clone()), ..Default::default() },
+        spec: Some(k8s_openapi::api::core::v1::PodSpec {
+            node_name: Some("atelier-test-fake-node".into()),
+            containers: vec![k8s_openapi::api::core::v1::Container {
+                name: "placeholder".into(),
+                image: Some("registry.k8s.io/pause:3.9".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    pods.create(&Default::default(), &pod).await.expect("creation du Pod");
+    pods.patch_status(
+        &pod_name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({ "status": { "podIP": "127.0.0.1" } })),
+    )
+    .await
+    .expect("ecriture de status.podIP");
+
+    unsafe {
+        std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string());
+        std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
+    }
+
+    let app = routes::router(AppState { client: client.clone(), namespace: namespace.clone() }, auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", api_port)).await.unwrap();
+    let request = format!(
+        "GET /v1/workshops/{name}/vscode/socket HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         Authorization: Bearer {owner_token}\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    );
+    socket.write_all(request.as_bytes()).await.unwrap();
+
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), socket.read(&mut buf))
+        .await
+        .expect("reponse d'upgrade avant timeout")
+        .unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        response.starts_with("HTTP/1.1 101"),
+        "reponse d'upgrade attendue, obtenu: {response:?}"
+    );
+
+    socket.write_all(b"ping-through-tunnel").await.unwrap();
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), socket.read(&mut buf))
+        .await
+        .expect("echo avant timeout")
+        .unwrap();
+    assert_eq!(
+        &buf[..n],
+        b"ping-through-tunnel",
+        "les octets envoyes apres upgrade doivent etre echoes par le stub a travers tout le tunnel"
+    );
+
+    server.abort();
+    net_proxy.start_kill().ok();
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = workshops
+        .patch(&name, &PatchParams::default(), &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })))
+        .await;
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+}
+
+/// Stub "code-server" pour le test d'upgrade : repond `101` a la premiere
+/// requete (sans valider `Sec-WebSocket-Key`, inutile ici — voir
+/// commentaire du test), puis echo brut de tout ce qui suit.
+async fn spawn_stub_upgrade_echo_server() -> u16 {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else { return };
+        let mut reader = BufReader::new(socket);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line).await {
+                Ok(0) => return,
+                Ok(_) if line == "\r\n" => break,
+                Ok(_) => continue,
+                Err(_) => return,
+            }
+        }
+        let mut socket = reader.into_inner();
+        let response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        if socket.write_all(response.as_bytes()).await.is_err() {
+            return;
+        }
+        let mut buf = vec![0u8; 4096];
+        loop {
+            match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if socket.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    port
+}
+
+/// Serveur HTTP minimal (une seule requete acceptee) qui joue le role de
+/// `code-server` pour ce test : enregistre la ligne de requete recue (pour
+/// verifier le retrait du prefixe) et repond toujours le meme corps.
+async fn spawn_stub_http_server(response_body: &'static str) -> (u16, std::sync::Arc<tokio::sync::Mutex<Option<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let observed = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let observed_clone = observed.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else { return };
+        let mut reader = BufReader::new(socket);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {
+            return;
+        }
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) if line == "\r\n" => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        *observed_clone.lock().await = Some(request_line.trim_end().to_string());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let mut socket = reader.into_inner();
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+    (port, observed)
 }
