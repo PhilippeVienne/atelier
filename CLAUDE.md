@@ -24,4 +24,5 @@ cd dashboard && npm run build
 
 1. **Architecture** : Ne déplacez pas la logique métier hors de sa crate dédiée (ex: la logique Firecracker dans `crates/firecracker`, le routage réseau dans `crates/net-proxy`).
 2. **Qualité & Sécurité** : 0 `unsafe` en production, pas de `.unwrap()` dans le code opérationnel.
-3. **Multi-agents** : Exécutez `git status` avant de commiter pour préserver les modifications apportées par d'autres agents travaillant en parallèle.
+3. **Commits Git** : Ne JAMAIS inclure la ligne `Co-authored-by: Claude` dans les messages de commit git.
+4. **Multi-agents** : Exécutez `git status` avant de commiter pour préserver les modifications apportées par d'autres agents travaillant en parallèle.

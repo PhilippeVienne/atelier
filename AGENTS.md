@@ -40,8 +40,9 @@ Ce document régit les règles de développement et de collaboration applicables
 - Respectez la séparation App Router, les Server Components et les Server Actions.
 - Le token de session JWT est stocké dans un cookie `httpOnly` et relayé côté serveur vers `api-server`. Ne l'exposez jamais directement au JavaScript client du navigateur.
 
-### Formatage et Linter
-Avant tout commit ou soumission :
+### Formatage, Linter et Commits
+- Ne pas inclure de ligne `Co-authored-by` dans les messages de commit git.
+- Avant tout commit ou soumission :
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
