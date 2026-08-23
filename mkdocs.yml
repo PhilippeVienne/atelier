@@ -46,6 +46,7 @@ markdown_extensions:
 
 nav:
   - Accueil: index.md
+  - Guide Utilisateur: user-guide.md
   - Architecture:
       - Présentation Globale: ARCHITECTURE.md
       - Sécurité Réseau: architecture/network-security.md
