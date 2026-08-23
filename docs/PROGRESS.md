@@ -36,8 +36,10 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock, 3 tools) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao), `request_egress` (elargissement a chaud de l'allowlist `net-proxy`) et `enable_simulator` (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous |
 | `dashboard` | Fonctionnel (CRUD + page de gestion + "ouvrir VS Code") | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Page de detail par Workshop + bouton "Ouvrir VS Code" (nouvel onglet, `code-server` via le pont HTTP+WS de `api-server`, voir section dediee) ; serveur Next custom (`server.ts`) pour le WebSocket propre de `code-server`. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
+| `llm-proxy` (LiteLLM, service global du cluster) | Fonctionnel (base) | `deploy/dev/llm-proxy/` (Deployment/Service, meme niveau qu'OpenBao, pas un sidecar par pod) traduit les appels Anthropic Messages API de Claude Code vers DeepSeek par defaut (alias `sonnet-premium` vers le vrai Anthropic). Alias `net-proxy` `llm-proxy` + injection `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` dans `/etc/environment` (`image-builder`), toujours actifs des que configures cote `controller`. Verifie reellement contre kind : `/health/readiness` 200, `/v1/models` et `/v1/messages` traduits et routes jusqu'a DeepSeek a travers l'alias `net-proxy` (401 reel de DeepSeek avec une cle factice, preuve du pipeline complet). Voir section dediee "LLM Proxy" ci-dessous |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
-| Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
+| Repo GitHub `atelier` | Publie (public) | Controller/api-server/dashboard/etc — CI GitHub Actions, images GHCR, site de doc MkDocs, licence AGPLv3 |
+| Repo GitHub `atelier-workspace` | Publie (public) | Devcontainer de demo `ministack-workshop` (docker-in-docker, ministack, Claude Code, code-server), depot dedie separe pour que `image-builder` le clone sans identifiants git |
 
 ## Ce qui a ete construit cette session (resume chronologique)
 
@@ -960,6 +962,76 @@ multiplexe, pas HTTP-aware).
   8080 par convention (`ATELIER_VSCODE_PORT` overridable, surtout utile
   pour les tests), pas encore un champ du CRD `Workshop`.
 
+## LLM Proxy : LiteLLM global (DeepSeek low-cost + Anthropic premium)
+
+Objectif : reduire le cout d'inference de Claude Code (et de tout autre
+agent) tournant dans les devcontainers en routant ses appels Anthropic
+Messages API vers DeepSeek par defaut, avec un alias explicite vers le vrai
+Anthropic Sonnet pour les taches complexes. Architecture proposee par
+l'utilisateur, adaptee aux invariants existants (la microVM ne parle
+jamais directement a un service, seulement a `net-proxy` ; ici, service
+**global du cluster**, pas un sidecar par pod, decision explicite de
+l'utilisateur — contrairement au sidecar `simulator` de `mcp-gateway`).
+
+- **Fait verifie, pas suppose** (documentation officielle Claude Code et
+  LiteLLM) : Claude Code ne parle que le format Anthropic Messages API
+  (`/v1/messages`), aucun support multi-fournisseur natif — un vrai proxy
+  traducteur est necessaire pour DeepSeek/OpenAI/Grok. `ANTHROPIC_BASE_URL`/
+  `ANTHROPIC_AUTH_TOKEN` sont les variables standard pour pointer vers
+  n'importe quel gateway compatible. LiteLLM (MIT, `ghcr.io/berriai/litellm`)
+  est l'outil etabli de l'ecosysteme pour cette traduction — meme logique
+  de reuse que `ministack` pour AWS, pas de traducteur maison.
+- **`deploy/dev/llm-proxy/`** (nouveau, meme niveau qu'`deploy/dev/openbao/`) :
+  ConfigMap (`config.yaml`, le `model_list` — `claude-3-5-sonnet-20241022`
+  et `deepseek-dev` -> `deepseek/deepseek-chat`, `sonnet-premium` -> le vrai
+  `anthropic/claude-3-5-sonnet-20241022`), Secret (`DEEPSEEK_API_KEY`,
+  `ANTHROPIC_API_KEY`, `LITELLM_MASTER_KEY`), Deployment+Service
+  (`ghcr.io/berriai/litellm:main-stable`, tag epingle).
+- **`crates/net-proxy/src/internal.rs`** : 4e alias fixe `llm-proxy`
+  (`ATELIER_LLM_PROXY_ADDR`), meme mecanisme qu'`identity-proxy`/
+  `mcp-gateway`/`registry` — toujours actif des que configure.
+- **`crates/controller`** : `ReconcileCtx.llm_proxy_addr`/
+  `llm_proxy_auth_token` (`Option`, meme convention "desactive si absent"
+  qu'`openbao`). Cable **inconditionnellement** sur le conteneur `net-proxy`
+  du pod parent (pas gate par `Workshop.spec.tools`, contrairement a
+  `enable_simulator` — decision explicite : service global, toujours
+  present). Le Job `image-builder` recoit `ATELIER_LLM_PROXY_AUTH_TOKEN`
+  (necessaire au moment du build).
+- **`crates/image-builder`** : extension de `inject_net_proxy_config`
+  (meme fonction deja verifiee pour `HTTP_PROXY`) — ajoute
+  `ANTHROPIC_BASE_URL=http://llm-proxy`/`ANTHROPIC_AUTH_TOKEN=<jeton>`/
+  `ANTHROPIC_API_KEY=` (vide, desactive toute cle locale) dans
+  `/etc/environment` quand le service est configure.
+- **Bug reel trouve en testant, corrige** : `net-proxy` relayait la requete
+  recue de la VM verbatim (forme absolue, `GET http://llm-proxy/... HTTP/1.1`)
+  vers les alias internes — fonctionnait avec `mcp-gateway`/`identity-proxy`
+  (axum/hyper, tolerants aux deux formes), mais `uvicorn` (serveur ASGI de
+  LiteLLM) ne sait pas parser une cible en forme absolue et repondait `404`
+  sur **tout**. Corrige par `http::to_origin_form` (nouveau) : reecrit la
+  ligne de requete en forme origine (methode + chemin, en-tetes inchanges)
+  avant de relayer vers un alias interne/`simulator` — verbatim inchange
+  pour `identity-proxy` et l'egress normal, qui en ont explicitement besoin
+  (voir leur propre commentaire). Aurait pu affecter n'importe quel futur
+  alias non base sur axum/hyper, pas seulement `llm-proxy`.
+- **Verifie reellement contre kind, sans mock** : Deployment `Running`
+  (probes de sante LiteLLM passees sans le bug connu `BerriAI/litellm#8795`),
+  `curl` direct sur le Service — `/health/readiness` 200, `/v1/models`
+  liste les 3 alias configures, `POST /v1/messages` avec `model:
+  deepseek-dev` traduit et route reellement jusqu'a DeepSeek (401 reel de
+  DeepSeek avec une cle de test factice — preuve que la traduction de
+  protocole et le routage fonctionnent de bout en bout, pas seulement que
+  LiteLLM demarre). Puis a travers l'alias `net-proxy` reel (`--proxy`) :
+  memes resultats, confirmant le cablage complet cote atelier.
+- **Limites assumees** (documentees dans `deploy/dev/llm-proxy/README.md`) :
+  un seul jeton partage par tous les Workshops (pas de cles virtuelles
+  LiteLLM par Workshop dans ce lot) ; pas de prompt caching explicitement
+  configure (important pour tenir un budget bas, a activer separement).
+- **Reste a faire** : verification de bout en bout avec une vraie cle
+  DeepSeek (non disponible dans cet environnement de developpement) et
+  depuis l'interieur d'une vraie microVM agent (meme limite que les autres
+  sections de ce document tant qu'aucun `Workshop` complet n'a ete boote
+  avec `ministack-workshop`/`atelier-workspace`).
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -1324,8 +1396,11 @@ multiplexe, pas HTTP-aware).
    [`atelier-workspace`](https://github.com/PhilippeVienne/atelier-workspace)
    (depot desormais public, plus de blocage d'auth git) pour la premiere
    validation reellement complete du pont "Ouvrir VS Code" de bout en bout.
-10. LLM Proxy (Claude Code, ou tout autre agent, a besoin d'inference —
-    routage vers OpenAI/Grok/Vertex/Bedrock, credentials injectes selon le
-    meme modele qu'`identity-proxy`/`mcp-gateway`) : besoin identifie cette
-    session, conception a faire separement (voir memoire de session,
-    non commitee ici).
+10. ~~LLM Proxy~~ — **base faite cette session** (LiteLLM global, DeepSeek
+    par defaut + Anthropic premium), voir section dediee ci-dessus. Reste
+    ouvert : verification avec une vraie cle DeepSeek et depuis l'interieur
+    d'une vraie microVM agent ; cles virtuelles LiteLLM par Workshop (pas
+    de scoping/isolation de budget dans ce lot) ; prompt caching non
+    configure ; OpenAI/Grok non couverts (DeepSeek/Anthropic uniquement
+    pour l'instant, le `model_list` LiteLLM est extensible sans changement
+    de code cote atelier).
