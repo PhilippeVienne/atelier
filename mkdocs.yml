@@ -5,28 +5,37 @@ site_author: Philippe Vienne
 theme:
   name: material
   language: fr
+  font:
+    text: Plus Jakarta Sans
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: indigo
-      accent: blue
+      accent: cyan
       toggle:
         icon: material/brightness-7
         name: Mode sombre
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: indigo
-      accent: blue
+      accent: cyan
       toggle:
         icon: material/brightness-4
         name: Mode clair
   features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.top
+    - navigation.instant
     - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - toc.follow
     - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
     - content.code.annotate
 
@@ -50,6 +59,9 @@ markdown_extensions:
 
 extra_javascript:
   - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - 🏠 Présentation: index.md
