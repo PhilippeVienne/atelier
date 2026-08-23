@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: atelier-controller
+  namespace: atelier-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: atelier-controller-role
+rules:
+  - apiGroups: ["atelier.dev"]
+    resources: ["workshops", "workshops/status", "workshops/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: atelier-controller-binding
+subjects:
+  - kind: ServiceAccount
+    name: atelier-controller
+    namespace: atelier-system
+roleRef:
+  kind: ClusterRole
+  name: atelier-controller-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atelier-controller
+  namespace: atelier-system
+  labels:
+    app.kubernetes.io/name: atelier-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atelier-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: atelier-controller
+    spec:
+      serviceAccountName: atelier-controller
+      containers:
+        - name: controller
+          image: ghcr.io/philippevienne/atelier-controller:latest
+          imagePullPolicy: Always
+          env:
+            - name: RUST_LOG
+              value: "info,atelier_controller=debug"
+            - name: ATELIER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

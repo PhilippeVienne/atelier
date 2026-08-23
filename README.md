@@ -5,26 +5,31 @@ CLI, etc.) : chaque agent tourne dans une microVM Firecracker orchestree par
 un pod Kubernetes, avec un tooling dedie (proxy reseau, injection d'identite,
 passerelle MCP) qui mediatise tous ses acces au monde exterieur.
 
-Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le detail des
-composants et du modele de securite, et [docs/PROGRESS.md](docs/PROGRESS.md)
-pour l'etat d'avancement courant (composant par composant, contre de la
-vraie infrastructure, pas de mocks).
+Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le détail des composants et du modèle de sécurité, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) pour le guide de déploiement et CI/CD (GHCR), et [docs/PROGRESS.md](docs/PROGRESS.md) pour l'état d'avancement courant.
 
-## Structure du depot
+## 🚀 CI/CD & Images Docker (GHCR)
 
-- `crates/common` — types partages, dont le CRD `Workshop`
-- `crates/controller` — operateur Kubernetes (reconciliation des `Workshop`)
+Les workflows GitHub Actions (`.github/workflows/`) assurent le contrôle de qualité et la publication des conteneurs :
+- **CI (`ci.yml`)** : `cargo fmt`, `cargo clippy`, `cargo test`, lint & build dashboard.
+- **Docker GHCR (`docker-ghcr.yml`)** : publication automatique des 10 composants sur `ghcr.io/philippevienne/atelier-<composant>:latest`.
+
+## 📦 Structure du dépôt
+
+- `crates/common` — types partagés, dont le CRD `Workshop`
+- `crates/controller` — opérateur Kubernetes (réconciliation des `Workshop`)
 - `crates/api-server` — API externe (auth JWT, CRUD de `Workshop`)
 - `crates/image-builder` — devcontainer.json → rootfs Firecracker (cache content-addressed)
 - `crates/vm-supervisor` — cycle de vie de la microVM Firecracker (pod parent)
-- `crates/firecracker` — lib partagee jailer/boot/snapshot-restore + reseau TAP link-local, utilisee par `vm-supervisor` et `builder-vm-init`
-- `crates/builder-vm-init` — init de la microVM jetable qui isole `envbuilder` (pipeline `image-builder`)
-- `crates/net-proxy` — proxy de sortie reseau avec allowlist (egress HTTP/CONNECT, resolveur DNS, port-forward kubelet-style) (pod parent)
-- `crates/identity-proxy` — injection de credentials OpenBao dans les appels sortants de l'agent (pod parent)
-- `crates/mcp-gateway` — serveur MCP expose a l'agent (pod parent)
-- `crds/` — manifestes CRD generes (`cargo run -p atelier-controller --bin crdgen`)
+- `crates/firecracker` — lib partagée jailer/boot/snapshot-restore + réseau TAP link-local
+- `crates/builder-vm-init` — init de la microVM jetable qui isole `envbuilder`
+- `crates/net-proxy` — proxy de sortie réseau avec allowlist (egress HTTP/CONNECT, DNS, port-forward)
+- `crates/identity-proxy` — injection de credentials OpenBao dans les appels sortants
+- `crates/mcp-gateway` — serveur MCP exposé à l'agent
+- `crates/kvm-device-plugin` — device plugin Kubernetes pour `/dev/kvm`
+- `crds/` — manifestes CRD générés (`cargo run -p atelier-controller --bin crdgen`)
 - `dashboard/` — dashboard Next.js (admin + utilisateur final)
-- `deploy/` — manifestes de deploiement du control plane
+- `deploy/manifests/` — manifestes Kubernetes prêts pour le déploiement en production
+- `deploy/dev/` — environnement de développement local (Kind, OpenBao, Kanidm, OTLP)
 
 ## Developpement
 
