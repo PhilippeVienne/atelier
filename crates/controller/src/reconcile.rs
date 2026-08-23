@@ -47,6 +47,48 @@ const KVM_DEVICE_PLUGIN_RESOURCE: &str = "atelier.dev/kvm";
 /// volumes `hostPath`, desormais inutiles (le kubelet configure lui-meme le
 /// device cgroup du conteneur d'apres les `DeviceSpec` renvoyes par
 /// `Allocate()` du device plugin).
+/// Convertit `Workshop.spec.resources.memory` (format quantite Kubernetes,
+/// ex. `"512Mi"`/`"2Gi"`/`"1G"`) en Mio pour `ATELIER_VM_MEM_MIB` — sans
+/// cette conversion, la microVM bootait toujours avec le defaut de
+/// `vm-supervisor` (256 Mi) quelle que soit la valeur declaree dans le
+/// `Workshop`, jamais assez pour un devcontainer reel (systemd +
+/// docker-in-docker + code-server). `None` si le format n'est pas reconnu :
+/// laisse alors `vm-supervisor` appliquer son propre defaut plutot que de
+/// faire echouer toute la reconciliation pour une valeur mal formee.
+fn memory_to_mib(memory: &str) -> Option<u32> {
+    let memory = memory.trim();
+    let (digits, mebibytes_per_unit) = if let Some(n) = memory.strip_suffix("Gi") {
+        (n, 1024.0)
+    } else if let Some(n) = memory.strip_suffix("Mi") {
+        (n, 1.0)
+    } else if let Some(n) = memory.strip_suffix("Ki") {
+        (n, 1.0 / 1024.0)
+    } else if let Some(n) = memory.strip_suffix('G') {
+        (n, 1_000_000_000.0 / (1024.0 * 1024.0))
+    } else if let Some(n) = memory.strip_suffix('M') {
+        (n, 1_000_000.0 / (1024.0 * 1024.0))
+    } else if let Some(n) = memory.strip_suffix('K') {
+        (n, 1_000.0 / (1024.0 * 1024.0))
+    } else {
+        (memory, 1.0 / (1024.0 * 1024.0))
+    };
+    let value: f64 = digits.parse().ok()?;
+    Some((value * mebibytes_per_unit).round() as u32)
+}
+
+/// Convertit `Workshop.spec.resources.cpu` (format quantite Kubernetes,
+/// ex. `"2"`/`"500m"`) en nombre de vCPU Firecracker (`ATELIER_VM_VCPU_COUNT`) —
+/// arrondi au superieur, au moins 1.
+fn cpu_to_vcpu_count(cpu: &str) -> Option<u8> {
+    let cpu = cpu.trim();
+    let cores: f64 = if let Some(n) = cpu.strip_suffix('m') {
+        n.parse::<f64>().ok()? / 1000.0
+    } else {
+        cpu.parse().ok()?
+    };
+    Some(cores.ceil().max(1.0) as u8)
+}
+
 fn kvm_device_resources() -> ResourceRequirements {
     ResourceRequirements {
         limits: Some(BTreeMap::from([(
@@ -951,22 +993,34 @@ async fn ensure_parent_pod(
                 Container {
                     name: "vm-supervisor".into(),
                     image: Some(VM_SUPERVISOR_IMAGE.into()),
-                    env: Some(vec![
-                        env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
-                        env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
-                        env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
-                        env_var(
-                            "ATELIER_NET_PROXY_TRANSPARENT_HTTP_PORT",
-                            &NET_PROXY_TRANSPARENT_HTTP_PORT.to_string(),
-                        ),
-                        env_var(
-                            "ATELIER_NET_PROXY_TRANSPARENT_TLS_PORT",
-                            &NET_PROXY_TRANSPARENT_TLS_PORT.to_string(),
-                        ),
-                        env_var("ATELIER_VM_CHROOT_BASE_DIR", JAILER_CHROOT_BASE_DIR),
-                        env_var("ATELIER_VM_JAIL_ID", VM_JAIL_ID),
-                        env_var("ATELIER_VM_VSOCK_UDS_FILENAME", VM_VSOCK_UDS_FILENAME),
-                    ]),
+                    env: Some(
+                        vec![
+                            env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
+                            env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
+                            env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
+                            env_var(
+                                "ATELIER_NET_PROXY_TRANSPARENT_HTTP_PORT",
+                                &NET_PROXY_TRANSPARENT_HTTP_PORT.to_string(),
+                            ),
+                            env_var(
+                                "ATELIER_NET_PROXY_TRANSPARENT_TLS_PORT",
+                                &NET_PROXY_TRANSPARENT_TLS_PORT.to_string(),
+                            ),
+                            env_var("ATELIER_VM_CHROOT_BASE_DIR", JAILER_CHROOT_BASE_DIR),
+                            env_var("ATELIER_VM_JAIL_ID", VM_JAIL_ID),
+                            env_var("ATELIER_VM_VSOCK_UDS_FILENAME", VM_VSOCK_UDS_FILENAME),
+                        ]
+                        .into_iter()
+                        .chain(
+                            memory_to_mib(&workshop.spec.resources.memory)
+                                .map(|mib| env_var("ATELIER_VM_MEM_MIB", &mib.to_string())),
+                        )
+                        .chain(
+                            cpu_to_vcpu_count(&workshop.spec.resources.cpu)
+                                .map(|vcpus| env_var("ATELIER_VM_VCPU_COUNT", &vcpus.to_string())),
+                        )
+                        .collect::<Vec<_>>(),
+                    ),
                     volume_mounts: Some(vec![cache_mount, jailer_mount.clone()]),
                     // /dev/kvm et /dev/net/tun alloues via le device plugin
                     // (`atelier.dev/kvm`, voir `kvm_device_resources`),
@@ -1178,4 +1232,49 @@ async fn update_status(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod resource_conversion_tests {
+    use super::{cpu_to_vcpu_count, memory_to_mib};
+
+    #[test]
+    fn memory_binary_suffixes() {
+        assert_eq!(memory_to_mib("512Mi"), Some(512));
+        assert_eq!(memory_to_mib("2Gi"), Some(2048));
+        assert_eq!(memory_to_mib("1024Ki"), Some(1));
+    }
+
+    #[test]
+    fn memory_decimal_suffixes() {
+        assert_eq!(memory_to_mib("1G"), Some(954));
+        assert_eq!(memory_to_mib("500M"), Some(477));
+    }
+
+    #[test]
+    fn memory_bare_bytes() {
+        assert_eq!(memory_to_mib("1048576"), Some(1));
+    }
+
+    #[test]
+    fn memory_malformed_returns_none() {
+        assert_eq!(memory_to_mib("not-a-quantity"), None);
+    }
+
+    #[test]
+    fn cpu_whole_cores() {
+        assert_eq!(cpu_to_vcpu_count("1"), Some(1));
+        assert_eq!(cpu_to_vcpu_count("2"), Some(2));
+    }
+
+    #[test]
+    fn cpu_millicores_round_up_to_at_least_one() {
+        assert_eq!(cpu_to_vcpu_count("500m"), Some(1));
+        assert_eq!(cpu_to_vcpu_count("1500m"), Some(2));
+    }
+
+    #[test]
+    fn cpu_malformed_returns_none() {
+        assert_eq!(cpu_to_vcpu_count("lots"), None);
+    }
 }

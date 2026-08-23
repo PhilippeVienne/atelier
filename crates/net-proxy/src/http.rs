@@ -127,7 +127,11 @@ pub fn to_origin_form(head: &RequestHead) -> Vec<u8> {
         None => "/",
     };
 
-    let first_line_end = head.raw.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let first_line_end = head
+        .raw
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
     let first_line = String::from_utf8_lossy(&head.raw[..first_line_end]);
     // Preserve la version HTTP annoncee par le client (3e jeton de la ligne
     // de requete) plutot que d'en supposer une — seule la cible (2e jeton)
