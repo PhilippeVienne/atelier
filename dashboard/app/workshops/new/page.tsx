@@ -1,13 +1,12 @@
 import { requireAccessToken } from "@/lib/session";
 import { NewWorkshopForm } from "./form";
 
-// Depot HTTPS (pas l'URL SSH du remote local) : l'auth par identifiants git
-// cote image-builder (secret OpenBao workshops/<name>/git) se fait par
-// utilisateur/mot de passe, pas par cle SSH.
+// Depot public dedie (plus un sous-dossier du depot atelier principal) :
+// image-builder peut le cloner sans identifiants git.
 const MINISTACK_PRESET = {
-  repo: "https://github.com/PhilippeVienne/atelier.git",
+  repo: "https://github.com/PhilippeVienne/atelier-workspace.git",
   revision: "main",
-  configPath: "demo/ministack-workshop/.devcontainer/devcontainer.json",
+  configPath: ".devcontainer/devcontainer.json",
 };
 
 export default async function NewWorkshopPage({
@@ -26,11 +25,9 @@ export default async function NewWorkshopPage({
     <main className="flex-1 max-w-lg w-full mx-auto p-8 flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">Nouveau Workshop</h1>
       {defaults && (
-        <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          Depot prive : le secret OpenBao <code>workshops/&lt;nom&gt;/git</code> (champs{" "}
-          <code>username</code>/<code>password</code>) doit etre provisionne manuellement avant la
-          creation, sans quoi le clone du depot echouera. Voir{" "}
-          <code>demo/ministack-workshop/README.md</code>.
+        <p className="text-sm text-neutral-600 bg-neutral-50 border border-neutral-200 rounded px-3 py-2">
+          Depot public (github.com/PhilippeVienne/atelier-workspace) : aucun
+          identifiant git a provisionner.
         </p>
       )}
       <NewWorkshopForm defaults={defaults} />

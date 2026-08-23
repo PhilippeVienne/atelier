@@ -27,7 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message as TsMessage;
 
 /// Port sur lequel `code-server` ecoute dans la microVM agent (voir
-/// `demo/ministack-workshop/.devcontainer/atelier-code-server.service`) —
+/// github.com/PhilippeVienne/atelier-workspace `.devcontainer/atelier-code-server.service`) —
 /// convention fixe par Workshop pour ce lot (pas encore configurable dans
 /// le CRD). `ATELIER_VSCODE_PORT` reste overridable pour les tests
 /// (eviter un conflit avec un vrai port 8080 deja occupe sur la machine).

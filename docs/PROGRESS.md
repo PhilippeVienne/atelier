@@ -792,8 +792,9 @@ netns Docker avec `net-proxy` — jamais depuis un guest reellement boote par
   `inject_net_proxy_config` (deja verifie octet pour octet contre le vrai
   pipeline `image-builder` plus tot dans cette session) : reproduit
   manuellement plutot que rejoue via le pipeline complet, pour eviter le
-  blocage connu d'auth git sur un depot prive (meme limite que
-  `demo/ministack-workshop/`).
+  blocage connu d'auth git sur un depot prive a l'epoque (depuis resolu
+  autrement pour `ministack-workshop`, voir plus bas — ce depot a demenage
+  vers un depot public dedie).
 - **Boot avec les vrais binaires** `atelier-vm-supervisor` (TAP +
   `restrict_to_net_proxy`, le pare-feu de production, pas une version
   allegee), `atelier-net-proxy` (alias `mcp-gateway` configure) et

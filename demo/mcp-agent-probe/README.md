@@ -23,7 +23,8 @@ post-mortem via `debugfs`).
   `inject_net_proxy_config` (`crates/image-builder/src/main.rs`, deja
   verifie octet pour octet contre le vrai pipeline plus tot dans cette
   session — reproduit ici a la main pour eviter le blocage d'auth git sur
-  un depot prive, cf. `demo/ministack-workshop/README.md`).
+  un depot prive — devenu sans objet depuis que `ministack-workshop` vit
+  dans un depot public dedie, github.com/PhilippeVienne/atelier-workspace).
 - **Vrai `atelier-vm-supervisor`** : boot avec le **vrai** TAP +
   `restrict_to_net_proxy` (le pare-feu de production, pas une version
   allegee) — la seule sortie du guest est `net-proxy`.

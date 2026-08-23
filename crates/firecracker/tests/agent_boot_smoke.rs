@@ -1,6 +1,6 @@
 //! Test d'integration (spike) : verifie si un devcontainer arbitraire
 //! (aplatit en `rootfs.ext4`, meme procedure que `image-builder` — voir
-//! `demo/ministack-workshop/README.md`) demarre reellement ses services une
+//! github.com/PhilippeVienne/atelier-workspace) demarre reellement ses services une
 //! fois boote **exactement comme `vm-supervisor` boote la microVM de
 //! l'agent** : boot_args par defaut, **sans** `init=` personnalise
 //! (contrairement a la microVM "builder", qui utilise
@@ -17,7 +17,7 @@
 //! (`ATELIER_TEST_FIRECRACKER_BIN`, `ATELIER_TEST_JAILER_BIN`,
 //! `ATELIER_TEST_VM_KERNEL_PATH`) plus `ATELIER_TEST_AGENT_ROOTFS_PATH`
 //! (le `rootfs.ext4` du devcontainer demo, voir
-//! `demo/ministack-workshop/README.md` pour la procedure de construction
+//! github.com/PhilippeVienne/atelier-workspace pour la procedure de construction
 //! manuelle). Sans ces variables, le test est silencieusement ignore.
 
 use atelier_firecracker::network::setup_link_local_tap;
@@ -89,7 +89,7 @@ async fn agent_devcontainer_boots_without_custom_init() {
 
     let Some(fixtures) = fixtures() else {
         eprintln!(
-            "ATELIER_TEST_FIRECRACKER_BIN/JAILER_BIN/VM_KERNEL_PATH/AGENT_ROOTFS_PATH non definis, test ignore (voir demo/ministack-workshop/README.md)"
+            "ATELIER_TEST_FIRECRACKER_BIN/JAILER_BIN/VM_KERNEL_PATH/AGENT_ROOTFS_PATH non definis, test ignore (voir github.com/PhilippeVienne/atelier-workspace)"
         );
         return;
     };
