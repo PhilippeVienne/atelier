@@ -33,6 +33,16 @@ const API_SERVER_WS_URL = API_SERVER_URL.replace(/^http/, "ws");
 const MAX_UPSTREAM_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 250;
 
+// `ws` ne resout la promesse d'ouverture QUE via `open`, `unexpected-response`
+// ou `error` : un blocage reseau silencieux en amont (SYN jamais acquitte ni
+// rejete, `api-server` injoignable sans reset TCP) ne declenche aucun de ces
+// evenements. Sans timeout ici, la connexion navigateur reste ouverte
+// indefiniment au lieu du `1006` immediat d'avant cette retry logic — regression
+// constatee en pratique. `ws.terminate()` (pas `close()`, la socket peut ne
+// meme pas etre etablie) force le rejet pour laisser la boucle de tentatives
+// (ou le `.catch` final) reprendre la main.
+const CONNECT_TIMEOUT_MS = 5000;
+
 function readCookie(header: string | undefined, name: string): string | undefined {
   if (!header) return undefined;
   for (const part of header.split(";")) {
@@ -79,13 +89,20 @@ async function openUpstream(
         const ws = new WebSocket(targetUrl, protocols, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        const timer = setTimeout(() => {
+          ws.terminate();
+          reject(new Error(`connexion amont sans reponse apres ${CONNECT_TIMEOUT_MS}ms`));
+        }, CONNECT_TIMEOUT_MS);
         ws.once("open", () => {
+          clearTimeout(timer);
           resolve(ws);
         });
         ws.once("unexpected-response", (_req, res) => {
+          clearTimeout(timer);
           reject(new UpstreamHttpError(res.statusCode ?? 502, res.statusMessage || "Bad Gateway"));
         });
         ws.once("error", (err) => {
+          clearTimeout(timer);
           reject(err);
         });
       });
@@ -115,7 +132,17 @@ app.prepare().then(() => {
   // `app.getUpgradeHandler()` (API publique) tout ce qui ne nous concerne
   // pas, pour que le HMR de Next continue de fonctionner.
   (app as unknown as { setupWebSocketHandler: () => void }).setupWebSocketHandler();
-  const handleNextUpgrade = app.getUpgradeHandler();
+  const nextApp = app as unknown as {
+    upgradeHandler: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
+    getUpgradeHandler: () => (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
+  };
+  const handleNextUpgrade = (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
+    if (typeof nextApp.upgradeHandler === "function") {
+      nextApp.upgradeHandler(req, socket, head);
+    } else {
+      nextApp.getUpgradeHandler()(req, socket, head);
+    }
+  };
 
   const server = createServer((req, res) => handle(req, res));
 
@@ -124,7 +151,7 @@ app.prepare().then(() => {
     const token = readCookie(req.headers.cookie, SESSION_COOKIE);
     if (!match) {
       // Pas un upgrade "guest" : c'est le HMR de Next (ou rien du tout).
-      void handleNextUpgrade(req, socket, head);
+      handleNextUpgrade(req, socket, head);
       return;
     }
     if (!token) {

@@ -6,6 +6,7 @@ import { PhaseBadge } from "@/app/components/phase-badge";
 import { TopNav } from "@/app/components/top-nav";
 import { EventsLog } from "./events-log";
 import { LiveRefresh } from "./live-refresh";
+import { ConnectLink, TerminalFrame } from "./connect";
 
 const BUSY_PHASES = ["BuildingImage", "Provisioning", "Suspending", "Resuming", "Terminating"];
 
@@ -69,24 +70,18 @@ export default async function WorkshopDetailPage({
 
         <div className="flex flex-wrap gap-2">
           {canConnect && (
-            <a
+            <ConnectLink
               href={`/workshops/${encodeURIComponent(name)}/vscode/`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full bg-accent text-accent-foreground px-4 py-2 text-sm font-medium hover:bg-accent-hover transition-colors"
-            >
-              Ouvrir VS Code ↗
-            </a>
+              label="Ouvrir VS Code"
+              variant="primary"
+            />
           )}
           {canConnect && (
-            <a
+            <ConnectLink
               href={`/workshops/${encodeURIComponent(name)}/terminal/`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-full border border-border px-4 py-2 text-sm font-medium hover:bg-surface-hover transition-colors"
-            >
-              Terminal ↗
-            </a>
+              label="Terminal"
+              variant="secondary"
+            />
           )}
           {canSuspend && (
             <form action={suspend.bind(null, name)}>
@@ -128,11 +123,7 @@ export default async function WorkshopDetailPage({
         {canConnect && (
           <div className="flex flex-col gap-3">
             <h2 className="text-sm font-medium text-muted uppercase tracking-wide">Terminal</h2>
-            <iframe
-              src={`/workshops/${encodeURIComponent(name)}/terminal/`}
-              title="Terminal"
-              className="w-full h-[420px] rounded-xl border border-border bg-black"
-            />
+            <TerminalFrame src={`/workshops/${encodeURIComponent(name)}/terminal/`} />
           </div>
         )}
       </main>

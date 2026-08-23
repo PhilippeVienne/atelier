@@ -37,32 +37,56 @@ function jwtExpiry(token: string): Date | undefined {
 // est conserve tel quel (deja ecrit precedemment), pas efface.
 export async function createSession(accessToken: string, refreshToken?: string): Promise<void> {
   const store = await cookies();
-  store.set(SESSION_COOKIE, accessToken, {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: "lax",
-    path: "/",
-    expires: jwtExpiry(accessToken),
-  });
-  if (refreshToken) {
-    // Pas de date d'expiration explicite ici : la duree de vie du refresh
-    // token est decidee par Kanidm, pas lisible cote client (ce n'est pas
-    // un JWT) — le cookie survit donc jusqu'a la fermeture du navigateur ou
-    // `destroySession()`, et un refresh qui echoue (token revoque/expire
-    // cote Kanidm) declenche de toute facon une vraie deconnexion.
-    store.set(REFRESH_COOKIE, refreshToken, {
+  try {
+    store.set(SESSION_COOKIE, accessToken, {
       httpOnly: true,
       secure: isProd,
       sameSite: "lax",
       path: "/",
+      expires: jwtExpiry(accessToken),
     });
+    if (refreshToken) {
+      // Pas de date d'expiration explicite ici : la duree de vie du refresh
+      // token est decidee par Kanidm, pas lisible cote client (ce n'est pas
+      // un JWT) — le cookie survit donc jusqu'a la fermeture du navigateur ou
+      // `destroySession()`, et un refresh qui echoue (token revoque/expire
+      // cote Kanidm) declenche de toute facon une vraie deconnexion.
+      store.set(REFRESH_COOKIE, refreshToken, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: "lax",
+        path: "/",
+      });
+    }
+  } catch {
+    // Meme raison que `destroySession()` : un refresh declenche en plein
+    // rendu d'un Server Component (pas une Server Action/Route Handler) ne
+    // peut pas ecrire les cookies — Next.js leve, pas juste un no-op. Le
+    // nouvel `accessToken` reste utilisable pour CETTE requete (retourne en
+    // memoire par `refreshAccessToken()`), seule la persistance echoue ; la
+    // prochaine requete retentera le refresh, cette fois potentiellement
+    // depuis un contexte legal (`/api/auth/refresh`).
   }
 }
 
 export async function destroySession(): Promise<void> {
   const store = await cookies();
-  store.delete(SESSION_COOKIE);
-  store.delete(REFRESH_COOKIE);
+  try {
+    store.delete(SESSION_COOKIE);
+    store.delete(REFRESH_COOKIE);
+  } catch {
+    // `getAccessToken()`/`requireAccessToken()` sont appeles depuis des
+    // Server Components (rendu de page), pas seulement des Server
+    // Actions/Route Handlers — seuls contextes ou Next.js autorise
+    // d'ecrire les cookies. Un refresh qui echoue en plein rendu (refresh
+    // token revoque/expire pendant qu'une page normale se rend) tenterait
+    // sinon de faire planter la page entiere (500) juste pour un nettoyage
+    // de cookies qui, de toute facon, sera rejoue au prochain appel depuis
+    // un contexte legal (`/api/auth/refresh`, `/api/auth/login`) — la
+    // valeur de retour `null` de `refreshAccessToken()` suffit a declencher
+    // la bonne logique (redirection vers /login) sans dependre de cette
+    // ecriture ayant reussi ici.
+  }
 }
 
 /**
