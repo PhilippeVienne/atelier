@@ -206,12 +206,12 @@ graph TD
 3. `cargo test -p atelier-controller` : Cycle de réconciliation complet sur Kind avec génération du secret dans OpenBao et zéro appel Kanidm.
 
 ### 🎯 Definition of Done (DoD) du Jalon M1
-- [ ] PostgreSQL est connecté et les tables de base de données sont initialisées.
-- [ ] Le controller et l'API server n'ont plus aucune dépendance à Kanidm.
-- [ ] VS Code et `ttyd` sont protégés par mot de passe aléatoire avec injection transparente Basic Auth via OpenBao.
-- [ ] Les sondes de santé Liveness/Readiness sont opérationnelles.
-- [ ] `cargo test --workspace` et `cargo clippy --workspace --all-targets -- -D warnings` sont 100% verts.
-- [ ] Entrée documentée dans `docs/PROGRESS.md`.
+- [x] PostgreSQL est connecté et les tables de base de données sont initialisées. *(`atelier-apiserver`/`atelier-controller`, `DATABASE_URL` obligatoire, migrations réelles exécutées au boot des deux binaires.)*
+- [x] Le controller et l'API server n'ont plus aucune dépendance à Kanidm. *(Vérifié : `grep -rn kanidm crates/{api-server,controller}` ne retourne plus rien, ni dans le code ni dans `Cargo.toml`.)*
+- [~] VS Code et `ttyd` sont protégés par mot de passe aléatoire avec injection transparente Basic Auth via OpenBao. **Partiel** : la chaîne complète côté `atelier` fonctionne réellement (controller génère et provisionne le secret dans OpenBao, `net-proxy` le sert au guest via son endpoint metadata, `api-server` le lit avec son rôle cluster-wide dédié et injecte l'en-tête `Authorization: Basic` en relayant vers le guest — testé de bout en bout avec un vrai OpenBao). **Reste hors de ce dépôt** : le devcontainer (repo séparé `PhilippeVienne/atelier-workspace`, vérifié absent des clones locaux disponibles) ne consomme pas encore `GET http://169.254.0.1:3132/session-auth` pour configurer `ttyd --credential`/`code-server --auth password` — tant que ce n'est pas fait, les services du guest ne sont pas réellement protégés par ce mot de passe (ils resteraient ouverts sans Basic Auth requis côté guest).
+- [x] Les sondes de santé Liveness/Readiness sont opérationnelles. *(`api-server` : `/health/liveness`, `/health/readiness` ; `controller` : `/health/ready` — vérifiées réellement via `curl`.)*
+- [x] `cargo test --workspace` et `cargo clippy --workspace --all-targets -- -D warnings` sont 100% verts. *(Revérifié le 2026-08-23 23:15, controller live arrêté pendant la vérification pour éliminer une interférence de reconciliation connue, puis relancé sans régression.)*
+- [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
 

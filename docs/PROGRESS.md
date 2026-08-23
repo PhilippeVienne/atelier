@@ -1902,3 +1902,13 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   ```
 - **Statut** : ✅ Validé pour les 5 tâches listées.
 
+### [2026-08-23 23:15] Validation du DoD du Jalon M1
+- **Contexte** : toutes les tâches individuelles de M1 (1.0.1-1.0.3, 1.1.1-1.1.3, 1.2.1-1.2.10, 1.3.1-1.3.7, 1.4.1-1.4.3) étaient déjà `[x]`, mais le récapitulatif "Definition of Done" du jalon (section dédiée de `docs/specs/PLAN-ACTION-GLOBAL.md`) n'avait jamais été revérifié point par point ni coché.
+- **Vérifications effectuées** :
+  - PostgreSQL : `DATABASE_URL` obligatoire et migrations réelles au boot d'`api-server` et `controller` — confirmé.
+  - Kanidm : `grep -rn kanidm crates/api-server crates/controller` (code et `Cargo.toml`) ne retourne plus rien — confirmé.
+  - Healthchecks : `/health/liveness`, `/health/readiness` (api-server) et `/health/ready` (controller) répondent réellement.
+  - `cargo test --workspace`/`clippy -D warnings`/`fmt --check` : 100% vert, revérifié avec le controller live arrêté puis relancé (élimine l'interférence de reconciliation déjà documentée).
+  - **Basic Auth VS Code/`ttyd`** : chaîne complète côté ce dépôt fonctionnelle et testée (controller → OpenBao → net-proxy → api-server), **mais incomplète en pratique** : le devcontainer (repo séparé `atelier-workspace`) ne consomme pas encore l'endpoint metadata pour configurer le Basic Auth de `ttyd`/`code-server` — vérifié en cherchant toute référence à `session-auth`/`169.254.0.1:3132`/`credential atelier` dans les clones locaux disponibles de ce repo (`/tmp/atelier-workspace-new`, `/tmp/claude-1000/atelier-workspace`) : aucune trouvée. Marqué `[~]` (partiel) dans le DoD plutôt que `[x]`, pour ne pas déclarer M1 clos à tort sur ce point précis.
+- **Statut** : ⚠️ DoD de M1 validé à 5/6 items complets ; le 6ème (Basic Auth guest) nécessite une intervention dans le dépôt `atelier-workspace`, hors du périmètre de cette session.
+
