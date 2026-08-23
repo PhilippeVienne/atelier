@@ -1,0 +1,102 @@
+# Routage par nom d'hote pour les 4 domaines de dev
+# (auth./git./app./api.atelier.local, voir README.md). Keycloak et Forgejo
+# tournent DANS le cluster (Service ClusterIP normal) ; `atelier-api-server`
+# et le dashboard tournent encore comme process sur l'hote (pas encore
+# conteneurises) — on les expose via un Service sans selecteur + un
+# Endpoints manuel pointant sur `172.19.0.1`, la gateway du reseau Docker
+# `kind` (= l'hote, joignable depuis n'importe quel pod du cluster, verifie
+# reellement : `kubectl run curltest --image=curlimages/curl --rm -i
+# --restart=Never -- curl http://172.19.0.1:8080/healthz` repond 200).
+# Cette IP est stable tant que le reseau Docker `kind` n'est pas recree
+# (`docker network inspect kind --format '{{(index .IPAM.Config 0).Gateway}}'`
+# pour la re-verifier).
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-api-server-host
+  namespace: default
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: atelier-api-server-host
+  namespace: default
+subsets:
+  - addresses:
+      - ip: 172.19.0.1
+    ports:
+      - port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-dashboard-host
+  namespace: default
+spec:
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: atelier-dashboard-host
+  namespace: default
+subsets:
+  - addresses:
+      - ip: 172.19.0.1
+    ports:
+      - port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atelier-dev-ingress
+  namespace: default
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: auth.atelier.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atelier-keycloak-dev
+                port:
+                  number: 8080
+    - host: git.atelier.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atelier-forgejo-dev
+                port:
+                  number: 3000
+    - host: api.atelier.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atelier-api-server-host
+                port:
+                  number: 8080
+    - host: app.atelier.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atelier-dashboard-host
+                port:
+                  number: 3000

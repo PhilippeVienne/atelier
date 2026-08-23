@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { OAUTH2_CLIENT_ID, oauth2RedirectUri, oidcTokenUrl } from "@/lib/config";
+import { OAUTH2_CLIENT_ID, oauth2RedirectUri, oidcTokenUrl, requestOrigin } from "@/lib/config";
 import { consumePkceParams, createSession } from "@/lib/session";
 
 export async function GET(request: NextRequest) {
+  const origin = requestOrigin(request);
   const code = request.nextUrl.searchParams.get("code");
   const state = request.nextUrl.searchParams.get("state");
   const oauthError = request.nextUrl.searchParams.get("error");
@@ -10,19 +11,19 @@ export async function GET(request: NextRequest) {
   const pkce = await consumePkceParams();
 
   if (oauthError) {
-    return loginError(request, `le fournisseur OIDC a refuse la connexion : ${oauthError}`);
+    return loginError(origin, `le fournisseur OIDC a refuse la connexion : ${oauthError}`);
   }
   if (!code || !state) {
-    return loginError(request, "reponse OAuth2 incomplete (code/state manquant)");
+    return loginError(origin, "reponse OAuth2 incomplete (code/state manquant)");
   }
   if (!pkce) {
-    return loginError(request, "session de connexion expiree, reessayez");
+    return loginError(origin, "session de connexion expiree, reessayez");
   }
   if (state !== pkce.state) {
-    return loginError(request, "state OAuth2 invalide (anti-CSRF)");
+    return loginError(origin, "state OAuth2 invalide (anti-CSRF)");
   }
 
-  const redirectUri = oauth2RedirectUri(request.nextUrl.origin);
+  const redirectUri = oauth2RedirectUri(origin);
   const tokenRes = await fetch(oidcTokenUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest) {
   if (!tokenRes.ok) {
     const body = await tokenRes.text().catch(() => "");
     return loginError(
-      request,
+      origin,
       `echange du code aupres du fournisseur OIDC echoue (${tokenRes.status}) ${body}`,
     );
   }
@@ -49,15 +50,15 @@ export async function GET(request: NextRequest) {
     refresh_token?: string;
   };
   if (!accessToken) {
-    return loginError(request, "reponse token du fournisseur OIDC sans access_token");
+    return loginError(origin, "reponse token du fournisseur OIDC sans access_token");
   }
 
   await createSession(accessToken, refreshToken);
-  return NextResponse.redirect(new URL("/", request.nextUrl.origin));
+  return NextResponse.redirect(new URL("/", origin));
 }
 
-function loginError(request: NextRequest, message: string) {
-  const url = new URL("/login", request.nextUrl.origin);
+function loginError(origin: string, message: string) {
+  const url = new URL("/login", origin);
   url.searchParams.set("error", message);
   return NextResponse.redirect(url);
 }

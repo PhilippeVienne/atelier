@@ -1,19 +1,27 @@
 // Configuration lue depuis l'environnement : aucune valeur par defaut pour
-// les secrets/URLs de production, seulement pour le confort de dev local
-// (memes ports que deploy/dev/keycloak/README.md et crates/api-server).
-
+// les secrets/URLs de production, seulement pour le confort de dev local.
+//
+// Convention de dev locale : un ingress Traefik unique dans le cluster kind
+// (`deploy/dev/traefik/`), routant par en-tete `Host` vers les 4 domaines
+// de dev (`auth.`/`git.`/`app.`/`api.atelier.local`), tous sur le port 80
+// standard (Traefik en `hostNetwork`, voir `deploy/dev/traefik/README.md`
+// pour le detail — IP du node kind, `/etc/hosts` a renseigner). Remplace
+// d'anciens port-forwards individuels par service, source de collisions de
+// port constatees en pratique (`atelier-api-server` et le port-forward
+// Keycloak ont failli finir sur le meme port 8080).
 export const API_SERVER_URL =
-  process.env.ATELIER_API_SERVER_URL ?? "http://localhost:8080";
+  process.env.ATELIER_API_SERVER_URL ?? "http://api.atelier.local";
 
 // Base OIDC generique — pour Keycloak c'est l'URL du realm (ex:
-// `http://127.0.0.1:8080/realms/atelier`), PAS la racine du serveur : les
-// endpoints standards (`/protocol/openid-connect/{auth,token,certs}`,
+// `http://auth.atelier.local/realms/atelier`), PAS la racine du
+// serveur : les endpoints standards
+// (`/protocol/openid-connect/{auth,token,certs}`,
 // `/.well-known/openid-configuration`) sont tous relatifs a cette base.
 // Anciennement `ATELIER_KANIDM_URL`/`KANIDM_URL`, ou la base etait la racine
 // du serveur (Kanidm n'a pas de notion de realm, ses chemins etaient
 // `/ui/oauth2` et `/oauth2/token`, non conformes a la convention OIDC).
 export const OIDC_ISSUER_URL =
-  process.env.ATELIER_OIDC_ISSUER_URL ?? "http://127.0.0.1:8080/realms/atelier";
+  process.env.ATELIER_OIDC_ISSUER_URL ?? "http://auth.atelier.local/realms/atelier";
 
 // Chemins OIDC standards, relatifs a `OIDC_ISSUER_URL`, configurables
 // separement plutot que resolus via la decouverte
@@ -59,4 +67,29 @@ export const OAUTH2_SCOPE = "openid";
 // stricte des redirect_uri.
 export function oauth2RedirectUri(origin: string): string {
   return process.env.ATELIER_OAUTH2_REDIRECT_URI ?? `${origin}/api/auth/callback`;
+}
+
+// `request.nextUrl.origin` ne reflete PAS l'en-tete `Host` reellement recu
+// par ce serveur custom (`server.ts`, `next({ dev })` sans `hostname`
+// explicite) : il retombe systematiquement sur `http://localhost:3000`,
+// verifie en pratique en envoyant `Host: app.atelier.local` directement au
+// process Node sur le port 3000 (pas seulement via l'ingress Traefik).
+// Consequence reelle, pas seulement cosmetique : le cookie PKCE
+// (`atelier_oauth_pkce`) est pose sur le domaine effectivement visite par
+// le navigateur (ex. `app.atelier.local`) au moment de `/api/auth/login`,
+// mais si `redirect_uri` retombe sur `localhost:3000`, le callback OAuth2
+// atterrit sur un domaine DIFFERENT — le navigateur n'envoie alors pas ce
+// cookie, et l'echange du code echoue ("session de connexion expiree").
+// Cette fonction lit l'en-tete `Host` directement plutot que de faire
+// confiance a `nextUrl.origin`, pour que login/callback restent sur le
+// meme domaine que celui effectivement utilise par le navigateur.
+export function requestOrigin(request: Request): string {
+  const host = request.headers.get("host");
+  if (!host) {
+    // Ne devrait pas arriver (HTTP/1.1 exige Host), mais mieux vaut
+    // degrader vers nextUrl que de planter.
+    return new URL(request.url).origin;
+  }
+  const proto = request.headers.get("x-forwarded-proto") ?? "http";
+  return `${proto}://${host}`;
 }

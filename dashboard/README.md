@@ -38,8 +38,8 @@ Voir `lib/config.ts`, `lib/session.ts`, `lib/api-server.ts`,
 
 | Variable | Defaut (dev) | Usage |
 |---|---|---|
-| `ATELIER_API_SERVER_URL` | `http://localhost:8080` | Base URL d'`atelier-api-server` |
-| `ATELIER_OIDC_ISSUER_URL` | `http://127.0.0.1:8080/realms/atelier` | Base URL du realm OIDC (Keycloak) — PAS la racine du serveur |
+| `ATELIER_API_SERVER_URL` | `http://api.atelier.local` | Base URL d'`atelier-api-server`, via l'ingress Traefik de dev (`deploy/dev/traefik/`) |
+| `ATELIER_OIDC_ISSUER_URL` | `http://auth.atelier.local/realms/atelier` | Base URL du realm OIDC (Keycloak), via le meme ingress — PAS la racine du serveur |
 | `ATELIER_OIDC_AUTHORIZE_PATH` | `/protocol/openid-connect/auth` | Chemin de l'endpoint d'autorisation, relatif a `ATELIER_OIDC_ISSUER_URL` |
 | `ATELIER_OIDC_TOKEN_PATH` | `/protocol/openid-connect/token` | Chemin de l'endpoint token, relatif a `ATELIER_OIDC_ISSUER_URL` |
 | `ATELIER_OAUTH2_CLIENT_ID` | `atelier-dashboard` | Client OAuth2 public cote fournisseur OIDC |
@@ -63,8 +63,20 @@ cd dashboard
 npm run dev
 ```
 
-Ouvrir [http://localhost:3000](http://localhost:3000) : redirige vers
-`/login`, "Se connecter" declenche le vrai flux OAuth2 vers Keycloak.
+Deployer l'ingress Traefik de dev (une seule fois, voir
+`deploy/dev/traefik/README.md` pour le detail complet — routage par nom
+d'hote, IP du node kind a mettre dans `/etc/hosts`) :
+
+```sh
+kubectl apply -f deploy/dev/traefik/dev-traefik.yaml
+kubectl apply -f deploy/dev/traefik/ingresses.yaml
+docker inspect atelier-dev-control-plane --format '{{(index .NetworkSettings.Networks.kind).IPAddress}}'
+# puis mettre a jour /etc/hosts avec l'IP affichee (voir deploy/dev/traefik/README.md)
+```
+
+Ouvrir `http://app.atelier.local` : redirige vers `/login`,
+"Se connecter" declenche le vrai flux OAuth2 vers Keycloak
+(`http://auth.atelier.local`, meme ingress).
 
 Deja verifie reellement cette session (voir `docs/PROGRESS.md`) : flux
 complet login -> callback -> session -> refresh transparent, valide contre

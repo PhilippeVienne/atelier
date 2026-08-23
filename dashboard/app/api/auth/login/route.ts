@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { OAUTH2_CLIENT_ID, OAUTH2_SCOPE, oauth2RedirectUri, oidcAuthorizeUrl } from "@/lib/config";
+import {
+  OAUTH2_CLIENT_ID,
+  OAUTH2_SCOPE,
+  oauth2RedirectUri,
+  oidcAuthorizeUrl,
+  requestOrigin,
+} from "@/lib/config";
 import { generatePkcePair, generateState } from "@/lib/pkce";
 import { storePkceParams } from "@/lib/session";
 
@@ -14,7 +20,7 @@ export async function GET(request: NextRequest) {
   const state = generateState();
   await storePkceParams(state, verifier);
 
-  const redirectUri = oauth2RedirectUri(request.nextUrl.origin);
+  const redirectUri = oauth2RedirectUri(requestOrigin(request));
   const authoriseUrl = oidcAuthorizeUrl();
   authoriseUrl.searchParams.set("response_type", "code");
   authoriseUrl.searchParams.set("client_id", OAUTH2_CLIENT_ID);
