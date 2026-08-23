@@ -1825,4 +1825,25 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   ```
 - **Statut** : ✅ Validé pour les 5 tâches listées.
 
+### [2026-08-23 23:00] Jalon M1 - Tâches 1.3.1, 1.3.6, 1.3.7 : sqlx et healthcheck dans `controller`, et correction d'une régression réelle sur les pods parents
+- **Composant impacté** : `crates/controller/Cargo.toml`, `crates/controller/src/main.rs`, `crates/controller/src/health.rs` (nouveau), `crates/controller/src/lib.rs`, `crates/controller/src/reconcile.rs`, `crates/controller/migrations/20260824000000_init_controller.sql` (nouveau).
+- **Modifications réalisées** :
+  - Ajout de `sqlx` (mêmes features que `api-server`) et `axum` (nouveau serveur HTTP dédié aux sondes).
+  - `main.rs` : `DATABASE_URL` obligatoire, `PgPool`, migrations exécutées au boot, puis un serveur `GET /health/ready` (`0.0.0.0:8081` par défaut, `ATELIER_CONTROLLER_HEALTH_ADDR` pour le surcharger) vérifiant l'API Kubernetes (`apiserver_version()`), PostgreSQL (`SELECT 1`) et OpenBao si configuré — même logique que `/health/readiness` côté `api-server`.
+  - Migration `20260824000000_init_controller.sql` : `rootfs_cache_index` (index du cache rootfs content-addressed) et `workshop_reconciliation_history` (historique des transitions de phase) — schéma seul, pas encore consommé par `reconcile.rs`.
+- **Régression réelle découverte et corrigée en cours de route (avant tout dégât)** : en relançant le controller à jour contre le cluster kind partagé (qui héberge de vrais Workshops créés par l'utilisateur, ex. `my-new-demo` avec une microVM active depuis 2h+), le tout premier reconcile de chaque Workshop existant échouait en boucle avec une erreur 422 Kubernetes ("`field is immutable`") — cause : `ensure_parent_pod`/`ensure_image_build_job` re-appliquent inconditionnellement (Server-Side Apply) la spec complète du pod/Job à *chaque* reconcile, alors que `spec.containers[*].env` (Pod) et `spec.template` (Job) sont immuables une fois l'objet créé. Ce défaut préexistait (latent, jamais déclenché tant qu'aucun changement de spec n'était introduit) ; le commit précédent (ajout de `ATELIER_WORKSHOP_NAME`/`OPENBAO_ADDR` au conteneur `net-proxy`) l'a rendu visible pour la première fois.
+  - Première approche envisagée (supprimer puis recréer le pod en cas de conflit) **rejetée avant déploiement** après vérification manuelle : `my-new-demo-parent` est un pod réel avec une microVM restaurée depuis snapshot et une session utilisateur active — le recréer aurait interrompu ce travail sans nécessité.
+  - Fix retenu : ne plus jamais re-patcher un Pod ou un Job déjà existant (`jobs.get_opt`/`pods.get_opt` d'abord, `patch` seulement si absent) — une mise à jour de spec ne prend effet qu'au prochain cycle naturel de recréation (suspend/resume pour le pod parent, jamais pour un Job terminé). Aucune perte de fonctionnalité : rien ne dépendait d'un re-patch réussi sur un objet déjà existant.
+  - Vérifié réellement : redéploiement du controller corrigé sur le cluster partagé, tous les Workshops existants (`my-new-demo`, `ws-user-fix-test`, `test`, etc.) reconcilient désormais sans la moindre erreur en boucle, `my-new-demo-parent` conserve son `creationTimestamp` d'origine (non recréé, session non interrompue).
+- **Preuve empirique / Test exécuté** :
+  ```
+  cargo test -p atelier-controller   # 7 unit + 4 integration passed (dont apply_creates_owned_parent_pod_once_image_ready, qui exerce le chemin "pod deja existant")
+  cargo test --workspace / clippy -D warnings / fmt --check   # 100% vert
+  curl http://127.0.0.1:8081/health/ready   # 200
+  # Sur le cluster partage, apres redeploiement : 0 occurrence de "error"/"failed" dans les logs
+  # du controller sur un cycle complet de reconciliation de tous les Workshops existants ;
+  # my-new-demo-parent conserve son creationTimestamp d'origine (pod non recree).
+  ```
+- **Statut** : ✅ Validé pour les 3 tâches listées, plus une régression corrigée avant tout impact utilisateur constaté.
+
 

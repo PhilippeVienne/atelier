@@ -174,7 +174,7 @@ graph TD
 
 ### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx, Healthchecks)
 * **Fichier impacté** : [`crates/controller/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/Cargo.toml)
-  - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`.
+  - [x] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`.
 * **Fichiers supprimés / modifiés** :
   - [x] **1.3.2** : Supprimer définitivement le fichier `crates/controller/src/kanidm.rs`.
   - [x] **1.3.3** : Dans [`crates/controller/src/lib.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/lib.rs), retirer `pub mod kanidm;`.
@@ -183,10 +183,10 @@ graph TD
   - [x] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
     - Supprimer tout appel à `kanidm`.
     - Servir le secret au guest via `net-proxy` sur l'endpoint metadata link-local `http://169.254.0.1:3132/session-auth`.
-  - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs) :
+  - [x] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs) :
     - Exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
-    - Exposer un serveur HTTP de sondes de santé (`GET /health/ready` vérifiant Kubernetes API, PostgreSQL et OpenBao).
-  - [ ] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).
+    - Exposer un serveur HTTP de sondes de santé (`GET /health/ready` vérifiant Kubernetes API, PostgreSQL et OpenBao). *(Port par défaut `8081`, `ATELIER_CONTROLLER_HEALTH_ADDR` pour le surcharger.)*
+  - [x] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).
 
 ### 4.4. Application `dashboard/` (Next.js 16, OIDC PKCE & BFF)
 * **Fichiers impactés** : `dashboard/lib/config.ts`, `dashboard/lib/session.ts`, `dashboard/app/api/auth/*`

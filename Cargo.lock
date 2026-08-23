@@ -170,6 +170,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atelier-common",
+ "axum",
  "futures",
  "k8s-openapi",
  "kube",
@@ -178,6 +179,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sqlx",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",

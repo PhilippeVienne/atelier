@@ -729,14 +729,25 @@ async fn ensure_image_build_job(
         ..Default::default()
     };
 
-    jobs.patch(
-        &job_name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&job),
-    )
-    .await?;
-
-    let current = jobs.get_opt(&job_name).await?;
+    // `spec.template` d'un Job est immuable une fois cree (contrainte
+    // Kubernetes, pas seulement une convention `atelier`) : contrairement
+    // au pod parent (`ensure_parent_pod`), re-appliquer un Job deja existant
+    // echoue toujours avec "field is immutable", meme a contenu strictement
+    // identique — constate en pratique des le deuxieme reconcile d'un
+    // Workshop reste en `BuildingImage`. On ne cree donc qu'une seule fois,
+    // jamais de re-patch.
+    let current = match jobs.get_opt(&job_name).await? {
+        Some(existing) => Some(existing),
+        None => {
+            jobs.patch(
+                &job_name,
+                &PatchParams::apply(FIELD_MANAGER).force(),
+                &Patch::Apply(&job),
+            )
+            .await?;
+            jobs.get_opt(&job_name).await?
+        }
+    };
     let job_failed = current
         .as_ref()
         .and_then(|j| j.status.as_ref())
@@ -1127,14 +1138,30 @@ async fn ensure_parent_pod(
         ..Default::default()
     };
 
-    pods.patch(
-        &pod_name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&pod),
-    )
-    .await?;
-
-    let current = pods.get_opt(&pod_name).await?;
+    // La plupart des champs de `spec.containers` (ex: `env`) sont immuables
+    // une fois le pod cree — contrainte Kubernetes, pas contournable par
+    // Server-Side Apply meme avec `.force()`. Un pod parent deja existant
+    // peut heberger une microVM active (session utilisateur en cours,
+    // snapshot restaure) : le RECREER a chaque changement de spec (ex:
+    // nouvelle variable d'environnement ajoutee a `net-proxy` par une
+    // nouvelle version du controller) romprait a tort cette session — jamais
+    // acceptable. Meme strategie que pour le Job image-builder ci-dessus :
+    // on ne cree qu'une seule fois, jamais de re-patch d'un pod deja
+    // existant. Une mise a jour de spec ne prend effet qu'au prochain cycle
+    // suspend/resume (`ensure_suspended` supprime le pod, `ensure_parent_pod`
+    // le recree alors avec la spec a jour).
+    let current = match pods.get_opt(&pod_name).await? {
+        Some(existing) => Some(existing),
+        None => {
+            pods.patch(
+                &pod_name,
+                &PatchParams::apply(FIELD_MANAGER).force(),
+                &Patch::Apply(&pod),
+            )
+            .await?;
+            pods.get_opt(&pod_name).await?
+        }
+    };
     let pod_running = current
         .as_ref()
         .and_then(|p| p.status.as_ref())
