@@ -132,8 +132,11 @@ async fn main() -> anyhow::Result<()> {
         mcp_gateway_alias = internal_routes.resolve("mcp-gateway").is_some(),
         registry_alias = internal_routes.resolve("registry").is_some(),
         llm_proxy_alias = internal_routes.resolve("llm-proxy").is_some(),
+        git_alias = internal_routes
+            .resolve(atelier_common::GIT_ALIAS_HOST)
+            .is_some(),
         identity_proxy_mandatory_hop = identity_proxy.is_some(),
-        "routes internes (identity-proxy/mcp-gateway/registry/llm-proxy) configurees"
+        "routes internes (identity-proxy/mcp-gateway/registry/llm-proxy/git) configurees"
     );
 
     // Sidecar `simulator` du pod (LocalStack), voir `crates/mcp-gateway`

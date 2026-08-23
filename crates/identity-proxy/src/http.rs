@@ -6,8 +6,11 @@
 //! avant de rejouer la requete vers la destination.
 
 use anyhow::{bail, Context};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
+};
 
+#[derive(Clone)]
 pub struct RequestHead {
     pub method: String,
     pub target: String,
@@ -130,6 +133,157 @@ fn split_host_port(authority: &str, default_port: u16) -> anyhow::Result<(String
             Ok((host.to_string(), port))
         }
         _ => Ok((authority.to_string(), default_port)),
+    }
+}
+
+/// Ligne de statut + en-tetes d'une reponse HTTP/1.x — pendant de
+/// [`RequestHead`], necessaire pour reutiliser une meme connexion pour
+/// PLUSIEURS requetes (voir le commentaire de tete de `crate::proxy::forward`) :
+/// sans decoder ou se termine une reponse, impossible de savoir quand la
+/// prochaine requete du client peut etre relue sur la meme connexion.
+pub struct ResponseHead {
+    status_line: String,
+    headers: Vec<(String, String)>,
+}
+
+impl ResponseHead {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = format!("{}\r\n", self.status_line).into_bytes();
+        for (name, value) in &self.headers {
+            out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+        }
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+}
+
+/// `Ok(None)` si la connexion se ferme avant meme la ligne de statut (la
+/// destination a ferme la connexion, ce qui arrive normalement en fin de
+/// vie d'une connexion gardee ouverte).
+pub async fn read_response_head<R>(reader: &mut R) -> anyhow::Result<Option<ResponseHead>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line).await? == 0 {
+        return Ok(None);
+    }
+    let status_line = status_line.trim_end_matches(['\r', '\n']).to_string();
+    if status_line.is_empty() {
+        bail!("ligne de statut vide");
+    }
+
+    let mut headers = Vec::new();
+    loop {
+        let mut header_line = String::new();
+        if reader.read_line(&mut header_line).await? == 0 {
+            bail!("connexion fermee avant la fin des en-tetes de reponse");
+        }
+        let trimmed = header_line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':') {
+            headers.push((name.trim().to_string(), value.trim().to_string()));
+        }
+    }
+
+    Ok(Some(ResponseHead {
+        status_line,
+        headers,
+    }))
+}
+
+fn headers_of<'a>(head_headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    head_headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
+impl RequestHead {
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+}
+
+impl ResponseHead {
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+}
+
+/// Longueur du corps annoncee par `Content-Length`, si l'en-tete est present
+/// et valide.
+pub fn content_length(headers: &[(String, String)]) -> Option<u64> {
+    headers_of(headers, "Content-Length")?.trim().parse().ok()
+}
+
+/// `true` si le corps est encode en chunks (`Transfer-Encoding: chunked`) —
+/// la RFC 7230 autorise plusieurs valeurs separees par des virgules, seule
+/// la derniere importe pour savoir comment le corps se termine.
+pub fn is_chunked(headers: &[(String, String)]) -> bool {
+    headers_of(headers, "Transfer-Encoding")
+        .map(|v| {
+            v.split(',')
+                .next_back()
+                .is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"))
+        })
+        .unwrap_or(false)
+}
+
+/// Recopie exactement `len` octets de `reader` vers `writer` — utilise pour
+/// un corps `Content-Length` connu (requete ou reponse).
+pub async fn copy_exact<R, W>(reader: &mut R, writer: &mut W, len: u64) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut limited = reader.take(len);
+    tokio::io::copy(&mut limited, writer).await?;
+    Ok(())
+}
+
+/// Recopie un corps `Transfer-Encoding: chunked` tel quel (taille de chunk,
+/// donnees, CRLF, jusqu'au chunk terminal `0` et ses eventuels en-tetes de
+/// fin) : ne dechiffre ni ne modifie le contenu, seulement assez de parsing
+/// pour savoir ou le corps se termine et pouvoir relire la requete/reponse
+/// suivante sur la meme connexion.
+pub async fn copy_chunked_body<R, W>(reader: &mut R, writer: &mut W) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let mut size_line = String::new();
+        if reader.read_line(&mut size_line).await? == 0 {
+            bail!("connexion fermee au milieu d'un corps chunked");
+        }
+        writer.write_all(size_line.as_bytes()).await?;
+        let size_str = size_line.trim().split(';').next().unwrap_or("").trim();
+        let size = u64::from_str_radix(size_str, 16)
+            .with_context(|| format!("taille de chunk invalide: {size_str:?}"))?;
+
+        if size == 0 {
+            // Chunk terminal : en-tetes de fin optionnels jusqu'a la ligne
+            // vide (RFC 7230 §4.1.2), rejoues tels quels.
+            loop {
+                let mut trailer_line = String::new();
+                if reader.read_line(&mut trailer_line).await? == 0 {
+                    bail!("connexion fermee au milieu des en-tetes de fin (chunked)");
+                }
+                writer.write_all(trailer_line.as_bytes()).await?;
+                if trailer_line.trim_end_matches(['\r', '\n']).is_empty() {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+
+        copy_exact(reader, writer, size).await?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).await?;
+        writer.write_all(&crlf).await?;
     }
 }
 

@@ -1,11 +1,11 @@
-use crate::{openbao, storage};
+use crate::{git_identity, openbao, storage};
 use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, EmptyDirVolumeSource, EnvVar, PersistentVolumeClaimVolumeSource, Pod,
-    PodSpec, PodTemplateSpec, ResourceRequirements, SecurityContext, ServiceAccount, Volume,
-    VolumeMount,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, HostAlias,
+    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, ResourceRequirements,
+    SecurityContext, ServiceAccount, Volume, VolumeMount,
 };
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -159,6 +159,10 @@ pub struct ReconcileCtx {
     /// LiteLLM (`LITELLM_MASTER_KEY`) — partage par tous les Workshops dans
     /// ce lot, voir "Limites assumees" de `docs/PROGRESS.md`.
     pub llm_proxy_auth_token: Option<String>,
+    /// Injection automatique d'un credential Git pour l'agent (Jalon M2,
+    /// section 5.2) — voir `crate::git_identity`. `None` : fonctionnalite
+    /// desactivee, meme convention que `openbao`/`llm_proxy_addr`.
+    pub git_identity: Option<git_identity::GitIdentityConfig>,
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -171,6 +175,7 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or(false);
     let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
     let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok();
+    let git_identity = git_identity::config_from_env();
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -184,6 +189,7 @@ pub async fn run() -> anyhow::Result<()> {
                 registry_insecure,
                 llm_proxy_addr,
                 llm_proxy_auth_token,
+                git_identity,
             }),
         )
         .for_each(|res| async move {
@@ -855,7 +861,34 @@ async fn ensure_parent_pod(
     // microVM builder, ci-dessus dans `ensure_image_build_job`) : c'est ici
     // le sens original de `Workshop.spec.egress_allowlist`.
     let egress_allowlist = workshop.spec.egress_allowlist.join(",");
-    let identity_injection_rules = serde_json::to_string(&workshop.spec.identity_injection_rules)
+    // Regle d'injection Git calculee cote controller (2.2.2, Jalon M2) :
+    // jamais ecrite dans `workshop.spec` lui-meme (qui reste la source de
+    // verite declarative de l'utilisateur), seulement ajoutee ici, a la
+    // volee, a la liste serialisee vers `ATELIER_IDENTITY_INJECTION_RULES`.
+    // Best-effort et non bloquant (comme le provisioning OpenBao ci-dessus) :
+    // un echec de resolution du ClusterIP ne desactive que cette
+    // fonctionnalite pour ce cycle de reconciliation, jamais toute la
+    // reconciliation du Workshop — voir `crate::git_identity`.
+    let mut effective_identity_injection_rules = workshop.spec.identity_injection_rules.clone();
+    let mut git_host_alias: Option<HostAlias> = None;
+    if let Some(git_config) = &ctx.git_identity {
+        match git_identity::resolve_cluster_ip(&ctx.client, git_config).await {
+            Ok(ip) => {
+                effective_identity_injection_rules.push(git_identity::injection_rule(git_config));
+                git_host_alias = Some(HostAlias {
+                    ip: ip.to_string(),
+                    hostnames: Some(vec![atelier_common::GIT_ALIAS_HOST.to_string()]),
+                });
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "resolution du ClusterIP de la forge Git echouee, injection Git desactivee pour ce cycle"
+                );
+            }
+        }
+    }
+    let identity_injection_rules = serde_json::to_string(&effective_identity_injection_rules)
         .unwrap_or_else(|_| "[]".to_string());
     let tools = workshop.spec.tools.join(",");
     // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
@@ -933,6 +966,16 @@ async fn ensure_parent_pod(
         },
         spec: Some(PodSpec {
             service_account_name: Some(sa_name),
+            // Entree `/etc/hosts` posee par Kubernetes lui-meme sur TOUS les
+            // conteneurs du pod (net-proxy, identity-proxy, etc, qui
+            // partagent le netns du pod) : c'est ce qui rend
+            // `atelier_common::GIT_ALIAS_HOST` reellement resolvable par
+            // `identity-proxy` au moment de relayer vers la vraie
+            // destination — voir `crate::git_identity` et le commentaire de
+            // tete de `crates/net-proxy/src/internal.rs`. Absent si la
+            // resolution du ClusterIP a echoue ou si la fonctionnalite n'est
+            // pas configuree (`git_host_alias` est alors `None`).
+            host_aliases: git_host_alias.clone().map(|alias| vec![alias]),
             volumes: Some(vec![
                 Volume {
                     name: "cache".to_string(),
@@ -1051,6 +1094,23 @@ async fn ensure_parent_pod(
                                 .as_ref()
                                 .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr)),
                         )
+                        // Alias `git.atelier.internal` (2.2.3, Jalon M2) :
+                        // pointe directement vers identity-proxy (meme
+                        // adresse que `ATELIER_IDENTITY_PROXY_ADDR`
+                        // ci-dessus), pour que ce nom bypass l'allowlist
+                        // comme les autres alias internes — voir
+                        // `crates/net-proxy/src/internal.rs` et
+                        // `crate::git_identity`. Cable seulement si la
+                        // resolution du ClusterIP a reussi (`git_host_alias`),
+                        // sinon `identity-proxy` n'aurait de toute facon
+                        // aucun moyen de resoudre ce nom (pas de `hostAlias`
+                        // pose sur le pod, voir plus bas).
+                        .chain(git_host_alias.as_ref().map(|_| {
+                            env_var(
+                                "ATELIER_GIT_ALIAS_ADDR",
+                                &format!("127.0.0.1:{IDENTITY_PROXY_PORT}"),
+                            )
+                        }))
                         // Permet a net-proxy de lire lui-meme le secret
                         // `session_auth` (mot de passe Basic Auth guest, voir
                         // `openbao::ensure_session_auth`) via son propre login

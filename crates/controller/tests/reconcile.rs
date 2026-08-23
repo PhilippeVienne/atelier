@@ -27,6 +27,7 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         registry_insecure: true,
         llm_proxy_addr: None,
         llm_proxy_auth_token: None,
+        git_identity: None,
     }
 }
 
@@ -287,6 +288,166 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
 
+/// Test reel de la tache 2.2.2 (Jalon M2, section 5.2) : quand
+/// `ReconcileCtx::git_identity` est configure, `apply()` doit calculer une
+/// regle d'injection Git (jamais ecrite dans `Workshop.spec` lui-meme),
+/// resoudre le vrai ClusterIP du Service Forgejo de dev via l'API
+/// Kubernetes (`crate::git_identity::resolve_cluster_ip`, jamais une
+/// resolution DNS classique — voir le commentaire de tete de ce module) et
+/// la poser en `hostAliases` sur le pod parent, pour que
+/// `atelier_common::GIT_ALIAS_HOST` soit reellement resolvable par
+/// `identity-proxy` une fois le pod demarre.
+#[tokio::test]
+async fn apply_wires_the_git_identity_injection_rule_when_configured() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let services: Api<k8s_openapi::api::core::v1::Service> = Api::namespaced(client.clone(), ns);
+    let Ok(forgejo_service) = services.get("atelier-forgejo-dev").await else {
+        eprintln!(
+            "Service atelier-forgejo-dev absent (voir deploy/dev/forgejo/README.md), test ignore"
+        );
+        return;
+    };
+    let expected_cluster_ip = forgejo_service
+        .spec
+        .and_then(|s| s.cluster_ip)
+        .expect("le Service atelier-forgejo-dev doit avoir un ClusterIP");
+
+    let name = unique_name("test-workshop-git-identity");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let mut ctx = ctx_without_openbao(client.clone());
+    ctx.git_identity = Some(atelier_controller::git_identity::GitIdentityConfig {
+        service_name: "atelier-forgejo-dev".to_string(),
+        service_namespace: ns.to_string(),
+        port: 3000,
+        header: "Authorization".to_string(),
+        prefix: "token ".to_string(),
+    });
+
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+
+    let building_status = atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("premier apply()");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": building_status })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("patch du statut");
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+
+    atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let expected_pod_name = format!("{name}-parent");
+    let pod = pods
+        .get(&expected_pod_name)
+        .await
+        .expect("le pod parent doit avoir ete cree");
+    let pod_spec = pod.spec.as_ref().expect("pod spec");
+
+    let host_aliases = pod_spec
+        .host_aliases
+        .as_ref()
+        .expect("hostAliases doit etre pose quand git_identity est configure");
+    let git_alias = host_aliases
+        .iter()
+        .find(|a| {
+            a.hostnames
+                .as_ref()
+                .is_some_and(|h| h.iter().any(|n| n == atelier_common::GIT_ALIAS_HOST))
+        })
+        .expect("une entree hostAliases doit cibler atelier_common::GIT_ALIAS_HOST");
+    assert_eq!(
+        git_alias.ip, expected_cluster_ip,
+        "l'IP posee doit etre le vrai ClusterIP du Service Forgejo, lu via l'API Kubernetes"
+    );
+
+    let identity_proxy = pod_spec
+        .containers
+        .iter()
+        .find(|c| c.name == "identity-proxy")
+        .expect("conteneur identity-proxy");
+    let rules_env = identity_proxy
+        .env
+        .as_ref()
+        .and_then(|env| {
+            env.iter()
+                .find(|e| e.name == "ATELIER_IDENTITY_INJECTION_RULES")
+        })
+        .and_then(|e| e.value.clone())
+        .expect("ATELIER_IDENTITY_INJECTION_RULES doit etre pose");
+    let rules: Vec<atelier_common::IdentityInjectionRule> =
+        serde_json::from_str(&rules_env).expect("JSON valide");
+    let git_rule = rules
+        .iter()
+        .find(|r| r.host == atelier_common::GIT_ALIAS_HOST)
+        .expect("la regle d'injection Git calculee doit etre presente");
+    assert_eq!(git_rule.header, "Authorization");
+    assert_eq!(git_rule.prefix, "token ");
+    // Meme chemin OpenBao que `crates/image-builder/src/main.rs::resolve_git_credentials`
+    // (decision documentee dans `crates/controller/src/git_identity.rs`).
+    assert_eq!(git_rule.secret_path, "git");
+    assert_eq!(git_rule.field, "password");
+
+    let net_proxy = pod_spec
+        .containers
+        .iter()
+        .find(|c| c.name == "net-proxy")
+        .expect("conteneur net-proxy");
+    let git_alias_addr = net_proxy
+        .env
+        .as_ref()
+        .and_then(|env| env.iter().find(|e| e.name == "ATELIER_GIT_ALIAS_ADDR"))
+        .and_then(|e| e.value.clone())
+        .expect("ATELIER_GIT_ALIAS_ADDR doit etre pose sur net-proxy");
+    assert_eq!(git_alias_addr, "127.0.0.1:3129");
+
+    // `Workshop.spec` lui-meme ne doit jamais avoir ete modifie (source de
+    // verite declarative de l'utilisateur) : la regle est calculee a la
+    // volee, jamais persistee dans le CRD.
+    let refetched = workshops.get(&name).await.expect("get workshop");
+    assert!(
+        refetched.spec.identity_injection_rules.is_empty(),
+        "la regle Git calculee ne doit jamais etre ecrite dans Workshop.spec"
+    );
+
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    pods.delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    jobs.delete(&format!("{name}-image-build"), &foreground_delete())
+        .await
+        .ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
 /// Suspendre un Workshop doit liberer son pod parent sans toucher a son
 /// ServiceAccount ; le reprendre doit recreer le pod (phase `Resuming` puis
 /// `Running`) sans reconstruire l'image.
@@ -482,6 +643,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         registry_insecure: true,
         llm_proxy_addr: None,
         llm_proxy_auth_token: None,
+        git_identity: None,
     };
 
     workshops

@@ -97,6 +97,19 @@ fn default_injection_field() -> String {
     "value".to_string()
 }
 
+/// Hote interne conventionnel pour la forge Git ciblee par l'agent en cours
+/// d'execution dans la microVM (voir `crates/controller/src/git_identity.rs`
+/// et `crates/net-proxy/src/internal.rs`) : jamais resolu par DNS classique,
+/// toujours par une combinaison `net-proxy` (alias interne, bypass
+/// allowlist) + `hostAliases` du pod parent (IP du Service Kubernetes de la
+/// forge, injectee dans `/etc/hosts` de tous les conteneurs du pod par
+/// Kubernetes lui-meme) + `identity-proxy` (regle d'injection de PAT).
+/// Reprend deliberement la meme valeur que `FORGEJO__server__ROOT_URL` de
+/// l'instance Forgejo de dev (`deploy/dev/forgejo/dev-pod.yaml`), pas une
+/// coincidence : ce nom est concu comme le nom "public" (au sens de l'agent)
+/// de la forge, quel que soit son adresse reelle dans le cluster.
+pub const GIT_ALIAS_HOST: &str = "git.atelier.internal";
+
 /// Quantites au format Kubernetes (ex: "500m", "2Gi").
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
