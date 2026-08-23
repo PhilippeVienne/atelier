@@ -33,7 +33,11 @@ theme:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
@@ -44,13 +48,16 @@ markdown_extensions:
   - attr_list
   - md_in_html
 
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+
 nav:
-  - Accueil: index.md
-  - Guide Utilisateur: user-guide.md
-  - Architecture:
-      - Présentation Globale: ARCHITECTURE.md
-      - Sécurité Réseau: architecture/network-security.md
-      - Gestion de l'Identité & Secrets: architecture/identity-secrets.md
-      - Snapshot & Restore: architecture/snapshot-restore.md
-  - Déploiement & CI/CD: DEPLOYMENT.md
-  - État du Projet: PROGRESS.md
+  - 🏠 Présentation: index.md
+  - 📖 Guide Utilisateur: user-guide.md
+  - 📐 Architecture & Sécurité:
+      - Vue d'ensemble: ARCHITECTURE.md
+      - Sécurité & Proxies Réseau: architecture/network-security.md
+      - Identités & Secrets (Kanidm / OpenBao): architecture/identity-secrets.md
+      - Snapshot RAM & Reprise microVM: architecture/snapshot-restore.md
+  - 🚀 Déploiement & CI/CD: DEPLOYMENT.md
+  - 📊 État du Projet: PROGRESS.md

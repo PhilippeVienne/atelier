@@ -4,8 +4,7 @@
 > [`PROGRESS.md`](PROGRESS.md). Ce document decrit la cible et les decisions
 > de conception ; il n'essaie pas de suivre l'avancement au jour le jour.
 
-Ce document donne la vue d'ensemble. Les sujets denses ont leur propre
-fichier dans [`architecture/`](architecture/) :
+Ce document donne la vue d'ensemble. Les sujets denses ont leur propre fichier d'architecture :
 
 - [`architecture/identity-secrets.md`](architecture/identity-secrets.md) —
   Kanidm + OpenBao, pont d'identite, `identity-proxy`.
@@ -65,7 +64,7 @@ d'y extraire l'image cible. Consequences directes sur `image-builder` :
   cache) doit vivre sur un point de montage distinct de la racine du
   conteneur, sous peine d'etre efface avec le reste.
 
-Voir [`deploy/dev/image-builder/README.md`](../deploy/dev/image-builder/README.md)
+Voir la documentation des composants sous `crates/image-builder/` et `deploy/dev/`.
 pour reproduire ce pipeline en local.
 
 ## Vue d'ensemble
