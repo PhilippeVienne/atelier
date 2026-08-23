@@ -224,17 +224,17 @@ graph TD
 
 ### 5.1. Client S3 Rust dans `api-server` (`aws-sdk-s3` / `opendal`)
 * **Fichier impacté** : `crates/api-server/src/storage.rs` (Nouveau module)
-  - [ ] **2.1.1** : Définir le trait `StorageBackend` (`upload_stream`, `download_stream`, `delete_object`) et l'implémentation `S3StorageBackend`.
-  - [ ] **2.1.2** : Implémenter le chargement dynamique des variables `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET_SESSIONS`, `S3_BUCKET_SNAPSHOTS`, `S3_FORCE_PATH_STYLE`.
-  - [ ] **2.1.3** : Implémenter `upload_session_archive(workshop_name, session_id, stream)` avec compression zstd en streaming.
-  - [ ] **2.1.4** : Implémenter `get_session_stream(s3_key)` pour le rejeu de session dans l'API.
+  - [-/claude-code/sess-6f3eef77-c] **2.1.1** : Définir le trait `StorageBackend` (`upload_stream`, `download_stream`, `delete_object`) et l'implémentation `S3StorageBackend`.
+  - [-/claude-code/sess-6f3eef77-c] **2.1.2** : Implémenter le chargement dynamique des variables `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET_SESSIONS`, `S3_BUCKET_SNAPSHOTS`, `S3_FORCE_PATH_STYLE`.
+  - [-/claude-code/sess-6f3eef77-c] **2.1.3** : Implémenter `upload_session_archive(workshop_name, session_id, stream)` avec compression zstd en streaming.
+  - [-/claude-code/sess-6f3eef77-c] **2.1.4** : Implémenter `get_session_stream(s3_key)` pour le rejeu de session dans l'API.
 
 ### 5.2. Forge Git HTTPS (Forgejo / GitHub / GitLab) & Injection `identity-proxy`
 * **Fichier impacté** : [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs)
-  - [ ] **2.2.1** : Structurer le chemin des secrets OpenBao pour les tokens Git : `secret/data/workshops/<name>/git_token`.
-  - [ ] **2.2.2** : Configurer automatiquement dans `WorkshopSpec.identity_injection_rules` la règle pour l'hôte Git ciblé (`Authorization: token <PAT>` ou `PRIVATE-TOKEN: <PAT>`).
+  - [-/claude-code/sess-6f3eef77-d] **2.2.1** : Structurer le chemin des secrets OpenBao pour les tokens Git : `secret/data/workshops/<name>/git_token`. *(À vérifier avant implémentation : `crates/image-builder/src/main.rs::resolve_git_credentials` lit déjà `secret/data/workshops/<name>/git` — champs `username`/`password` — pour cloner un devcontainer privé au moment du build. Réutiliser ce chemin existant plutôt que d'en introduire un second `git_token` incohérent, sauf raison explicite de les séparer.)*
+  - [-/claude-code/sess-6f3eef77-d] **2.2.2** : Configurer automatiquement dans `WorkshopSpec.identity_injection_rules` la règle pour l'hôte Git ciblé (`Authorization: token <PAT>` ou `PRIVATE-TOKEN: <PAT>`).
 * **Fichier impacté** : `crates/net-proxy/src/internal.rs`
-  - [ ] **2.2.3** : S'assurer que le nom d'alias interne `git.atelier.internal` ou `forgejo.atelier.internal` est routé d'office vers `identity-proxy` sans vérification d'allowlist externe.
+  - [-/claude-code/sess-6f3eef77-d] **2.2.3** : S'assurer que le nom d'alias interne `git.atelier.internal` ou `forgejo.atelier.internal` est routé d'office vers `identity-proxy` sans vérification d'allowlist externe.
 
 ### 🧪 Tests & Preuves Attendues pour M2
 1. `cargo test -p atelier-api-server --test storage` : Upload réel d'un flux de session 5Mo compressé sur un serveur S3 (RustFS/MinIO en conteneur) et vérification de son intégrité SHA-256 au rejeu.
