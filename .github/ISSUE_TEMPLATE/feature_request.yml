@@ -1,0 +1,36 @@
+name: Demande de Fonctionnalité / Feature Request
+description: Proposer une nouvelle fonctionnalité ou une amélioration d'Atelier
+title: "[FEAT]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Merci de proposer vos idées pour améliorer la plateforme Atelier !
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Résumé de la Fonctionnalité
+      description: Expliquez brièvement l'amélioration ou la nouvelle capacité souhaitée.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problème ou Besoin Répondus
+      description: À quel besoin ou cas d'usage cette fonctionnalité répond-elle ?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution / Architecture Proposée
+      description: Décrivez comment vous envisagez la mise en œuvre (crates impactées, CRD, API, etc.).
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Envisagées
+      description: Avez-vous considéré d'autres approches ou contournements ?

@@ -1,0 +1,71 @@
+name: Rapport de Bug / Bug Report
+description: Signaler un dysfonctionnement ou un comportement inattendu
+title: "[BUG]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Merci de remplir ce formulaire avec autant de précisions que possible pour nous aider à reproduire le problème.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Composant concerné
+      description: Sélectionnez le composant d'Atelier où le bug se manifeste.
+      options:
+        - "controller (Kubernetes Operator)"
+        - "api-server (REST / WebSocket API)"
+        - "firecracker / vm-supervisor (MicroVM)"
+        - "net-proxy / identity-proxy (Réseau & Secrets)"
+        - "mcp-gateway (Passerelle IA / MCP)"
+        - "image-builder / builder-vm-init"
+        - "dashboard (Next.js UI)"
+        - "Autre / Inconnu"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description du Bug
+      description: Une explication claire et concise du problème rencontré.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Étapes pour Reproduire
+      description: Indiquez la séquence exacte de commandes ou d'actions pour reproduire le bug.
+      placeholder: |
+        1. Lancer 'kubectl apply -f ...'
+        2. Exécuter 'cargo test ...'
+        3. Observer l'erreur...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportement Attendu
+      description: Ce qui aurait dû se passer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journaux d'Erreur & Logs (Tracing / Rust backtrace)
+      description: Collez ici les logs pertinents ou la trace d'erreur (`RUST_BACKTRACE=1`).
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environnement
+      description: OS, version de Rust, version de Kubernetes/Kind, support KVM, etc.
+      placeholder: |
+        - OS: Linux 6.8
+        - Rust: 1.85.0
+        - Kind / K8s: v1.30.0
+        - KVM: Actif (/dev/kvm accessible)

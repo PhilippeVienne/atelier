@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Guide de Contribution
+    url: https://github.com/PhilippeVienne/atelier/blob/main/CONTRIBUTING.md
+    about: Consulter les consignes de dev et la charte de contribution.
+  - name: Directives Agents IA
+    url: https://github.com/PhilippeVienne/atelier/blob/main/AGENTS.md
+    about: Règles de développement pour Claude Code, Gemini CLI et Antigravity.
