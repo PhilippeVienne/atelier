@@ -1533,6 +1533,16 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   `npx tsx server.ts` a la main ne surveille pas le fichier, et on teste
   alors une version obsolete de `server.ts` sans s'en rendre compte
   (plusieurs resultats "incoherents" venaient de la).
+- En Next.js 16 (App Router + Turbopack + React 19), le mode dev initialise un
+  `debugChannel` de debug React dans le client (`createFromReadableStream`). Ce
+  stream attend la fermeture du canal de debug transitant par le WebSocket HMR
+  (`/_next/hmr`). Dans un custom server (`dashboard/server.ts`), déléguer
+  l'upgrade WebSocket via `app.getUpgradeHandler()` au lieu de
+  `(app as any).upgradeHandler` bloquait silencieusement la socket HMR : le
+  stream du `debugChannel` ne se fermait jamais, `initialServerResponse` restait
+  `pending` indéfiniment, et l'hydratation React (`hydrateRoot` / `useEffect`)
+  ne s'exécutait sur aucune page sans lever la moindre erreur en console.
+  Résolu en utilisant `(app as any).upgradeHandler(req, socket, head)`.
 
 ## Prochaines etapes (par priorite)
 
@@ -1644,3 +1654,34 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
     configure ; OpenAI/Grok non couverts (DeepSeek/Anthropic uniquement
     pour l'instant, le `model_list` LiteLLM est extensible sans changement
     de code cote atelier).
+
+---
+
+## Journal d'Avancement du Plan d'Action Global (Specs 00 à 05)
+
+> Section dédiée au suivi jalon par jalon de l'implémentation du plan d'action global ([`docs/specs/PLAN-ACTION-GLOBAL.md`](specs/PLAN-ACTION-GLOBAL.md)).
+> Chaque agent complétant une tâche doit ajouter une entrée datée avec sa preuve empirique (tests réels sans mocks, zéros warnings clippy/fmt).
+
+### Matrice d'Avancement des Jalons
+
+| Jalon | Intitulé du Jalon | Statut | Progrès | Dernière mise à jour |
+| :--- | :--- | :--- | :--- | :--- |
+| **M1** | **Socle PostgreSQL, Découplage OIDC Universel & Nettoyage CRD** | ⏳ À démarrer | 0/14 tâches | 2026-08-23 |
+| **M2** | **Stockage S3 Hybride & Git 100% HTTPS** | ⏳ En attente M1 | 0/7 tâches | 2026-08-23 |
+| **M3** | **Passerelle d'Inférence IA LiteLLM & Budgets Stricts** | ⏳ En attente M1 | 0/4 tâches | 2026-08-23 |
+| **M4** | **Serveur MCP Externe Embarqué dans l'API Server** | ⏳ En attente M1 | 0/5 tâches | 2026-08-23 |
+| **M5** | **Moteur DevFactory & Project Manager Autonome (LangGraph)** | ⏳ En attente M4 | 0/11 tâches | 2026-08-23 |
+| **M6** | **Chart Helm Monolithique & Documentation Administrateur** | ⏳ En attente M1-M5 | 0/10 tâches | 2026-08-23 |
+
+---
+
+### Entrées d'Historique par Tâche
+
+*(Les futures entrées de progression des agents viendront s'ajouter chronologiquement ici sous le format standardisé :)*
+```markdown
+### [YYYY-MM-DD HH:MM] Jalon X - Tâche X.Y.Z : <Titre de la tâche>
+- **Composant impacté** : `crates/...` ou `services/...`
+- **Modifications réalisées** : Résumé précis des structs, endpoints ou tables modifiés.
+- **Preuve empirique / Test exécuté** : Commande exacte exécutée et extrait de sortie attestant du succès (zéro mock).
+- **Statut** : ✅ Validé / Prêt pour la tâche suivante.
+```

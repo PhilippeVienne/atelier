@@ -14,12 +14,66 @@ Ce document régit les règles de développement et de collaboration applicables
    - Atelier s'appuie sur des tests d'intégration réels contre un cluster `kind` local ou de vraies microVMs Firecracker.
    - Ne remplacez pas les échecs de test par des mocks factices ou des try/catch silencieux.
 
-3. **Collaboration Multi-Agents Concurrente** :
-   - Plusieurs agents peuvent travailler simultanément sur le dépôt.
-   - Inspectez systématiquement `git status` et `git diff` avant toute modification ou commit pour ne pas écraser les contributions d'un autre agent.
+3. **Collaboration Multi-Agents Concurrente & Continuité** :
+   - Plusieurs agents peuvent travailler simultanément ou séquentiellement sur le dépôt.
+   - Inspectez systématiquement `git status`, `git diff` et [`docs/PROGRESS.md`](docs/PROGRESS.md) avant toute modification ou commit.
+   - **Le travail peut être interrompu à tout moment et repris par un autre agent**. Chaque étape complétée doit être immédiatement consignée dans `docs/PROGRESS.md` avec sa preuve de test.
 
 4. **Acceptation du CLA** :
    - Toute contribution produite par ou avec l'assistance d'un agent IA et soumise au dépôt est régie par les termes du [Contributor License Agreement (`CLA.md`)](CLA.md), accordant au mainteneur le droit de re-licencier ou double-licencier le projet.
+
+---
+
+## 🧭 Lecture Conditionnelle des Spécifications Techniques
+
+Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spécification technique associée dans `docs/specs/` pour en respecter l'architecture et les contrats d'interface :
+
+```text
+                                  ┌────────────────────────────────┐
+                                  │      PLAN-ACTION-GLOBAL.md     │
+                                  │ (Cartographie & Checklist Jalon)│
+                                  └───────────────┬────────────────┘
+                                                  │
+                ┌─────────────────────────────────┼─────────────────────────────────┐
+                ▼                                 ▼                                 ▼
+   ┌───────────────────────────┐    ┌───────────────────────────┐    ┌───────────────────────────┐
+   │         Jalon M1          │    │         Jalon M2          │    │         Jalon M3          │
+   │  01-keycloak-forgejo-     │    │  01-keycloak-forgejo-     │    │     03-litellm-proxy.md   │
+   │        postgres.md        │    │        postgres.md        │    │                           │
+   │ (PostgreSQL sqlx & OIDC)  │    │  (S3 Storage & Git HTTPS) │    │  (Virtual Keys & Budgets) │
+   └───────────────────────────┘    └───────────────────────────┘    └───────────────────────────┘
+                │                                 │                                 │
+                ▼                                 ▼                                 ▼
+   ┌───────────────────────────┐    ┌───────────────────────────┐    ┌───────────────────────────┐
+   │         Jalon M4          │    │         Jalon M5          │    │         Jalon M6          │
+   │  04-external-mcp-server.md│    │ 05-devfactory-pm-engine.md│    │ 02-helm-deployment-admin  │
+   │ (Serveur MCP /v1/mcp & WS)│    │  (LangGraph, Redis, RAG)  │    │ (Chart Helm & Admin Doc)  │
+   └───────────────────────────┘    └───────────────────────────┘    └───────────────────────────┘
+                │                                                                   │
+                └─────────────────────────────────┬─────────────────────────────────┘
+                                                  ▼
+                                   ┌───────────────────────────┐
+                                   │       Spécification       │
+                                   │  06-dashboard-cadrage.md  │
+                                   │ (Next.js 16, BFF, VS Code)│
+                                   └───────────────────────────┘
+```
+
+### 📖 Quand lire quelle spécification ?
+1. **Document Cadre Transversal** : [`docs/specs/00-architecture-principles-substitutability.md`](docs/specs/00-architecture-principles-substitutability.md)
+   - *À lire dès qu'un choix d'infrastructure est fait (Postgres/RDS, Keycloak/Auth0, Forgejo/GitHub, OpenBao/Vault, RustFS/S3).*
+2. **Sur les travaux de Base de Données, OIDC & Git** :
+   - *Lire [`docs/specs/01-keycloak-forgejo-postgres.md`](docs/specs/01-keycloak-forgejo-postgres.md) avant de modifier `crates/api-server/src/auth.rs`, `crates/controller/src/openbao.rs` ou les schémas SQL.*
+3. **Sur les travaux de Déploiement Kubernetes & Helm** :
+   - *Lire [`docs/specs/02-helm-deployment-admin-doc.md`](docs/specs/02-helm-deployment-admin-doc.md) avant d'éditer `charts/atelier/` ou `docs/admin-guide.md`.*
+4. **Sur la passerelle IA & gestion des Budgets LLM** :
+   - *Lire [`docs/specs/03-litellm-proxy.md`](docs/specs/03-litellm-proxy.md) avant d'éditer `crates/controller/src/litellm.rs` ou le finalizer.*
+5. **Sur le Serveur MCP Externe** :
+   - *Lire [`docs/specs/04-external-mcp-server.md`](docs/specs/04-external-mcp-server.md) avant d'implémenter les routes `/v1/mcp` dans `api-server`.*
+6. **Sur le Moteur DevFactory & LangGraph** :
+   - *Lire [`docs/specs/05-devfactory-pm-engine.md`](docs/specs/05-devfactory-pm-engine.md) avant d'écrire du code dans `services/pm-engine`.*
+7. **Sur le Dashboard & l'Interface Utilisateur** :
+   - *Lire [`docs/specs/06-dashboard-architecture-cadrage.md`](docs/specs/06-dashboard-architecture-cadrage.md) avant de modifier les pages, Server Components, Server Actions ou le chat PM dans `dashboard/`.*
 
 ---
 
@@ -27,10 +81,10 @@ Ce document régit les règles de développement et de collaboration applicables
 
 ### Rust & Architecture Multi-Crates
 - **Zero `unsafe`** dans le code de production (`crates/*/src/`).
-- Respectez l'isolation des 11 crates workspace :
+- Respectez l'isolation des crates workspace :
   - `common` : CRDs & télémétrie.
   - `controller` : Opérateur `kube-rs`.
-  - `api-server` : Gateway Axum (REST & WS).
+  - `api-server` : Gateway Axum (REST, WS & MCP `/v1/mcp`).
   - `firecracker`, `vm-supervisor`, `builder-vm-init` : Virtualisation Firecracker.
   - `net-proxy`, `identity-proxy`, `mcp-gateway` : Proxies réseau et passerelle IA.
   - `image-builder` & `kvm-device-plugin` : Outils d'infrastructure.
@@ -54,5 +108,6 @@ cargo test --workspace
 ## 📝 Mise à jour de la Documentation & Progression
 
 Chaque modification d'architecture ou ajout de composant doit être documenté dans :
-- [`docs/PROGRESS.md`](docs/PROGRESS.md) (matrice d'avancement et leçons retenues).
+- [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) (cocher la case `[x]`).
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) (entrée datée dans la section dédiée avec commande de test et preuve empirique).
 - [`README.md`](README.md) et [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) le cas échéant.
