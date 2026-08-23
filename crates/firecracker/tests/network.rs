@@ -96,6 +96,14 @@ async fn restricts_tap_to_net_proxy_only() {
         rules.contains("-j DROP"),
         "regle de rejet par defaut manquante: {rules}"
     );
+    // Sans cette regle, le retour (SYN-ACK) d'une connexion que net-proxy
+    // initie lui-meme vers le guest (port-forward/code-server/ttyd) serait
+    // jete par cette meme chaine (port de destination ephemere, jamais dans
+    // la liste explicite ci-dessus) — bug reel trouve en testant.
+    assert!(
+        rules.contains("ctstate") && rules.contains("ESTABLISHED"),
+        "regle de retour de connexion (conntrack) manquante: {rules}"
+    );
 
     let input_output = Command::new("iptables")
         .args(["-S", "INPUT"])

@@ -285,11 +285,36 @@ impl NetworkSetup {
     /// (typiquement le port egress explicite et/ou les ports transparents)
     /// plus le port 53 (UDP+TCP), tout le reste `DROP`, hookee sur `INPUT`,
     /// `FORWARD` bloque entierement pour ce TAP.
+    ///
+    /// La toute premiere regle accepte le trafic retour d'une connexion deja
+    /// suivie par `conntrack` (`ESTABLISHED,RELATED`) : sans elle, seul le
+    /// trafic dont le port de **destination** correspond exactement a l'un
+    /// de `tcp_ports` passe — ce qui bloque silencieusement le retour
+    /// (SYN-ACK) de toute connexion que net-proxy initie lui-meme *vers* le
+    /// guest (port-forward/`code-server`/`ttyd`, port de destination
+    /// ephemere cote net-proxy, jamais dans `tcp_ports`). Bug reel trouve en
+    /// testant : la connexion sortante partait bien, mais son retour etait
+    /// jete par cette meme chaine, cause d'un `Connection timed out` cote
+    /// net-proxy alors que le service ecoutait normalement dans le guest.
     async fn setup_dedicated_chain(&self, tcp_ports: &[u16]) -> Result<()> {
         let chain = self.iptables_chain_name();
         let host_ip = self.host_ip.to_string();
 
         run("iptables", &["-N", &chain]).await?;
+        run(
+            "iptables",
+            &[
+                "-A",
+                &chain,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+                "-j",
+                "ACCEPT",
+            ],
+        )
+        .await?;
         for port in tcp_ports {
             run(
                 "iptables",
