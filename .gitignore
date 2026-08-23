@@ -20,3 +20,7 @@ deploy/dev/firecracker/assets/
 # binaires envbuilder/crane de dev (gros fichiers)
 deploy/dev/envbuilder/envbuilder
 deploy/dev/crane/crane
+
+# GitLab Pages / MkDocs build outputs
+public/
+site/

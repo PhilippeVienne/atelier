@@ -1,0 +1,55 @@
+site_name: Atelier — MicroVM Dev Environments for AI Agents
+site_description: Documentation et site officiel du projet Atelier (Firecracker, Kubernetes, MCP, OpenBao)
+site_author: Philippe Vienne
+
+theme:
+  name: material
+  language: fr
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Mode sombre
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Mode clair
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - attr_list
+  - md_in_html
+
+nav:
+  - Accueil: index.md
+  - Architecture:
+      - Présentation Globale: ARCHITECTURE.md
+      - Sécurité Réseau: architecture/network-security.md
+      - Gestion de l'Identité & Secrets: architecture/identity-secrets.md
+      - Snapshot & Restore: architecture/snapshot-restore.md
+  - Déploiement & CI/CD: DEPLOYMENT.md
+  - État du Projet: PROGRESS.md
