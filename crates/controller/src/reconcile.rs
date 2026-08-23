@@ -1,4 +1,4 @@
-use crate::{kanidm, openbao, storage};
+use crate::{openbao, storage};
 use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
@@ -9,7 +9,6 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use kanidm_client::KanidmClient;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::finalizer::{self, Event};
@@ -139,16 +138,14 @@ enum ReconcileError {
     Kube(#[from] kube::Error),
 }
 
-/// Dependances partagees par toutes les reconciliations. `kanidm` et
-/// `openbao` sont optionnels : sans configuration, le controller fonctionne
-/// normalement mais ne provisionne pas d'identite/secrets par Workshop.
-/// `registry_addr` n'est en revanche pas optionnel : sans registre, la
-/// phase `BuildingImage` ne peut pas aboutir (le Job image-builder echoue),
-/// mais on garde une valeur par defaut de dev plutot que de faire echouer
-/// `run()` au demarrage.
+/// Dependances partagees par toutes les reconciliations. `openbao` est
+/// optionnel : sans configuration, le controller fonctionne normalement
+/// mais ne provisionne pas de secrets par Workshop. `registry_addr` n'est en
+/// revanche pas optionnel : sans registre, la phase `BuildingImage` ne peut
+/// pas aboutir (le Job image-builder echoue), mais on garde une valeur par
+/// defaut de dev plutot que de faire echouer `run()` au demarrage.
 pub struct ReconcileCtx {
     pub client: Client,
-    pub kanidm: Option<Arc<KanidmClient>>,
     pub openbao: Option<openbao::OpenBaoConfig>,
     pub registry_addr: String,
     pub registry_insecure: bool,
@@ -166,7 +163,6 @@ pub struct ReconcileCtx {
 
 pub async fn run() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
-    let kanidm = kanidm::client_from_env().await?.map(Arc::new);
     let openbao = openbao::config_from_env()?;
     let registry_addr =
         std::env::var("ATELIER_REGISTRY_ADDR").unwrap_or_else(|_| "localhost:5000".to_string());
@@ -183,7 +179,6 @@ pub async fn run() -> anyhow::Result<()> {
             error_policy,
             Arc::new(ReconcileCtx {
                 client,
-                kanidm,
                 openbao,
                 registry_addr,
                 registry_insecure,
@@ -237,15 +232,12 @@ fn error_policy(
 }
 
 /// Nettoie les ressources externes (non Kubernetes) d'un Workshop avant
-/// d'autoriser sa suppression effective : entite Kanidm et role OpenBao. Les
-/// ressources Kubernetes owned (Job, ServiceAccount, Pod) sont laissees au
-/// garbage collector standard.
+/// d'autoriser sa suppression effective : role OpenBao. Les ressources
+/// Kubernetes owned (Job, ServiceAccount, Pod) sont laissees au garbage
+/// collector standard.
 async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> {
     let name = workshop.name_any();
 
-    if let Some(kanidm_client) = &ctx.kanidm {
-        kanidm::delete_workshop_entity(kanidm_client, &name).await?;
-    }
     if let Some(openbao_config) = &ctx.openbao {
         openbao::delete_workshop_role(openbao_config, &name).await?;
     }
@@ -256,21 +248,14 @@ async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> 
 /// Fait converger un `Workshop` d'un pas de reconciliation et renvoie le
 /// statut resultant.
 ///
-/// 1. Si Kanidm est configure et qu'aucune entite n'existe encore pour ce
-///    Workshop, la provisionner (`WorkshopStatus.kanidm_entity_id`). Rapide
-///    (un appel HTTP synchrone), donc fait directement ici plutot que via un
-///    Job asynchrone comme pour l'image. Fait inconditionnellement, meme
-///    Suspended : l'entite Kanidm et le role OpenBao ne sont pas des
-///    ressources du pod, ils survivent a un cycle suspend/resume (choix
-///    delibere, cf. section « Mise en veille » de l'architecture).
-/// 2. Si `spec.desiredState == Suspended`, s'assurer qu'aucun pod parent ne
+/// 1. Si `spec.desiredState == Suspended`, s'assurer qu'aucun pod parent ne
 ///    tourne (phase `Suspending` -> `Suspended`) et s'arreter la : pas de
 ///    build d'image ni de pod tant qu'on est suspendu.
-/// 3. Sinon (`Running`), tant que `status.imageDigest` est absent,
+/// 2. Sinon (`Running`), tant que `status.imageDigest` est absent,
 ///    s'assurer qu'un `Job` `image-builder` tourne (phase `BuildingImage`) ;
 ///    `image-builder` se charge lui-meme de patcher `status.imageDigest` a
 ///    la fin du build, voir `crates/image-builder`.
-/// 4. Une fois l'image disponible, creer/mettre a jour le ServiceAccount et
+/// 3. Une fois l'image disponible, creer/mettre a jour le ServiceAccount et
 ///    le pod parent (phase `Provisioning`/`Resuming` -> `Running`), et si
 ///    OpenBao est configure, le role Kubernetes-auth qui scope l'acces de ce
 ///    ServiceAccount aux seuls secrets de ce Workshop (voir
@@ -285,10 +270,8 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
     let ns = workshop.namespace().unwrap_or_else(|| "default".into());
     let name = workshop.name_any();
 
-    let kanidm_entity_id = resolve_kanidm_entity(ctx, workshop, &name).await;
-
     if workshop.spec.desired_state == WorkshopDesiredState::Suspended {
-        return ensure_suspended(ctx, workshop, &ns, &name, kanidm_entity_id).await;
+        return ensure_suspended(ctx, workshop, &ns, &name).await;
     }
 
     let was_suspended = matches!(
@@ -306,19 +289,10 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
         .and_then(|s| s.image_digest.clone());
 
     let Some(image_digest) = image_digest else {
-        return ensure_image_build_job(ctx, workshop, &ns, &name, kanidm_entity_id).await;
+        return ensure_image_build_job(ctx, workshop, &ns, &name).await;
     };
 
-    ensure_parent_pod(
-        ctx,
-        workshop,
-        &ns,
-        &name,
-        image_digest,
-        kanidm_entity_id,
-        was_suspended,
-    )
-    .await
+    ensure_parent_pod(ctx, workshop, &ns, &name, image_digest, was_suspended).await
 }
 
 /// Port d'ecoute par defaut du canal de controle HTTP de `vm-supervisor`
@@ -330,15 +304,14 @@ pub async fn apply(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<Wo
 const VM_CONTROL_PORT: u16 = 8081;
 
 /// Fait converger vers l'etat suspendu : libere le pod parent (compute) mais
-/// laisse intacts le ServiceAccount, l'entite Kanidm et le role OpenBao,
-/// pour une reprise rapide sans reprovisionner l'identite du Workshop.
+/// laisse intacts le ServiceAccount et le role OpenBao, pour une reprise
+/// rapide sans reprovisionner les secrets du Workshop.
 #[tracing::instrument(skip_all)]
 async fn ensure_suspended(
     ctx: &ReconcileCtx,
     workshop: &Workshop,
     ns: &str,
     name: &str,
-    kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), ns);
     let pod_name = format!("{name}-parent");
@@ -364,7 +337,7 @@ async fn ensure_suspended(
         .status
         .as_ref()
         .and_then(|s| s.image_digest.clone());
-    let mut status = carry_forward_status(workshop, phase, image_digest, kanidm_entity_id);
+    let mut status = carry_forward_status(workshop, phase, image_digest);
     status.snapshot_digest = snapshot_digest;
     status.pod_name = None;
     Ok(status)
@@ -413,33 +386,6 @@ async fn request_snapshot(pod: &Pod) -> Option<String> {
         }
         Err(err) => {
             tracing::warn!(%err, "reponse de vm-supervisor illisible, suspension sans snapshot");
-            None
-        }
-    }
-}
-
-/// Renvoie l'identite Kanidm existante, ou tente d'en provisionner une
-/// nouvelle si Kanidm est configure. Une erreur de provisioning est
-/// journalisee mais ne bloque pas le reste de la reconciliation : ce n'est
-/// pas une etape bloquante (contrairement au build d'image).
-async fn resolve_kanidm_entity(
-    ctx: &ReconcileCtx,
-    workshop: &Workshop,
-    name: &str,
-) -> Option<String> {
-    let existing = workshop
-        .status
-        .as_ref()
-        .and_then(|s| s.kanidm_entity_id.clone());
-    if existing.is_some() {
-        return existing;
-    }
-
-    let kanidm_client = ctx.kanidm.as_ref()?;
-    match kanidm::ensure_workshop_entity(kanidm_client, name).await {
-        Ok(entity_id) => Some(entity_id),
-        Err(err) => {
-            tracing::error!(%err, "provisioning de l'identite Kanidm echoue");
             None
         }
     }
@@ -532,7 +478,6 @@ async fn ensure_image_build_job(
     workshop: &Workshop,
     ns: &str,
     name: &str,
-    kanidm_entity_id: Option<String>,
 ) -> anyhow::Result<WorkshopStatus> {
     // Cache partage (PVC) ou image-builder publie le rootfs construit ;
     // cree au besoin, idempotent, pas de owner reference (partage entre
@@ -805,12 +750,7 @@ async fn ensure_image_build_job(
         WorkshopPhase::BuildingImage
     };
 
-    Ok(carry_forward_status(
-        workshop,
-        phase,
-        None,
-        kanidm_entity_id,
-    ))
+    Ok(carry_forward_status(workshop, phase, None))
 }
 
 #[tracing::instrument(skip_all)]
@@ -820,7 +760,6 @@ async fn ensure_parent_pod(
     ns: &str,
     name: &str,
     image_digest: String,
-    kanidm_entity_id: Option<String>,
     resuming: bool,
 ) -> anyhow::Result<WorkshopStatus> {
     let service_accounts: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), ns);
@@ -1219,7 +1158,7 @@ async fn ensure_parent_pod(
         (false, false) => WorkshopPhase::Provisioning,
     };
 
-    let mut status = carry_forward_status(workshop, phase, Some(image_digest), kanidm_entity_id);
+    let mut status = carry_forward_status(workshop, phase, Some(image_digest));
     status.pod_name = Some(pod_name);
     Ok(status)
 }
@@ -1228,7 +1167,6 @@ fn carry_forward_status(
     workshop: &Workshop,
     phase: WorkshopPhase,
     image_digest: Option<String>,
-    kanidm_entity_id: Option<String>,
 ) -> WorkshopStatus {
     WorkshopStatus {
         phase,
@@ -1238,7 +1176,6 @@ fn carry_forward_status(
             .status
             .as_ref()
             .and_then(|s| s.snapshot_digest.clone()),
-        kanidm_entity_id,
         conditions: BTreeMap::new(),
     }
 }

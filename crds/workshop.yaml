@@ -87,6 +87,11 @@ spec:
                   disk:
                     nullable: true
                     type: string
+                  maxLlmBudgetUsd:
+                    description: Budget maximal en dollars US alloue a la Virtual Key LiteLLM de ce Workshop (voir `docs/specs/03-litellm-proxy.md`). Absent = pas de plafond specifique impose par le Workshop (comportement par defaut de LiteLLM/politique globale du cluster).
+                    format: double
+                    nullable: true
+                    type: number
                   memory:
                     type: string
                 required:
@@ -114,10 +119,6 @@ spec:
                 type: object
               imageDigest:
                 description: Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
-                nullable: true
-                type: string
-              kanidmEntityId:
-                description: Identifiant de l'entite machine Kanidm provisionnee pour cet environnement (distincte du sujet humain `spec.owner_subject`). C'est cette identite que `identity-proxy` presente a OpenBao pour recuperer les secrets scopes a ce Workshop.
                 nullable: true
                 type: string
               phase:

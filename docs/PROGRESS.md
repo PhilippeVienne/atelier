@@ -1677,7 +1677,24 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
 
 ### Entrées d'Historique par Tâche
 
-*(Les futures entrées de progression des agents viendront s'ajouter chronologiquement ici sous le format standardisé :)*
+#### 2026-08-23 : Exécution non-root (`vscode`) et répertoire de travail (`/workspaces/atelier-workspace`) dans `ttyd` et `code-server`
+
+- **Problème** : `ttyd` et `code-server` démarraient sous `root` dans `/` à l'intérieur de la microVM Firecracker.
+- **Causes racines identifiées** :
+  1. Les services systemd du devcontainer (`atelier-terminal.service`, `atelier-code-server.service`, `atelier-ministack.service`) ne déclaraient pas `User=vscode`, `Group=vscode`, `HOME=/home/vscode`, `USER=vscode`.
+  2. `USER vscode` placé au milieu du `Dockerfile` bloquait les devcontainer features (`docker-in-docker`, `claude-code`) lors du build `envbuilder` par manque de permissions root (`apt-get`).
+  3. Si `/workspaces/atelier-workspace` n'était pas expressément matérialisé par un fichier (ex: `README.md` ou `.keep`), l'arborescence n'était pas incluse dans le rootfs ext4, ce qui faisait échouer `WorkingDirectory=/workspaces/...` au boot systemd (`CHDIR failure`).
+- **Corrections apportées** :
+  1. **`PhilippeVienne/atelier-workspace`** : configuration des services systemd (`User=vscode`, `Group=vscode`, `HOME=/home/vscode`, `USER=vscode`, `ExecStart=/bin/bash -c "mkdir -p /workspaces/atelier-workspace && cd /workspaces/atelier-workspace && exec ..."`).
+  2. **`crates/image-builder`** : ajout de l'étape `ensure_workspace_directory` garantissant l'existence et les permissions `1000:1000` (`vscode:vscode`) de `/workspaces/<repo>` avant l'empaquetage ext4.
+- **Preuve empirique** : Test réel WebSocket contre `ttyd` sur microVM Firecracker active (`ws-user-verify-parent`) :
+  ```text
+  vscode ➜ /workspaces/atelier-workspace $ whoami; pwd; id
+  vscode
+  /workspaces/atelier-workspace
+  uid=1000(vscode) gid=1000(vscode) groups=1000(vscode),997(docker)
+  ```
+  Validation workspace complète : `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (100% verts).
 ```markdown
 ### [YYYY-MM-DD HH:MM] Jalon X - Tâche X.Y.Z : <Titre de la tâche>
 - **Composant impacté** : `crates/...` ou `services/...`
@@ -1685,3 +1702,23 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
 - **Preuve empirique / Test exécuté** : Commande exacte exécutée et extrait de sortie attestant du succès (zéro mock).
 - **Statut** : ✅ Validé / Prêt pour la tâche suivante.
 ```
+
+### [2026-08-23 00:00] Jalon M1 - Tâches 1.1.1, 1.1.2, 1.1.3, 1.3.2, 1.3.3 : Nettoyage CRD Kanidm & budget LLM par Workshop
+- **Composant impacté** : `crates/common/src/crd.rs`, `crates/controller` (`kanidm.rs` supprimé, `lib.rs`, `reconcile.rs`, `Cargo.toml`), `crates/controller/tests/reconcile.rs`, `crds/workshop.yaml`.
+- **Modifications réalisées** :
+  - Retrait de `WorkshopStatus.kanidm_entity_id` : ce champ n'était en réalité jamais lu ailleurs que pour être reporté d'un reconcile à l'autre (`resolve_kanidm_entity`/`carry_forward_status`), aucune injection réelle dans le pod ou la microVM ne s'appuyait dessus.
+  - Suppression complète du module `crates/controller/src/kanidm.rs` (provisioning de service account Kanidm), du champ `ReconcileCtx.kanidm`, de la dépendance `kanidm_client`, et de tout le fil `kanidm_entity_id` à travers `apply`/`ensure_suspended`/`ensure_image_build_job`/`ensure_parent_pod`/`carry_forward_status`.
+  - Ajout de `WorkshopResources.max_llm_budget_usd: Option<f64>` (`#[serde(rename_all = "camelCase")]` ajouté à `WorkshopResources`, absent jusqu'ici) — champ pas encore consommé (réservé au Jalon M3, provisioning LiteLLM).
+  - Régénération de `crds/workshop.yaml` (`cargo run -p atelier-controller --bin crdgen`) et application réelle sur le cluster kind (`kind-atelier-dev`) : `kanidmEntityId` disparu du schéma, `maxLlmBudgetUsd` présent en camelCase.
+  - Ajout de deux tests unitaires (`crates/common/src/crd.rs::tests`) : `generate_crd` (génération du manifest sans panique, absence de `kanidmEntityId`, présence de `maxLlmBudgetUsd`) et `workshop_roundtrip_json_and_yaml` (round-trip `serde_json`/`serde_yaml` sur un `Workshop` complet).
+- **Preuve empirique / Test exécuté** :
+  ```
+  kubectl apply -f crds/workshop.yaml   # customresourcedefinition.apiextensions.k8s.io/workshops.atelier.dev configured
+  cargo test -p atelier-common          # 2 passed (generate_crd, workshop_roundtrip_json_and_yaml)
+  cargo test -p atelier-controller      # 7 unit + 4 integration passed contre le vrai cluster kind + vrai OpenBao (apply_provisions_openbao_role_when_configured inclus)
+  cargo test --workspace                # 100% vert
+  cargo clippy --workspace --all-targets -- -D warnings   # 0 warning
+  cargo fmt --all -- --check            # propre
+  ```
+- **Restant sur M1 (non traité ici, volontairement)** : 1.3.1 (ajout `sqlx`), 1.3.4 (`generate_session_auth` OpenBao) et 1.3.5 (injection du mot de passe de session dans `code-server`/`ttyd`) nécessitent (a) un PostgreSQL de dev provisionné (aucun n'existe encore dans `deploy/dev/`) et (b) une décision d'architecture : le pod parent (`vm-supervisor`) boote aujourd'hui le PID 1 du devcontainer tel quel, sans mécanisme pour transmettre une valeur par-Workshop au guest au boot (contrairement à la microVM "builder") — l'image rootfs est un cache partagé entre Workshops utilisant le même devcontainer, donc injecter le secret au moment du build (comme `ANTHROPIC_AUTH_TOKEN`) le partagerait entre Workshops. Question posée à l'utilisateur avant de concevoir ce canal.
+- **Statut** : ✅ Validé pour les 5 tâches listées / le reste de M1 reste `[ ]`.

@@ -3,8 +3,11 @@
 > **Statut** : Plan Cadre Opérationnel & Feuille de Route d'Ingénierie  
 > **Date** : 2026-08-23  
 > **Auteur** : Équipe Atelier  
-> **Protocole de Transition Multi-Agents** : Ce plan est conçu pour être **exécuté de manière asynchrone, interrompu à tout moment et repris sans friction par n'importe quel autre agent IA** (Claude Code, Gemini CLI, Antigravity).  
-> **Règle de Traçabilité Obligatoire** : Chaque tâche complétée doit être cochée `[x]` ici, et journalisée immédiatement dans la section dédiée de [`docs/PROGRESS.md`](../PROGRESS.md) avec ses commandes de test et preuves réelles.
+> **Protocole de Transition Multi-Agents & États de Tâche** : Ce plan est conçu pour être **exécuté de manière asynchrone, interrompu à tout moment et repris sans friction par n'importe quel autre agent IA** (Claude Code, Gemini CLI, Antigravity).  
+> **Règle de Traçabilité Obligatoire & États `[ ]` / `[-/<agent>/<session_id>]` / `[x]`** :
+> 1. `[ ]` : Tâche en attente / non démarrée.
+> 2. `[-/<agent_family>/<session_id>]` : **Tâche en cours d'exécution par un LLM / Agent identifié** (ex: `[-/claude-code/sess-4a8b]` ou `[-/antigravity/c192a786]`). Permet de savoir précisément qui travaille sur la tâche et si la session est toujours active.
+> 3. `[x]` : **Tâche terminée et validée empiriquement** par tests réels sans mocks et journalisée dans [`docs/PROGRESS.md`](../PROGRESS.md).
 
 ---
 
@@ -27,16 +30,17 @@
 
 Afin de permettre une collaboration fluide entre différents agents IA ou sessions interrompues :
 
-### 📋 Instructions pour l'Agent Exécuteur :
-1. **Prise en main d'une tâche** :
-   - Inspecter `git status` et [`docs/PROGRESS.md`](../PROGRESS.md) pour identifier le jalon et la tâche en cours.
-   - Ne jamais commencer une tâche sans avoir vérifié que la tâche précédente est validée (`[x]`).
-2. **Validation d'une tâche** :
+### 📋 Instructions Strictes pour l'Agent Exécuteur :
+1. **Vérification Initiale & Verrouillage Nominatif (`[-/<family>/<id>]`)** :
+   - Inspecter `git status`, [`docs/PROGRESS.md`](../PROGRESS.md) et ce document `PLAN-ACTION-GLOBAL.md`.
+   - **Vérifier qu'aucune tâche antérieure n'est laissée en cours `[-/...]`** ou non validée `[ ]`.
+   - Dès qu'un agent prend en charge une tâche `[ ]`, il **DOIT IMMÉDIATEMENT positionner le marqueur nominatif `[-/<agent_family>/<session_id>]`** (ex: `[-/antigravity/c192a786]` ou `[-/claude-code/sess-xyz]`) sur la tâche dans `PLAN-ACTION-GLOBAL.md`.
+2. **Validation d'une tâche (`[x]`)** :
    - Exécuter impérativement les tests unitaires et de linter (`cargo test`, `cargo clippy`, `cargo fmt` ou `pytest`).
-   - Cocher la case `[x]` correspondante dans ce document `PLAN-ACTION-GLOBAL.md`.
+   - Remplacer le marqueur `[-/...]` par **`[x]`** (indiquant formellement le travail terminé) dans ce document `PLAN-ACTION-GLOBAL.md`.
    - **Ajouter une entrée dans `docs/PROGRESS.md` dans la section dédiée `## Journal d'Avancement du Plan d'Action Global (Specs 01 à 06)`** avec le format standardisé.
 3. **Interruption / Passage de relais** :
-   - Si le contexte s'épuise ou si la session s'arrête, laisser `docs/PROGRESS.md` et `PLAN-ACTION-GLOBAL.md` à jour pour que l'agent suivant sache exactement quelle case `[ ]` attaquer.
+   - Si une session s'arrête en cours de tâche, laisser le marqueur `[-/<family>/<id>]` et documenter dans `docs/PROGRESS.md` l'état exact d'avancement pour que l'agent suivant sache exactement d'où repartir.
 
 ---
 
@@ -127,13 +131,13 @@ graph TD
 
 ### 4.1. Crate `crates/common` (CRD & Types partagés)
 * **Fichier impacté** : [`crates/common/src/crd.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/common/src/crd.rs)
-  - [ ] **1.1.1** : Supprimer le champ `pub kanidm_entity_id: Option<String>` de la struct `WorkshopStatus`.
-  - [ ] **1.1.2** : Ajouter dans `WorkshopResources` :
+  - [x] **1.1.1** : Supprimer le champ `pub kanidm_entity_id: Option<String>` de la struct `WorkshopStatus`.
+  - [x] **1.1.2** : Ajouter dans `WorkshopResources` :
     ```rust
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_llm_budget_usd: Option<f64>,
     ```
-  - [ ] **1.1.3** : Mettre à jour la génération du manifest CRD YAML `crds/workshop.yaml` via le test `generate_crd` et valider le round-trip `serde_json` / `serde_yaml`.
+  - [x] **1.1.3** : Mettre à jour la génération du manifest CRD YAML `crds/workshop.yaml` via le test `generate_crd` et valider le round-trip `serde_json` / `serde_yaml`.
 
 ### 4.2. Crate `crates/api-server` (Axum, OIDC JWT, sqlx, migrations, Basic Auth)
 * **Fichier impacté** : [`crates/api-server/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/Cargo.toml)
@@ -160,14 +164,14 @@ graph TD
 
 ### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx)
 * **Fichier impacté** : [`crates/controller/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/Cargo.toml)
-  - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`.
+  - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`. *(Partiel : `kanidm_client` déjà retiré comme conséquence de 1.3.2/1.3.3 — reste l'ajout de `sqlx`, qui nécessite un PostgreSQL de dev, voir 1.2.7/1.3.6.)*
 * **Fichiers supprimés / modifiés** :
-  - [ ] **1.3.2** : Supprimer définitivement le fichier `crates/controller/src/kanidm.rs`.
-  - [ ] **1.3.3** : Dans [`crates/controller/src/lib.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/lib.rs), retirer `pub mod kanidm;`.
+  - [x] **1.3.2** : Supprimer définitivement le fichier `crates/controller/src/kanidm.rs`.
+  - [x] **1.3.3** : Dans [`crates/controller/src/lib.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/lib.rs), retirer `pub mod kanidm;`.
   - [ ] **1.3.4** : Dans [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs) :
     - Implémenter `generate_session_auth(workshop_name)` : génère un mot de passe aléatoire de 32 caractères et l'écrit dans `secret/data/workshops/<name>/session_auth`.
   - [ ] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
-    - Supprimer tout appel à `kanidm`.
+    - Supprimer tout appel à `kanidm`. *(Fait — voir 1.3.2/1.3.3.)*
     - Injecter le mot de passe de session dans la ligne de commande de lancement de la microVM (`code-server --auth password` et `ttyd --credential atelier:<password>`).
   - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs), exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
   - [ ] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).

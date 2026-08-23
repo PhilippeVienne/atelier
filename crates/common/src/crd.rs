@@ -99,11 +99,18 @@ fn default_injection_field() -> String {
 
 /// Quantites au format Kubernetes (ex: "500m", "2Gi").
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkshopResources {
     pub cpu: String,
     pub memory: String,
     #[serde(default)]
     pub disk: Option<String>,
+    /// Budget maximal en dollars US alloue a la Virtual Key LiteLLM de ce
+    /// Workshop (voir `docs/specs/03-litellm-proxy.md`). Absent = pas de
+    /// plafond specifique impose par le Workshop (comportement par defaut
+    /// de LiteLLM/politique globale du cluster).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_llm_budget_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
@@ -122,12 +129,6 @@ pub struct WorkshopStatus {
     /// jamais ete suspendu.
     #[serde(default)]
     pub snapshot_digest: Option<String>,
-    /// Identifiant de l'entite machine Kanidm provisionnee pour cet
-    /// environnement (distincte du sujet humain `spec.owner_subject`).
-    /// C'est cette identite que `identity-proxy` presente a OpenBao pour
-    /// recuperer les secrets scopes a ce Workshop.
-    #[serde(default)]
-    pub kanidm_entity_id: Option<String>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
 }
@@ -150,4 +151,67 @@ pub enum WorkshopPhase {
     Resuming,
     Terminating,
     Failed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::CustomResourceExt;
+
+    /// La generation du manifest CRD (`cargo run -p atelier-controller --bin
+    /// crdgen`, publie dans `crds/workshop.yaml`) ne doit jamais paniquer :
+    /// c'est le premier signal si un type imbrique (ex: `WorkshopResources`,
+    /// `WorkshopStatus`) devient incompatible avec `schemars`.
+    #[test]
+    fn generate_crd() {
+        let crd = Workshop::crd();
+        let yaml = serde_yaml::to_string(&crd).expect("le CRD doit se serialiser en YAML");
+        assert!(yaml.contains("kind: CustomResourceDefinition"));
+        assert!(
+            !yaml.contains("kanidmEntityId"),
+            "le champ Kanidm retire de WorkshopStatus ne doit plus apparaitre dans le schema"
+        );
+        assert!(
+            yaml.contains("maxLlmBudgetUsd"),
+            "le budget LLM par Workshop doit apparaitre dans le schema (camelCase)"
+        );
+    }
+
+    /// Round-trip JSON et YAML sur un `Workshop` complet (spec + status),
+    /// garantissant que ce que le controller ecrit reste lisible par
+    /// `kube-rs` (et reciproquement) apres le nettoyage Kanidm.
+    #[test]
+    fn workshop_roundtrip_json_and_yaml() {
+        let workshop = Workshop::new(
+            "test-workshop",
+            WorkshopSpec {
+                devcontainer: DevcontainerSource {
+                    repo: "https://example.invalid/repo.git".into(),
+                    revision: "HEAD".into(),
+                    config_path: ".devcontainer/devcontainer.json".into(),
+                },
+                resources: WorkshopResources {
+                    cpu: "500m".into(),
+                    memory: "1Gi".into(),
+                    disk: None,
+                    max_llm_budget_usd: Some(2.5),
+                },
+                egress_allowlist: vec!["github.com".into()],
+                tools: vec![],
+                identity_injection_rules: vec![],
+                owner_subject: "user@example.invalid".into(),
+                desired_state: WorkshopDesiredState::Running,
+            },
+        );
+
+        let json = serde_json::to_string(&workshop).expect("serialisation JSON");
+        assert!(json.contains("\"maxLlmBudgetUsd\":2.5"));
+        assert!(!json.contains("kanidmEntityId"));
+        let from_json: Workshop = serde_json::from_str(&json).expect("deserialisation JSON");
+        assert_eq!(from_json.spec.resources.max_llm_budget_usd, Some(2.5));
+
+        let yaml = serde_yaml::to_string(&workshop).expect("serialisation YAML");
+        let from_yaml: Workshop = serde_yaml::from_str(&yaml).expect("deserialisation YAML");
+        assert_eq!(from_yaml.spec.owner_subject, workshop.spec.owner_subject);
+    }
 }

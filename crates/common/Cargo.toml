@@ -21,3 +21,6 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 tracing-opentelemetry.workspace = true
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+serde_yaml = "0.9"

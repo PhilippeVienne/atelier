@@ -20,7 +20,6 @@ anyhow.workspace = true
 thiserror.workspace = true
 futures = "0.3"
 serde_yaml = "0.9"
-kanidm_client = "1.11.1"
 reqwest.workspace = true
 # Meme version qu'`atelier-api-server` (`crates/api-server/src/vscode.rs`) :
 # parler au protocole `portforward` de `net-proxy` pour sonder qu'un port du
