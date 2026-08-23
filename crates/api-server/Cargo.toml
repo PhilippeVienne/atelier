@@ -26,6 +26,13 @@ futures-util = "0.3"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+# Pas encore consommes (reserve au Jalon M2, stockage S3 hybride des
+# archives de session) : ajoutes ici pour suivre exactement la liste de
+# dependances de la tache 1.2.1 (docs/specs/PLAN-ACTION-GLOBAL.md).
+aws-sdk-s3 = { version = "1.71", default-features = false, features = ["rustls"] }
+aws-config = { version = "1.5", default-features = false, features = ["rustls"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tower = "0.5"

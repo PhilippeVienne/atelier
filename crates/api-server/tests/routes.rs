@@ -88,6 +88,81 @@ async fn try_client() -> Option<Client> {
     Client::try_default().await.ok()
 }
 
+/// Pool PostgreSQL reel, contre l'instance de dev (`deploy/dev/postgres/`)
+/// par defaut — `DATABASE_URL` reste surchargeable (CI, autre instance).
+/// `AppState.db_pool` n'est pas optionnel (comme en production, voir
+/// `main.rs`) : ces tests de routing ne testent pas la persistance en
+/// elle-meme, mais la sonde `/health/readiness` doit rester exercable pour
+/// de vrai.
+async fn test_db_pool() -> sqlx::PgPool {
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://atelier_admin:dev-only-not-for-production@127.0.0.1:5433/atelier_apiserver"
+            .to_string()
+    });
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("connexion a PostgreSQL de dev (voir deploy/dev/postgres/README.md)");
+    // Meme migrations que `main.rs` : verifie reellement qu'elles
+    // s'appliquent (idempotent, `sqlx::migrate!` ignore les migrations deja
+    // enregistrees dans `_sqlx_migrations`).
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("execution des migrations PostgreSQL");
+    pool
+}
+
+/// `/health/liveness` et `/health/readiness` sont hors du routeur
+/// `protected` (pas de JWT requis, voir `routes::router`) : verifie a la
+/// fois qu'aucune authentification n'est exigee et que `/health/readiness`
+/// sonde reellement PostgreSQL (vrai `PgPool`, pas mocke).
+#[tokio::test]
+async fn health_endpoints_respond_without_auth() {
+    let Some(client) = try_client().await else {
+        eprintln!("pas de kubeconfig accessible, test ignore");
+        return;
+    };
+    let auth = AuthState::Disabled;
+    let app = routes::router(
+        AppState {
+            client,
+            namespace: "default".to_string(),
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
+        },
+        auth,
+    );
+
+    let liveness = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health/liveness")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(liveness.status(), StatusCode::OK);
+
+    let readiness = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/readiness")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        readiness.status(),
+        StatusCode::OK,
+        "readiness doit reussir : PostgreSQL de dev doit etre joignable (voir deploy/dev/postgres/README.md)"
+    );
+}
+
 #[tokio::test]
 async fn crud_and_ownership_isolation_against_real_cluster() {
     let Some(client) = try_client().await else {
@@ -112,6 +187,8 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
         AppState {
             client: client.clone(),
             namespace,
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
         },
         auth,
     );
@@ -437,6 +514,8 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
         AppState {
             client: client.clone(),
             namespace: namespace.clone(),
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
         },
         auth,
     );
@@ -679,6 +758,8 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
         AppState {
             client: client.clone(),
             namespace: namespace.clone(),
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
         },
         auth,
     );
@@ -852,6 +933,8 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
         AppState {
             client: client.clone(),
             namespace: namespace.clone(),
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
         },
         auth,
     );

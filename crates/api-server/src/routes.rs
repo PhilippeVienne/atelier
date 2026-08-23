@@ -24,9 +24,17 @@ const FIELD_MANAGER: &str = "atelier-api-server";
 pub struct AppState {
     pub client: Client,
     pub namespace: String,
+    pub db_pool: sqlx::PgPool,
+    /// Adresse d'OpenBao (`OPENBAO_ADDR`), utilisee uniquement pour la sonde
+    /// de disponibilite `/health/readiness` pour l'instant (voir
+    /// `health_readiness`) — pas encore de lecture de secrets cote
+    /// api-server (tache 1.2.6, en attente d'une decision d'architecture
+    /// sur le modele d'acces OpenBao d'un composant cluster-wide).
+    pub openbao_addr: Option<String>,
 }
 
 pub fn router(state: AppState, auth: AuthState) -> Router {
+    let health_state = state.clone();
     let protected = Router::new()
         .route("/v1/workshops", post(create_workshop).get(list_workshops))
         .route(
@@ -72,7 +80,43 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/health/liveness", get(health_liveness))
+        .route("/health/readiness", get(health_readiness))
+        .with_state(health_state)
         .merge(protected)
+}
+
+/// Toujours 200 tant que le process web tourne : ne verifie aucune
+/// dependance externe (c'est le role de `/health/readiness`), pour que
+/// Kubernetes ne redemarre jamais le pod a cause d'une dependance
+/// temporairement indisponible.
+async fn health_liveness() -> &'static str {
+    "ok"
+}
+
+/// Verifie la connectivite active a PostgreSQL (`SELECT 1`), et a OpenBao si
+/// `OPENBAO_ADDR` est configure (`GET /v1/sys/health`, sans authentification
+/// requise) — reflete l'etat reel des dependances dont ce process a besoin
+/// pour servir du trafic, contrairement a `/health/liveness`.
+async fn health_readiness(State(state): State<AppState>) -> Response {
+    if let Err(err) = sqlx::query("SELECT 1").execute(&state.db_pool).await {
+        tracing::warn!(%err, "readiness: PostgreSQL injoignable");
+        return (StatusCode::SERVICE_UNAVAILABLE, "postgresql injoignable").into_response();
+    }
+
+    if let Some(openbao_addr) = &state.openbao_addr {
+        let reachable = reqwest::Client::new()
+            .get(format!("{openbao_addr}/v1/sys/health"))
+            .send()
+            .await
+            .is_ok();
+        if !reachable {
+            tracing::warn!("readiness: OpenBao injoignable");
+            return (StatusCode::SERVICE_UNAVAILABLE, "openbao injoignable").into_response();
+        }
+    }
+
+    (StatusCode::OK, "ok").into_response()
 }
 
 pub(crate) fn workshops_api(state: &AppState) -> Api<Workshop> {

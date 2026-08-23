@@ -16,11 +16,11 @@
 1. [Protocole de Transmission & Traçabilité Multi-Agents](#1-protocole-de-transmission--traçabilité-multi-agents)
 2. [Principes Directeurs & Definition of Done (DoD) Transversale](#2-principes-directeurs--definition-of-done-dod-transversale)
 3. [Cartographie des Dépendances & Matrice d'Impact Globale](#3-cartographie-des-dépendances--matrice-dimpact-globale)
-4. [Jalon 1 (M1) : Socle PostgreSQL, Découplage OIDC Universel, Sécurité Basic Auth & Nettoyage CRD](#4-jalon-1-m1--socle-postgresql-découplage-oidc-universel-sécurité-basic-auth--nettoyage-crd)
-5. [Jalon 2 (M2) : Stockage S3 Hybride & Git 100% HTTPS](#5-jalon-2-m2--stockage-s3-hybride--git-100-https)
+4. [Jalon 1 (M1) : Socle PostgreSQL, Découplage OIDC Universel, Sécurité Basic Auth, Healthchecks & Nettoyage CRD](#4-jalon-1-m1--socle-postgresql-découplage-oidc-universel-sécurité-basic-auth-healthchecks--nettoyage-crd)
+5. [Jalon 2 (M2) : Stockage S3 Hybride & Git 100% HTTPS (Forgejo Dev & S3 Local)](#5-jalon-2-m2--stockage-s3-hybride--git-100-https-forgejo-dev--s3-local)
 6. [Jalon 3 (M3) : Passerelle d'Inférence IA LiteLLM & Budgets Stricts](#6-jalon-3-m3--passerelle-dinférence-ia-litellm--budgets-stricts)
 7. [Jalon 4 (M4) : Serveur MCP Externe Embarqué dans l'API Server](#7-jalon-4-m4--serveur-mcp-externe-embarqué-dans-lapi-server)
-8. [Jalon 5 (M5) : Moteur DevFactory & Project Manager Autonome (LangGraph)](#8-jalon-5-m5--moteur-devfactory--project-manager-autonome-langgraph)
+8. [Jalon 5 (M5) : Moteur DevFactory & Project Manager Autonome (LangGraph, Redis Dev & Local Embeddings)](#8-jalon-5-m5--moteur-devfactory--project-manager-autonome-langgraph-redis-dev--local-embeddings)
 9. [Jalon 6 (M6) : Chart Helm Monolithique & Documentation Administrateur](#9-jalon-6-m6--chart-helm-monolithique--documentation-administrateur)
 10. [Matrice Récapitulative des Points d'Étapes & Critères de Clôture (Go / No-Go)](#10-matrice-récapitulative-des-points-détapes--critères-de-clôture-go--no-go)
 
@@ -54,7 +54,7 @@ Conformément à [`AGENTS.md`](file:///home/philippe/github.com/PhilippeVienne/a
    - `cargo fmt --all -- --check` est 100% propre.
    - `cargo clippy --workspace --all-targets -- -D warnings` ne retourne aucun avertissement.
 3. **Vérification Empirique sans Mocks (Infrastructure Dev Réelle)** :
-   - Tous les tests d'intégration s'exécutent contre de vrais conteneurs / pods locaux (PostgreSQL réel sous Kind port 5433, S3/MinIO réel, OpenBao réel, LiteLLM réel, Redis réel, cluster Kind réel avec microVMs Firecracker).
+   - Tous les tests d'intégration s'exécutent contre de vrais conteneurs / pods locaux (PostgreSQL réel sous Kind port 5433, S3/MinIO réel, Forgejo réel, OpenBao réel, LiteLLM réel, Redis réel, cluster Kind réel avec microVMs Firecracker).
    - Zéro mock factice remplaçant les composants réseau ou de stockage.
 4. **Documentation Vivante** :
    - Mise à jour systématique de [`docs/PROGRESS.md`](file:///home/philippe/github.com/PhilippeVienne/atelier/docs/PROGRESS.md) avec preuves d'exécution.
@@ -73,8 +73,8 @@ graph TD
     end
 
     subgraph Layer2["2. Control Plane Rust"]
-        API["crates/api-server\n(OIDC, sqlx, S3, /v1/mcp, Basic Auth OpenBao)"]
-        CTRL["crates/controller\n(sqlx, LiteLLM keys, HTTPS Git, Session Auth Vault)"]
+        API["crates/api-server\n(OIDC, sqlx, S3, /v1/mcp, Basic Auth OpenBao, Health)"]
+        CTRL["crates/controller\n(sqlx, LiteLLM keys, HTTPS Git, Session Auth Vault, Health)"]
         IDP["crates/identity-proxy\n(Injection PAT HTTPS)"]
     end
 
@@ -92,8 +92,9 @@ graph TD
         DASH["dashboard/\n(Next.js 16, OIDC, Ask PM, VS Code, Terminal)"]
     end
 
-    subgraph Layer5["5. Packaging Helm"]
+    subgraph Layer5["5. Packaging Helm & Dev Scripts"]
         HELM["charts/atelier\n(Monolithique, 4 Ingress, BYO, Cloud IAM)"]
+        DEV_STACK["deploy/dev/local-stack.sh & teardown-stack.sh"]
         DOC["docs/admin-guide.md\n(Runbook d'exploitation)"]
     end
 
@@ -123,15 +124,17 @@ graph TD
     CTRL --> HELM
     PM --> HELM
     HELM --> DOC
+    DEV_STACK --> HELM
 ```
 
 ---
 
-## 4. Jalon 1 (M1) : Socle PostgreSQL, Découplage OIDC Universel, Sécurité Basic Auth & Nettoyage CRD
+## 4. Jalon 1 (M1) : Socle PostgreSQL, Découplage OIDC Universel, Sécurité Basic Auth, Healthchecks & Nettoyage CRD
 
-### 4.0. Infrastructure de Développement Locale (PostgreSQL Dev)
-* **Fichiers créés** : `deploy/dev/postgres/dev-pod.yaml`, `deploy/dev/postgres/README.md`
-  - [x] **1.0.1** : Déployer une instance PostgreSQL 16 (`pgvector/pgvector:pg16`) de dev dans le cluster Kind (même convention que `deploy/dev/openbao` : Pod + Service + port-forward 5433:5432). Prérequis bloquant pour toutes les tâches `sqlx` (1.2.7-1.2.9, 1.3.6, 1.3.7) garantissant des tests empiriques réels sans mock. *(Déployé et vérifié : `kubectl get pod atelier-postgres-dev` Running, bases `atelier_apiserver`/`atelier_controller` créées, port-forward 5433 joignable — voir docs/PROGRESS.md.)*
+### 4.0. Infrastructure de Développement Locale (PostgreSQL, Keycloak & PKI Dev)
+* **Fichiers créés** : `deploy/dev/postgres/dev-pod.yaml`, `deploy/dev/postgres/README.md`, `deploy/dev/pki/init-pki.sh`, `deploy/dev/pki/README.md`, `deploy/dev/keycloak/dev-pod.yaml`, `deploy/dev/keycloak/README.md`
+  - [x] **1.0.1** : Déployer une instance PostgreSQL 16 (`pgvector/pgvector:pg16`) de dev dans le cluster Kind (même convention que `deploy/dev/openbao` : Pod + Service + port-forward 5433:5432). Prérequis bloquant pour toutes les tâches `sqlx` (1.2.7-1.2.10, 1.3.6, 1.3.7) garantissant des tests empiriques réels sans mock. *(Déployé et vérifié le 2026-08-23 : `kubectl get pod atelier-postgres-dev` Running, bases `atelier_apiserver`/`atelier_controller` créées, port-forward 5433 joignable — voir docs/PROGRESS.md.)*
+  - [x] **1.0.2** : Initialiser la PKI de dev local validable (`deploy/dev/pki/init-pki.sh`) et déployer une instance Keycloak dev dans Kind (`quay.io/keycloak/keycloak:26.1`) connectée à `atelier-postgres-dev:5432/keycloak` avec le Realm `atelier` pré-configuré (clients `atelier-dashboard` PKCE et `atelier-api`). *(Déployé et vérifié le 2026-08-23 : PKI Root CA + certificat Multi-SAN générés et validés, pod `atelier-keycloak-dev` Running, discovery OIDC 200 OK, token JWT obtenu via password grant — voir docs/PROGRESS.md.)*
 
 ### 4.1. Crate `crates/common` (CRD & Types partagés)
 * **Fichier impacté** : [`crates/common/src/crd.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/common/src/crd.rs)
@@ -143,9 +146,9 @@ graph TD
     ```
   - [x] **1.1.3** : Mettre à jour la génération du manifest CRD YAML `crds/workshop.yaml` via le test `generate_crd` et valider le round-trip `serde_json` / `serde_yaml`.
 
-### 4.2. Crate `crates/api-server` (Axum, OIDC JWT, sqlx, migrations, Basic Auth)
+### 4.2. Crate `crates/api-server` (Axum, OIDC JWT, sqlx, migrations, Basic Auth, Healthchecks)
 * **Fichier impacté** : [`crates/api-server/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/Cargo.toml)
-  - [ ] **1.2.1** : Ajouter les dépendances :
+  - [x] **1.2.1** : Ajouter les dépendances :
     ```toml
     sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
     aws-sdk-s3 = { version = "1.71", default-features = false, features = ["rustls"] }
@@ -161,12 +164,15 @@ graph TD
   - [ ] **1.2.6** : Sécuriser les tunnels VS Code (`/vscode/*`) et Terminal (`/terminal/*`) :
     - Récupérer le secret de session depuis OpenBao (`secret/data/workshops/<name>/session_auth`).
     - Injecter automatiquement l'en-tête `Authorization: Basic <base64(atelier:password)>` lors du relai HTTP et du handshake WebSocket vers `vm-supervisor` / microVM.
+  - [x] **1.2.7** : Ajouter les endpoints de santé Kubernetes :
+    - `GET /health/liveness` : Répond 200 si le serveur web tourne.
+    - `GET /health/readiness` : Vérifie la connectivité active PostgreSQL (`SELECT 1`) et OpenBao avant de répondre 200. *(OpenBao seulement si `OPENBAO_ADDR` est configuré, même convention que le reste des fonctionnalités optionnelles.)*
 * **Fichier impacté** : [`crates/api-server/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/src/main.rs)
-  - [ ] **1.2.7** : Rendre la variable d'environnement `DATABASE_URL` obligatoire au démarrage et initialiser `PgPool`.
-  - [ ] **1.2.8** : Injecter `db_pool` dans la struct `AppState`.
-  - [ ] **1.2.9** : Créer le dossier `crates/api-server/migrations/` avec le fichier `20260824000000_init_apiserver.sql` (tables `session_logs` et `audit_events` avec RLS).
+  - [x] **1.2.8** : Rendre la variable d'environnement `DATABASE_URL` obligatoire au démarrage et initialiser `PgPool`.
+  - [x] **1.2.9** : Injecter `db_pool` dans la struct `AppState`.
+  - [x] **1.2.10** : Créer le dossier `crates/api-server/migrations/` avec le fichier `20260824000000_init_apiserver.sql` (tables `session_logs` et `audit_events` avec RLS). *(RLS vérifiée empiriquement avec un rôle non-superutilisateur dédié `atelier_app` — `atelier_admin`, superutilisateur, ignore silencieusement RLS même avec `FORCE`, voir deploy/dev/postgres/README.md.)*
 
-### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx)
+### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx, Healthchecks)
 * **Fichier impacté** : [`crates/controller/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/Cargo.toml)
   - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`.
 * **Fichiers supprimés / modifiés** :
@@ -177,7 +183,9 @@ graph TD
   - [x] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
     - Supprimer tout appel à `kanidm`.
     - Servir le secret au guest via `net-proxy` sur l'endpoint metadata link-local `http://169.254.0.1:3132/session-auth`.
-  - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs), exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
+  - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs) :
+    - Exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
+    - Exposer un serveur HTTP de sondes de santé (`GET /health/ready` vérifiant Kubernetes API, PostgreSQL et OpenBao).
   - [ ] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).
 
 ### 4.4. Application `dashboard/` (Next.js 16, OIDC PKCE & BFF)
@@ -193,22 +201,25 @@ graph TD
    - Exécution des migrations SQL sur un vrai PostgreSQL.
    - Validation 401 sur token JWT sans issuer valide / validation 200 sur JWT conforme.
    - Test du relai VS Code & Terminal : vérification de l'injection effective du header `Authorization: Basic` issu d'OpenBao et rejet 401 en cas de secret absent/invalide.
+   - Validation des endpoints `/health/liveness` et `/health/readiness` (200 OK si DB/Vault connectés, 503 si DB coupée).
 3. `cargo test -p atelier-controller` : Cycle de réconciliation complet sur Kind avec génération du secret dans OpenBao et zéro appel Kanidm.
 
 ### 🎯 Definition of Done (DoD) du Jalon M1
 - [ ] PostgreSQL est connecté et les tables de base de données sont initialisées.
 - [ ] Le controller et l'API server n'ont plus aucune dépendance à Kanidm.
 - [ ] VS Code et `ttyd` sont protégés par mot de passe aléatoire avec injection transparente Basic Auth via OpenBao.
+- [ ] Les sondes de santé Liveness/Readiness sont opérationnelles.
 - [ ] `cargo test --workspace` et `cargo clippy --workspace --all-targets -- -D warnings` sont 100% verts.
 - [ ] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
 
-## 5. Jalon 2 (M2) : Stockage S3 Hybride & Git 100% HTTPS
+## 5. Jalon 2 (M2) : Stockage S3 Hybride & Git 100% HTTPS (Forgejo Dev & S3 Local)
 
-### 5.0. Infrastructure de Développement Locale (S3 Dev / RustFS / MinIO)
-* **Fichiers créés** : `deploy/dev/s3/dev-pod.yaml`, `deploy/dev/s3/README.md`
-  - [ ] **2.0.1** : Déployer un serveur S3 local de dev dans le cluster Kind (ex: MinIO / RustFS) avec création des buckets `atelier-sessions` et `atelier-snapshots` pour valider les tests S3 réels sans mock.
+### 5.0. Infrastructure de Développement Locale (S3 & Forgejo Dev)
+* **Fichiers créés** : `deploy/dev/s3/dev-pod.yaml`, `deploy/dev/s3/README.md`, `deploy/dev/forgejo/dev-pod.yaml`, `deploy/dev/forgejo/README.md`
+  - [x] **2.0.1** : Déployer un serveur S3 local de dev dans Kind (RustFS) avec création automatique des buckets `atelier-sessions` et `atelier-snapshots` pour valider les tests S3 réels sans mock. *(Déployé et vérifié le 2026-08-23 : pod `atelier-s3-dev` Ready dans Kind (image `rustfs/rustfs:latest`), buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments` créés et vérifiés — voir docs/PROGRESS.md.)*
+  - [x] **2.0.2** : Déployer une instance Forgejo locale de dev dans Kind (100% HTTPS, aucun SSH) pour tester l'injection de tokens Git (`identity-proxy`) et la création de dépôts/webhooks sans dépendre d'une forge cloud externe. *(Déployé et vérifié le 2026-08-23 : pod `atelier-forgejo-dev` Ready dans Kind, admin créé, token PAT généré et création de dépôt privé `test-repo` validée via API REST — voir docs/PROGRESS.md.)*
 
 ### 5.1. Client S3 Rust dans `api-server` (`aws-sdk-s3` / `opendal`)
 * **Fichier impacté** : `crates/api-server/src/storage.rs` (Nouveau module)
@@ -226,7 +237,7 @@ graph TD
 
 ### 🧪 Tests & Preuves Attendues pour M2
 1. `cargo test -p atelier-api-server --test storage` : Upload réel d'un flux de session 5Mo compressé sur un serveur S3 (RustFS/MinIO en conteneur) et vérification de son intégrité SHA-256 au rejeu.
-2. `cargo test -p atelier-identity-proxy` : Test d'interception d'une requête HTTP `git clone http://git.atelier.internal/repo.git` avec injection du header d'autorisation et relai vers la forge Git cible.
+2. `cargo test -p atelier-identity-proxy` : Test d'interception d'une requête HTTP `git clone http://git.atelier.internal/repo.git` contre l'instance Forgejo de dev avec injection du header d'autorisation et relai réussi.
 
 ### 🎯 Definition of Done (DoD) du Jalon M2
 - [ ] Les sessions terminal / VS Code volumineuses sont compressées et archivées sur S3.
@@ -275,15 +286,30 @@ graph TD
     - `GET /v1/mcp/ws` : Transport WebSocket bidirectionnel complet.
   - [ ] **4.1.4** : Protéger ces routes avec le middleware OIDC JWT.
 
-### 7.2. Implémentation des Tools MCP & Exécution Asynchrone Bufferisée
+### 7.2. Implémentation des Tools MCP, Exécution Asynchrone Bufferisée & Migrations
 * **Fichier impacté** : `crates/api-server/src/mcp_tools.rs` (Nouveau module)
   - [ ] **4.2.1** : `tools/list` annonce les outils :
     - `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop`, `exec_in_workshop`.
-  - [ ] **4.2.2** : `exec_in_workshop` (Asynchrone & Bufferisé) :
-    - Enregistre la commande dans `exec_commands` (PostgreSQL) et retourne un `execution_id`.
+  - [ ] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
+    ```sql
+    CREATE TABLE IF NOT EXISTS exec_commands (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        workshop_name VARCHAR(128) NOT NULL,
+        command TEXT NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'Running', -- 'Running', 'Completed', 'Failed', 'Timeout'
+        exit_code INT,
+        stdout_buffer TEXT NOT NULL DEFAULT '',
+        stderr_buffer TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+    CREATE INDEX idx_exec_commands_workshop ON exec_commands (workshop_name);
+    ```
+  - [ ] **4.2.3** : `exec_in_workshop` (Asynchrone & Bufferisé) :
+    - Enregistre la commande dans `exec_commands` et retourne un `execution_id`.
     - Streame en temps réel via WebSocket/vsock tout en écrivant les chunks dans la base.
     - Permet la reconnexion client sur coupure réseau via `GET /v1/workshops/{name}/exec/{id}/stream`.
-  - [ ] **4.2.3** : Confinement automatique : en cas d'anomalie réseau détectée par `net-proxy`, déclencher immédiatement le Security Lockdown et le snapshot d'urgence.
+  - [ ] **4.2.4** : Confinement automatique : en cas d'anomalie réseau détectée par `net-proxy`, déclencher immédiatement le Security Lockdown et le snapshot d'urgence.
 
 ### 🧪 Tests & Preuves Attendues pour M4
 1. `cargo test -p atelier-api-server --test mcp_endpoints` :
@@ -298,11 +324,12 @@ graph TD
 
 ---
 
-## 8. Jalon 5 (M5) : Moteur DevFactory & Project Manager Autonome (LangGraph)
+## 8. Jalon 5 (M5) : Moteur DevFactory & Project Manager Autonome (LangGraph, Redis Dev & Local Embeddings)
 
-### 8.0. Infrastructure de Développement Locale (Redis Dev)
+### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
   - [ ] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
+  - [ ] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante.
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
 - [ ] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX).
@@ -326,7 +353,7 @@ graph TD
 
 ### 8.3. Base `atelier_pm` : Checkpointer PostgreSQL & Mémoire RAG `pgvector` avec RLS
 * **Script de migration SQL** : `20260824000000_init_pm_engine.sql`
-  - [ ] **5.3.1** : Activer `CREATE EXTENSION IF NOT EXISTS vector;`.
+  - [ ] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`.
   - [ ] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active.
   - [ ] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph.
 
@@ -354,7 +381,12 @@ graph TD
 
 ---
 
-## 9. Jalon 6 (M6) : Chart Helm Monolithique & Documentation Administrateur
+## 9. Jalon 6 (M6) : Chart Helm Monolithique, Scripts Dev & Documentation Administrateur
+
+### 9.0. Scripting & Automatisation de l'Environnement Dev
+* **Fichiers créés / modifiés** : `deploy/dev/local-stack.sh`, `deploy/dev/teardown-stack.sh`
+  - [ ] **6.0.1** : Mettre à jour `deploy/dev/local-stack.sh` pour orchestrer le démarrage complet de toute la stack dev (Postgres, S3, Forgejo, Redis, OpenBao, LiteLLM).
+  - [ ] **6.0.2** : Créer `deploy/dev/teardown-stack.sh` pour détruire et nettoyer proprement toutes les ressources dev en une seule commande.
 
 ### 9.1. Arborescence complète des templates du Chart `charts/atelier`
 * **Structure des templates à implémenter** :
@@ -436,6 +468,7 @@ graph TD
 ### 🎯 Definition of Done (DoD) du Jalon M6
 - [ ] L'installation complète se fait en une commande Helm.
 - [ ] Les 4 Ingress et certificats TLS sont opérationnels.
+- [ ] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent parfaitement l'infra dev.
 - [ ] La documentation MkDocs intègre le Guide Administrateur complet.
 - [ ] Entrée documentée dans `docs/PROGRESS.md`.
 
@@ -445,9 +478,9 @@ graph TD
 
 | Jalon | Intitulé | Livrables & Composants Clés | Critère de Validation Empirique (Go / No-Go) |
 | :--- | :--- | :--- | :--- |
-| **M1** | **Socle DB, OIDC & Basic Auth OpenBao** | `crates/common`, `crates/api-server`, `crates/controller`, `dashboard/` | `cargo test --workspace` passe avec vrai Postgres & OIDC, injection Basic Auth OpenBao validée sur VS Code/ttyd. |
-| **M2** | **S3 & Git HTTPS** | `crates/api-server/src/storage.rs`, `crates/identity-proxy` | Upload de session S3 réussi, clone Git HTTPS privé réussi via alias interne. |
+| **M1** | **Socle DB, OIDC, Basic Auth & Health** | `crates/common`, `crates/api-server`, `crates/controller`, `dashboard/` | `cargo test --workspace` passe avec vrai Postgres & OIDC, Basic Auth OpenBao et sondes /health opérationnelles. |
+| **M2** | **S3 & Git HTTPS (Dev Pods)** | `crates/api-server/src/storage.rs`, `crates/identity-proxy`, `deploy/dev/{s3,forgejo}` | Upload de session S3 réussi, clone Git HTTPS privé réussi contre Forgejo dev. |
 | **M3** | **LiteLLM & Budgets** | `crates/controller/src/litellm.rs`, `crates/common/src/crd.rs` | Virtual Key créée avec TTL court renouvelé à chaud post-resume, blocage 429 au dépassement de quota. |
 | **M4** | **Serveur MCP Externe** | `crates/api-server/src/mcp_*.rs` | Client Claude Desktop connecté sur `/v1/mcp`, streaming `exec_in_workshop` bufferisé dans Postgres. |
-| **M5** | **DevFactory PM Engine** | `services/pm-engine`, `dashboard/` | Workflow LangGraph complet (issue ➔ sous-branches ➔ auto-correction ➔ git-sync ➔ snapshot S3 ➔ merge). |
-| **M6** | **Helm & Admin Doc** | `charts/atelier/`, `docs/admin-guide.md`, `mkdocs.yml` | `helm install` 100% opérationnel sur Kind avec 4 Ingress, identités Cloud et hooks validés. |
+| **M5** | **DevFactory PM Engine** | `services/pm-engine`, `dashboard/`, `deploy/dev/redis` | Workflow LangGraph complet (issue ➔ sous-branches ➔ auto-correction ➔ git-sync ➔ snapshot S3 ➔ merge). |
+| **M6** | **Helm & Admin Doc** | `charts/atelier/`, `deploy/dev/*-stack.sh`, `docs/admin-guide.md` | `helm install` 100% opérationnel sur Kind avec 4 Ingress, identités Cloud, scripts dev et hooks validés. |

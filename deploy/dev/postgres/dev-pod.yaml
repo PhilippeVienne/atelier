@@ -8,6 +8,31 @@ stringData:
   POSTGRES_PASSWORD: dev-only-not-for-production
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atelier-postgres-dev-init
+  namespace: default
+data:
+  01-app-role.sql: |
+    -- Execute une seule fois, au tout premier demarrage du conteneur
+    -- (mecanisme standard de l'image officielle postgres,
+    -- /docker-entrypoint-initdb.d/). CREATE ROLE est global a l'instance,
+    -- pas a une base precise : ce role est donc aussi utilisable depuis
+    -- `atelier_controller` (creee ensuite a la main, voir README.md).
+    --
+    -- Mot de passe en clair ici comme `POSTGRES_PASSWORD` ci-dessus : cette
+    -- instance est jetable et dev-only (`emptyDir`, jamais exposee hors du
+    -- cluster kind local), pas de secret reel a proteger.
+    CREATE ROLE atelier_app LOGIN PASSWORD 'dev-only-not-for-production' NOSUPERUSER NOBYPASSRLS;
+    GRANT CONNECT ON DATABASE atelier_apiserver TO atelier_app;
+    GRANT USAGE ON SCHEMA public TO atelier_app;
+    -- Les migrations (executees par atelier_admin) creent les tables apres
+    -- ce script d'init : ALTER DEFAULT PRIVILEGES couvre les tables pas
+    -- encore creees au lieu d'un GRANT explicite qui echouerait ici.
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO atelier_app;
+---
+apiVersion: v1
 kind: Pod
 metadata:
   name: atelier-postgres-dev
@@ -43,12 +68,17 @@ spec:
       volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
   volumes:
     # emptyDir : donnees perdues a la suppression du pod, comme
     # deploy/dev/kanidm et deploy/dev/openbao (mode dev, pas de
     # persistance visee).
     - name: data
       emptyDir: {}
+    - name: init-scripts
+      configMap:
+        name: atelier-postgres-dev-init
 ---
 apiVersion: v1
 kind: Service

@@ -1758,3 +1758,71 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/5433" && echo "port 5433 joignable"   # port 5433 joignable
   ```
 - **Statut** : ✅ Validé. Débloque le démarrage des tâches `sqlx`/PostgreSQL de M1, non encore attaquées.
+
+### [2026-08-23 22:30] Jalon M2 - Tâches 2.0.1 & 2.0.2 : instances S3 (RustFS) et Forgejo (Git HTTPS) de développement
+- **Composant impacté** : `deploy/dev/s3/dev-pod.yaml` (nouveau), `deploy/dev/s3/README.md` (nouveau), `deploy/dev/forgejo/dev-pod.yaml` (nouveau), `deploy/dev/forgejo/README.md` (nouveau).
+- **Contexte** : Pour respecter l'éthos du projet « Vérification Empirique sans Mocks » lors du développement du Jalon M2 (client S3 dans `api-server` et injection de token Git HTTPS dans `identity-proxy`), deux composants d'infrastructure locale de test étaient requis dans le cluster Kind : un serveur S3 compatible S3 standard (RustFS) et une forge Git 100% HTTPS (Forgejo).
+- **Modifications réalisées** :
+  - **Tâche 2.0.1 (S3 RustFS)** : Pod `atelier-s3-dev` déployé dans Kind (image officielle `rustfs/rustfs:latest` avec `emptyDir`, 100% Rust et conforme à l'éthos Atelier). Un `initContainer` initialise automatiquement les 3 buckets requis (`atelier-sessions`, `atelier-snapshots`, `forgejo-lfs-attachments`) avec les permissions `10001:10001` (UID du process `rustfs`). Service `atelier-s3-dev` exposant le port 9000 (S3 API).
+  - **Tâche 2.0.2 (Forgejo 100% HTTPS connecté à PostgreSQL)** : Base `forgejo` créée sur `atelier-postgres-dev`. Pod `atelier-forgejo-dev` déployé dans Kind (image `codeberg.org/forgejo/forgejo:9` connectée à `atelier-postgres-dev:5432/forgejo`, 121 tables initialisées). SSH désactivé d'office (`DISABLE_SSH: true`). Utilisateur administrateur `atelier_admin` créé via CLI, token d'accès PAT généré, création d'un dépôt privé `test-repo` validée via API REST, puis cycle complet `git clone` ➔ `git commit` ➔ `git push origin main` validé avec mise à jour effective dans PostgreSQL (`repository.is_empty = false`).
+- **Preuve empirique / Test exécuté** :
+  ```
+  kubectl apply -f deploy/dev/s3/dev-pod.yaml
+  kubectl wait --for=condition=Ready pod/atelier-s3-dev --timeout=60s   # pod/atelier-s3-dev condition met
+  kubectl logs atelier-s3-dev -c rustfs   # Starting: /usr/bin/rustfs /data (Running on port 9000)
+  kubectl exec atelier-s3-dev -c rustfs -- sh -c 'echo "test session payload" > /data/atelier-sessions/test-session.zst && cat /data/atelier-sessions/test-session.zst'   # ecriture et lecture reussies en tant que rustfs (10001)
+
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d postgres -c 'CREATE DATABASE forgejo;'   # CREATE DATABASE
+  kubectl apply -f deploy/dev/forgejo/dev-pod.yaml
+  kubectl wait --for=condition=Ready pod/atelier-forgejo-dev --timeout=60s   # pod/atelier-forgejo-dev condition met
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d forgejo -c '\dt'   # 121 tables creees par Forgejo dans PostgreSQL
+  kubectl exec atelier-forgejo-dev -- su-exec 1000:1000 forgejo admin user create --username atelier_admin --password dev-only-not-for-production --email admin@atelier.local --admin   # New user 'atelier_admin' has been successfully created!
+  kubectl exec atelier-forgejo-dev -- su-exec 1000:1000 forgejo admin user generate-access-token --username atelier_admin --token-name dev-test-token --scopes all   # Access token was successfully created: 5f04486ef2c4...
+  kubectl exec atelier-forgejo-dev -- curl -s -X POST http://127.0.0.1:3000/api/v1/user/repos -H "Authorization: token 5f04486ef2c4..." -H "Content-Type: application/json" -d '{"name": "test-repo", "private": true, "auto_init": true}'   # HTTP 201 Created ("id": 1, "name": "test-repo", "private": true)
+  kubectl exec atelier-forgejo-dev -- sh -c 'git clone http://atelier_admin:5f04486ef2c4...@127.0.0.1:3000/atelier_admin/test-repo.git /tmp/clone-test && cd /tmp/clone-test && echo "commit" > f && git add f && git commit -m "feat: commit" && git push origin main'   # main -> main OK
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d forgejo -c 'SELECT id, name, is_empty FROM repository;'   # 1 | test-repo | f
+  ```
+- **Statut** : ✅ Validé pour 2.0.1 et 2.0.2. Débloque le développement réel des modules S3 (`storage.rs`) et de l'interception `identity-proxy` du Jalon M2.
+
+### [2026-08-23 22:45] Jalon M1 - Tâche 1.0.2 : PKI locale validable et instance Keycloak OIDC de développement
+- **Composant impacté** : `deploy/dev/pki/init-pki.sh` (nouveau), `deploy/dev/pki/README.md` (nouveau), `deploy/dev/keycloak/realm-export.json` (nouveau), `deploy/dev/keycloak/dev-pod.yaml` (nouveau), `deploy/dev/keycloak/README.md` (nouveau).
+- **Contexte** : Pour simplifier le dev local et respecter l'éthos du projet « Tests Réels sans Mocks », il était impératif de générer une PKI de développement validable (Root CA + certificats Multi-SAN) et de disposer d'une vraie instance Keycloak locale branchée sur notre PostgreSQL partagé (`atelier-postgres-dev:5432/keycloak`) pour valider les flux OIDC JWT (JWKS dynamique, claims, PKCE) dès le Jalon M1.
+- **Modifications réalisées** :
+  - **PKI Dev Locale** : Script `deploy/dev/pki/init-pki.sh` générant une Root CA (`atelier-ca.crt`, valide 10 ans) et un certificat Multi-SAN (`server.crt`) couvrant tous les domaines dev (`*.atelier.local`, `auth.atelier.local`, `git.atelier.local`, `app.atelier.local`, `api.atelier.local`, `localhost`, `127.0.0.1`). Synchronisation automatique des Secrets Kubernetes `atelier-dev-ca` et `atelier-dev-tls` dans le cluster Kind.
+  - **Keycloak Dev (PostgreSQL)** : Base `keycloak` créée sur `atelier-postgres-dev`. Pod `atelier-keycloak-dev` déployé dans Kind (image `quay.io/keycloak/keycloak:26.1` en mode `start-dev`). Realm `atelier` importé automatiquement avec les clients OIDC `atelier-dashboard` (PKCE S256 public) et `atelier-api` (Bearer-only), et deux utilisateurs de test (`atelier-admin` et `atelier-test-user`).
+- **Preuve empirique / Test exécuté** :
+  ```
+  ./deploy/dev/pki/init-pki.sh   # Root CA generee + Certificat Multi-SAN cree + Secrets synchronises dans Kind
+  openssl verify -CAfile deploy/dev/pki/ca/atelier-ca.crt deploy/dev/pki/certs/server.crt   # deploy/dev/pki/certs/server.crt: OK
+
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d postgres -c 'CREATE DATABASE keycloak;'   # CREATE DATABASE
+  kubectl apply -f deploy/dev/keycloak/dev-pod.yaml
+  kubectl wait --for=condition=Ready pod/atelier-keycloak-dev --timeout=90s   # pod/atelier-keycloak-dev condition met
+  kubectl exec atelier-forgejo-dev -- curl -s http://atelier-keycloak-dev:8080/realms/atelier/.well-known/openid-configuration   # Document OIDC RFC 8414 valide retourne
+  kubectl exec atelier-forgejo-dev -- curl -s -X POST http://atelier-keycloak-dev:8080/realms/atelier/protocol/openid-connect/token -d "client_id=atelier-dashboard" -d "grant_type=password" -d "username=atelier-test-user" -d "password=dev-only-not-for-production" -d "scope=openid email profile"   # JWT Access Token + ID Token + Refresh Token obtenus avec succes
+  ```
+- **Statut** : ✅ Validé pour 1.0.2. L'authentification OIDC de dev est désormais 100% basée sur Keycloak et une PKI validable.
+
+### [2026-08-23 22:30] Jalon M1 - Tâches 1.2.1, 1.2.7, 1.2.8, 1.2.9, 1.2.10 : sqlx, migrations et healthchecks dans `api-server`
+- **Composant impacté** : `crates/api-server/Cargo.toml`, `crates/api-server/src/main.rs`, `crates/api-server/src/routes.rs`, `crates/api-server/migrations/20260824000000_init_apiserver.sql` (nouveau), `crates/api-server/tests/routes.rs`, `deploy/dev/postgres/` (rôle `atelier_app` ajouté).
+- **Modifications réalisées** :
+  - Ajout des dépendances `sqlx` (0.8, features `postgres`/`uuid`/`chrono`/`json`/`macros`/`migrate`), `aws-sdk-s3`, `aws-config`, `base64` (les deux derniers pas encore consommés, réservés au Jalon M2).
+  - `main.rs` : `DATABASE_URL` obligatoire au démarrage (erreur explicite sinon), `PgPoolOptions` (10 connexions max), `sqlx::migrate!("./migrations")` exécutées au boot avant de servir du trafic.
+  - `AppState` (`routes.rs`) : ajout de `db_pool: sqlx::PgPool` et `openbao_addr: Option<String>` (uniquement pour la sonde readiness, pas de lecture de secrets).
+  - Deux nouveaux endpoints hors authentification (`/health/liveness`, `/health/readiness`) : le premier toujours `200` si le process tourne, le second `SELECT 1` réel sur PostgreSQL + `GET /v1/sys/health` sur OpenBao si configuré, `503` sinon.
+  - Migration `20260824000000_init_apiserver.sql` : tables `session_logs`/`audit_events`, RLS (`ENABLE`+`FORCE ROW LEVEL SECURITY`) isolant par `owner_subject` via `current_setting('app.current_tenant')`.
+- **Découverte empirique importante** : `atelier_admin` (le rôle `POSTGRES_USER` de l'image officielle) est **superutilisateur** — un superutilisateur (ou tout rôle `BYPASSRLS`) ignore silencieusement RLS *même avec `FORCE ROW LEVEL SECURITY`* (comportement standard PostgreSQL, pas un bug de la migration). Vérifié en pratique : deux lignes de tenants différents insérées, toutes deux visibles via `atelier_admin` malgré `SET app.current_tenant`. Corrigé en ajoutant un second rôle `atelier_app` (non-superutilisateur, `NOBYPASSRLS`), provisionné automatiquement au premier démarrage du pod (`ConfigMap` montée sur `/docker-entrypoint-initdb.d/`) — avec ce rôle, la même expérience isole correctement les tenants (lecture ET écriture, `WITH CHECK` bloque bien un `INSERT` cross-tenant avec une erreur RLS réelle). Voir `deploy/dev/postgres/README.md` pour la démonstration complète et la limite actuelle (les migrations et l'app tournent encore avec `atelier_admin` en M1, la séparation des rôles pour l'app runtime reste à faire quand du code consommera réellement ces tables).
+- **Incident rencontré et résolu en cours de route** : disque hôte plein à 100 % en plein `cargo test --workspace` (dépendances `aws-sdk-s3`/`aws-config` volumineuses ajoutées) — bloquant, indépendant de ce changement (`target/` du dépôt seul pesait 102 Go, plus `~135G` de Téléchargements, volumes Docker, etc.). Résolu par l'utilisateur (libération d'espace), tests rejoués avec succès ensuite.
+- **Preuve empirique / Test exécuté** :
+  ```
+  cargo test -p atelier-api-server --test routes   # 5 passed, dont le nouveau health_endpoints_respond_without_auth (vrai PgPool, vraies migrations)
+  cargo test --workspace / clippy -D warnings / fmt --check   # 100% vert
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d atelier_apiserver -c '\dt'   # session_logs, audit_events, _sqlx_migrations
+  kubectl exec atelier-postgres-dev -- psql ... "SELECT relrowsecurity, relforcerowsecurity FROM pg_class ..."   # t | t pour les deux tables
+  # Demonstration RLS reelle : atelier_admin voit les deux tenants (RLS ignoree, superutilisateur),
+  # atelier_app n'en voit qu'un (RLS appliquee) et un INSERT cross-tenant leve
+  # "new row violates row-level security policy"
+  ```
+- **Statut** : ✅ Validé pour les 5 tâches listées.
+
+
