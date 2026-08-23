@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: atelier-forgejo-dev
+  namespace: default
+type: Opaque
+stringData:
+  ADMIN_USERNAME: atelier_admin
+  ADMIN_PASSWORD: dev-only-not-for-production
+  ADMIN_EMAIL: admin@atelier.local
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: atelier-forgejo-dev
+  namespace: default
+  labels:
+    app: atelier-forgejo-dev
+spec:
+  containers:
+    - name: forgejo
+      image: codeberg.org/forgejo/forgejo:9
+      env:
+        - name: FORGEJO__security__INSTALL_LOCK
+          value: "true"
+        - name: FORGEJO__security__SECRET_KEY
+          value: "dev-only-secret-key-for-atelier-testing"
+        - name: FORGEJO__database__DB_TYPE
+          value: "postgres"
+        - name: FORGEJO__database__HOST
+          value: "atelier-postgres-dev:5432"
+        - name: FORGEJO__database__NAME
+          value: "forgejo"
+        - name: FORGEJO__database__USER
+          value: "atelier_admin"
+        - name: FORGEJO__database__PASSWD
+          valueFrom:
+            secretKeyRef:
+              name: atelier-postgres-dev
+              key: POSTGRES_PASSWORD
+        - name: FORGEJO__server__DISABLE_SSH
+          value: "true"
+        - name: FORGEJO__server__HTTP_PORT
+          value: "3000"
+        - name: FORGEJO__server__ROOT_URL
+          value: "http://git.atelier.internal:3000/"
+        - name: FORGEJO__service__DISABLE_REGISTRATION
+          value: "false"
+        - name: FORGEJO__service__REQUIRE_SIGNIN_VIEW
+          value: "false"
+        - name: USER_UID
+          value: "1000"
+        - name: USER_GID
+          value: "1000"
+      ports:
+        - name: http
+          containerPort: 3000
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-forgejo-dev
+  namespace: default
+spec:
+  selector:
+    app: atelier-forgejo-dev
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP
