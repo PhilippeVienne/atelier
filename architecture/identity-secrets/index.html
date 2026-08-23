@@ -1,0 +1,868 @@
+
+<!doctype html>
+<html lang="fr" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation et site officiel du projet Atelier (Firecracker, Kubernetes, MCP, OpenBao)">
+      
+      
+        <meta name="author" content="Philippe Vienne">
+      
+      
+      
+        <link rel="prev" href="../network-security/">
+      
+      
+        <link rel="next" href="../snapshot-restore/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Gestion de l'Identité & Secrets - Atelier — MicroVM Dev Environments for AI Agents</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#identite-et-secrets-kanidm-openbao" class="md-skip">
+          Aller au contenu
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="En-tête">
+    <a href="../.." title="Atelier — MicroVM Dev Environments for AI Agents" class="md-header__button md-logo" aria-label="Atelier — MicroVM Dev Environments for AI Agents" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Atelier — MicroVM Dev Environments for AI Agents
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Gestion de l'Identité & Secrets
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="Mode sombre"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Mode sombre" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="Mode clair"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Mode clair" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Rechercher" placeholder="Rechercher" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Recherche">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Effacer" aria-label="Effacer" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initialisation de la recherche
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Onglets" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Accueil
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../ARCHITECTURE/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../DEPLOYMENT/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Déploiement & CI/CD
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../PROGRESS/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  État du Projet
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Atelier — MicroVM Dev Environments for AI Agents" class="md-nav__button md-logo" aria-label="Atelier — MicroVM Dev Environments for AI Agents" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Atelier — MicroVM Dev Environments for AI Agents
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accueil
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Présentation Globale
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../network-security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sécurité Réseau
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gestion de l'Identité & Secrets
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gestion de l'Identité & Secrets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table des matières">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table des matières
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pont-didentite-vers-openbao-auth-kubernetes-pas-kanidm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identity-proxy-injection-de-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        identity-proxy : injection de credentials
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../snapshot-restore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot & Restore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Déploiement & CI/CD
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../PROGRESS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    État du Projet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table des matières">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table des matières
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pont-didentite-vers-openbao-auth-kubernetes-pas-kanidm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identity-proxy-injection-de-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        identity-proxy : injection de credentials
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="identite-et-secrets-kanidm-openbao">Identite et secrets : Kanidm + OpenBao</h1>
+<blockquote>
+<p>Retour a la <a href="../../ARCHITECTURE/">vue d'ensemble</a>. Etat d'avancement et
+preuves de test : voir <a href="../../PROGRESS/"><code>PROGRESS.md</code></a>.</p>
+</blockquote>
+<p>Deux notions d'identite bien distinctes :</p>
+<ul>
+<li><strong>L'utilisateur humain</strong> proprietaire d'un Workshop
+  (<code>WorkshopSpec.owner_subject</code>). Son identite est geree par
+  <a href="https://kanidm.com/">Kanidm</a>, fournisseur d'identite pour l'ensemble
+  d'Atelier (<code>api-server</code> ne valide que des JWT dont l'issuer est Kanidm),
+  qui peut lui-meme federer vers un provider externe (OIDC/LDAP
+  d'entreprise) sans qu'Atelier ait a gerer cette integration directement.</li>
+<li><strong>L'environnement lui-meme</strong> : chaque <code>Workshop</code> recoit sa propre entite
+  machine dans Kanidm (<code>WorkshopStatus.kanidmEntityId</code>), distincte du sujet
+  humain proprietaire. Cette identite reste la reference cote
+  utilisateur/dashboard, mais ce n'est <strong>pas</strong> elle qui sert de pont vers
+  OpenBao (choix deliberement explique ci-dessous).</li>
+</ul>
+<p>Les secrets destines aux environnements (credentials/tokens injectes par
+<code>identity-proxy</code>) sont stockes dans <a href="https://openbao.org/">OpenBao</a> —
+deliberement separe des Secrets Kubernetes du cluster sous-jacent, qui
+restent geres par les mecanismes k8s standards pour le control plane
+lui-meme. Un secret stocke la est souvent lui-meme l'identite de sortie de
+l'environnement (ex: une cle d'API presentee a un service externe) :
+<strong>seul</strong> <code>identity-proxy</code> peut la recuperer et l'utiliser — l'agent dans la
+microVM n'y a jamais acces directement, meme indirectement via les
+variables d'environnement ou le systeme de fichiers de la VM.</p>
+<h2 id="pont-didentite-vers-openbao-auth-kubernetes-pas-kanidm">Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm</h2>
+<p><code>identity-proxy</code> s'authentifie aupres d'OpenBao via la <strong>methode d'auth
+Kubernetes</strong> d'OpenBao, pas via une federation JWT/OIDC avec Kanidm. Le pod
+parent de chaque Workshop recoit son propre ServiceAccount Kubernetes
+(<code>&lt;name&gt;-parent</code>) ; <code>identity-proxy</code> presente le token projete de ce
+ServiceAccount, qu'OpenBao verifie en direct aupres de l'API Kubernetes
+(TokenReview) — aucun secret a distribuer ou stocker pour amorcer cette
+confiance.</p>
+<p>Le <code>controller</code> provisionne, par Workshop, une policy OpenBao et un role
+<code>auth/kubernetes/role/workshop-&lt;name&gt;</code> scopant l'acces au chemin KV
+<code>secret/{data,metadata}/workshops/&lt;name&gt;/*</code> au seul ServiceAccount de ce
+Workshop (<code>crates/controller/src/openbao.rs</code>), ce qui borne le rayon
+d'action d'un Workshop compromis aux seuls secrets qui lui ont ete
+explicitement destines.</p>
+<blockquote>
+<p><strong>Pourquoi pas une federation Kanidm → OpenBao ?</strong> Ce serait plus
+coherent conceptuellement ("Kanidm = identite pour tout"), mais
+demanderait de configurer un Resource Server OAuth2 cote Kanidm et un
+backend JWT/OIDC cote OpenBao (JWKS, client credentials grant) — une
+integration nettement plus lourde et une surface de panne plus grande que
+l'auth Kubernetes, deja standard.</p>
+</blockquote>
+<h2 id="identity-proxy-injection-de-credentials"><code>identity-proxy</code> : injection de credentials</h2>
+<p><code>identity-proxy</code> (<code>crates/identity-proxy</code>) est un proxy HTTP explicite, sur
+le meme modele que <code>net-proxy</code>, mais <strong>jamais joint directement par la
+VM</strong> : <code>net-proxy</code> reste le seul point d'entree reseau que la VM peut
+atteindre (voir <a href="../network-security/"><code>network-security.md</code></a>). Quand
+<code>ATELIER_IDENTITY_PROXY_ADDR</code> est configure cote <code>net-proxy</code>, celui-ci lui
+chaine, apres avoir deja tranche l'allowlist, <em>tout</em> le trafic egress
+autorise — pas seulement les requetes qui ont effectivement besoin d'une
+identite injectee. <code>identity-proxy</code> decide alors, requete par requete, s'il
+doit injecter un credential (regle correspondante) ou simplement relayer
+tel quel vers la destination finale ; il ne fait jamais lui-meme
+l'arbitrage allowlist (deja tranche en amont par <code>net-proxy</code>) et ne se
+reconnecte jamais vers <code>net-proxy</code> en aval (ce serait une boucle) — il se
+connecte toujours directement a la destination.</p>
+<ul>
+<li><strong>Regles d'injection</strong> (<code>ATELIER_IDENTITY_INJECTION_RULES</code>, JSON) :
+  chaque regle associe un hote (correspondance exacte ou wildcard
+  <code>*.domaine</code>) a un en-tete a poser (ex: <code>Authorization</code>), un prefixe
+  (ex: <code>Bearer</code>) et un champ d'un secret KV v2 OpenBao
+  (<code>secret/workshops/&lt;name&gt;/&lt;secret_path&gt;</code>). Pas encore alimentees depuis
+  <code>Workshop.spec</code> par le <code>controller</code> — a cabler (voir <code>PROGRESS.md</code>).</li>
+<li><strong>Cache de secrets</strong> rafraichi en tache de fond (login OpenBao +
+  relecture des champs references par les regles) toutes les 5 minutes,
+  avant expiration du token client OpenBao (TTL 15 min cote serveur). Les
+  valeurs ne sont jamais journalisees.</li>
+<li><strong>Limite structurelle</strong> : un <code>CONNECT</code> (HTTPS) est un tunnel TCP opaque,
+  chiffre bout-a-bout entre l'agent et la destination — <code>identity-proxy</code> ne
+  peut donc <strong>pas</strong> y injecter d'en-tete sans devenir un MITM TLS actif, ce
+  qui n'est pas fait. L'injection ne fonctionne aujourd'hui que pour les
+  requetes HTTP en clair relayees en forme absolue. Cote <code>net-proxy</code>, le
+  chainage respecte cette distinction : un <code>CONNECT</code> original est rejoue
+  en <code>CONNECT</code> vers <code>identity-proxy</code> (son propre handler de tunnel), une
+  requete HTTP en clair lui est envoyee telle quelle en forme absolue,
+  <strong>jamais enveloppee dans un <code>CONNECT</code></strong> — sinon <code>identity-proxy</code> la
+  traiterait en tunnel opaque et ne la reinterpreterait jamais pour y
+  injecter un en-tete.</li>
+</ul>
+<p><code>ATELIER_IDENTITY_PROXY_ADDR</code> sert donc une double fin cote <code>net-proxy</code> :
+adressage explicite par le nom d'alias <code>identity-proxy</code>
+(<code>crates/net-proxy/src/internal.rs</code>, hors allowlist) <strong>et</strong> saut
+obligatoire pour tout l'egress autorise des lors qu'il est configure — voir
+<a href="../network-security/"><code>network-security.md</code></a> pour le detail des deux
+mecanismes.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Retour en haut de la page
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copi\u00e9 dans le presse-papier", "clipboard.copy": "Copier dans le presse-papier", "search.result.more.one": "1 de plus sur cette page", "search.result.more.other": "# de plus sur cette page", "search.result.none": "Aucun document trouv\u00e9", "search.result.one": "1 document trouv\u00e9", "search.result.other": "# documents trouv\u00e9s", "search.result.placeholder": "Taper pour d\u00e9marrer la recherche", "search.result.term.missing": "Non trouv\u00e9", "select.version": "S\u00e9lectionner la version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

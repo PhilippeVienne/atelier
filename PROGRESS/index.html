@@ -1,0 +1,2517 @@
+
+<!doctype html>
+<html lang="fr" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation et site officiel du projet Atelier (Firecracker, Kubernetes, MCP, OpenBao)">
+      
+      
+        <meta name="author" content="Philippe Vienne">
+      
+      
+      
+        <link rel="prev" href="../DEPLOYMENT/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>État du Projet - Atelier — MicroVM Dev Environments for AI Agents</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#point-de-situation" class="md-skip">
+          Aller au contenu
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="En-tête">
+    <a href=".." title="Atelier — MicroVM Dev Environments for AI Agents" class="md-header__button md-logo" aria-label="Atelier — MicroVM Dev Environments for AI Agents" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Atelier — MicroVM Dev Environments for AI Agents
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              État du Projet
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="Mode sombre"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Mode sombre" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="Mode clair"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Mode clair" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Rechercher" placeholder="Rechercher" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Recherche">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Effacer" aria-label="Effacer" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initialisation de la recherche
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Onglets" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Accueil
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../ARCHITECTURE/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../DEPLOYMENT/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Déploiement & CI/CD
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  État du Projet
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Atelier — MicroVM Dev Environments for AI Agents" class="md-nav__button md-logo" aria-label="Atelier — MicroVM Dev Environments for AI Agents" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Atelier — MicroVM Dev Environments for AI Agents
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accueil
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Présentation Globale
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/network-security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sécurité Réseau
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/identity-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gestion de l'Identité & Secrets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/snapshot-restore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot & Restore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Déploiement & CI/CD
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    État du Projet
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    État du Projet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table des matières">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table des matières
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#etat-par-composant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Etat par composant
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ce-qui-a-ete-construit-cette-session-resume-chronologique" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ce qui a ete construit cette session (resume chronologique)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reseau-kind-registre-diagnostic-complet-activation-bloquee-par-un-risque-de-securite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#builder-microvm-isoler-envbuilder-dune-microvm-jetable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builder microVM : isoler envbuilder d'une microVM jetable
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Builder microVM : isoler envbuilder d&#39;une microVM jetable">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#blocage-resolu-cinq-causes-racines-boot-complet-valide-reellement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Blocage resolu : cinq causes racines, boot complet valide reellement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branchee-dans-image-builderreconcilers-boucle-complete-automatique" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branchee dans image-builder/reconcile.rs : boucle complete automatique
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canal-de-controle-suspendresume-snapshot-firecracker-reel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canal de controle suspend/resume : snapshot Firecracker reel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reseau-de-lagent-net-proxyidentity-proxy-dans-le-pod-parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reseau de l'agent + net-proxy/identity-proxy dans le pod parent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp-gateway-premier-serveur-mcp-reel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp-gateway : premier serveur MCP reel
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="mcp-gateway : premier serveur MCP reel">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enable_simulator-premier-simulateur-localstack-fait-verifie-de-bout-en-bout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        enable_simulator + premier simulateur (LocalStack) : fait, verifie de bout en bout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-vsock-natif-fait-verifie-de-bout-en-bout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport vsock natif : fait, verifie de bout en bout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verification-mcp-depuis-linterieur-dune-vraie-microvm-agent-fait" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification MCP depuis l'interieur d'une vraie microVM agent : fait
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#devcontainer-de-demo-ministack-workshop-le-boot-firecracker-de-lagent-exige-systemd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Devcontainer de demo ministack-workshop : le boot Firecracker de l'agent exige systemd
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ui-dashboard-gestion-ouvrir-vs-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UI dashboard : gestion + "ouvrir VS Code"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lecons-retenues-a-ne-pas-re-decouvrir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lecons retenues (a ne pas re-decouvrir)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prochaines-etapes-par-priorite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prochaines etapes (par priorite)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table des matières">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table des matières
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#etat-par-composant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Etat par composant
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ce-qui-a-ete-construit-cette-session-resume-chronologique" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ce qui a ete construit cette session (resume chronologique)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reseau-kind-registre-diagnostic-complet-activation-bloquee-par-un-risque-de-securite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#builder-microvm-isoler-envbuilder-dune-microvm-jetable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builder microVM : isoler envbuilder d'une microVM jetable
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Builder microVM : isoler envbuilder d&#39;une microVM jetable">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#blocage-resolu-cinq-causes-racines-boot-complet-valide-reellement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Blocage resolu : cinq causes racines, boot complet valide reellement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branchee-dans-image-builderreconcilers-boucle-complete-automatique" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branchee dans image-builder/reconcile.rs : boucle complete automatique
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canal-de-controle-suspendresume-snapshot-firecracker-reel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canal de controle suspend/resume : snapshot Firecracker reel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reseau-de-lagent-net-proxyidentity-proxy-dans-le-pod-parent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reseau de l'agent + net-proxy/identity-proxy dans le pod parent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp-gateway-premier-serveur-mcp-reel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp-gateway : premier serveur MCP reel
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="mcp-gateway : premier serveur MCP reel">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enable_simulator-premier-simulateur-localstack-fait-verifie-de-bout-en-bout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        enable_simulator + premier simulateur (LocalStack) : fait, verifie de bout en bout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-vsock-natif-fait-verifie-de-bout-en-bout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport vsock natif : fait, verifie de bout en bout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verification-mcp-depuis-linterieur-dune-vraie-microvm-agent-fait" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification MCP depuis l'interieur d'une vraie microVM agent : fait
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#devcontainer-de-demo-ministack-workshop-le-boot-firecracker-de-lagent-exige-systemd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Devcontainer de demo ministack-workshop : le boot Firecracker de l'agent exige systemd
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ui-dashboard-gestion-ouvrir-vs-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UI dashboard : gestion + "ouvrir VS Code"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lecons-retenues-a-ne-pas-re-decouvrir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lecons retenues (a ne pas re-decouvrir)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prochaines-etapes-par-priorite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prochaines etapes (par priorite)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="point-de-situation">Point de situation</h1>
+<blockquote>
+<p>Suivi vivant de l'avancement. Pour la conception cible, voir
+<a href="../ARCHITECTURE/"><code>ARCHITECTURE.md</code></a>.</p>
+</blockquote>
+<p>Toutes les briques listees "Fonctionnel" ci-dessous ont ete validees contre
+de la vraie infrastructure (kind reel, Firecracker/jailer reels, Kanidm et
+OpenBao reels en conteneur, registre OCI reel) — pas de mocks. C'est un
+choix delibere du projet : les bugs decouverts en cours de route (voir
+"Lecons retenues") sont attendus et font partie du processus.</p>
+<h2 id="etat-par-composant">Etat par composant</h2>
+<table>
+<thead>
+<tr>
+<th>Composant</th>
+<th>Etat</th>
+<th>Preuve</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CRD <code>Workshop</code> + types (<code>crates/common</code>)</td>
+<td>Fonctionnel</td>
+<td>Appliquee sur kind, round-trip serde valide</td>
+</tr>
+<tr>
+<td><code>controller</code> — reconciliation generale</td>
+<td>Fonctionnel</td>
+<td>5/5 tests d'integration reels contre kind</td>
+</tr>
+<tr>
+<td><code>controller</code> — provisioning Kanidm</td>
+<td>Fonctionnel</td>
+<td>Test reel contre un Kanidm en conteneur</td>
+</tr>
+<tr>
+<td><code>controller</code> — provisioning OpenBao</td>
+<td>Fonctionnel</td>
+<td>Test reel contre un OpenBao en conteneur (policy KV data+metadata)</td>
+</tr>
+<tr>
+<td><code>controller</code> — cycle suspend/resume</td>
+<td>Fonctionnel (snapshot reel)</td>
+<td>Canal de controle HTTP <code>controller</code> -&gt; <code>vm-supervisor</code> (<code>POST /snapshot</code>) : suspend declenche un vrai snapshot Firecracker publie sur le cache partage, <code>status.snapshotDigest</code> renseigne ; resume restaure la microVM depuis ce snapshot (log "restoring microVM from persisted snapshot") dans un <strong>pod/process totalement nouveau</strong>. Verifie reellement contre kind (cycle complet suspend → snapshot publie → pod libere → resume → microVM restauree). Voir "Canal de controle suspend/resume" ci-dessous</td>
+</tr>
+<tr>
+<td><code>controller</code> — cleanup a la suppression</td>
+<td>Fonctionnel</td>
+<td>Finalizer <code>atelier.dev/cleanup</code>, verifie via test reel</td>
+</tr>
+<tr>
+<td><code>image-builder</code> — pipeline devcontainer → ext4</td>
+<td>Fonctionnel</td>
+<td><code>envbuilder</code> tourne desormais dans la microVM "builder" (plus d'invocation directe dans le conteneur du Job), suivi de <code>crane export</code> + <code>mke2fs</code> cote hote — build reel de bout en bout sur un vrai depot (<code>vscode-remote-try-python</code>), voir "Builder microVM" ci-dessous</td>
+</tr>
+<tr>
+<td><code>image-builder</code> — publication PVC + patch status</td>
+<td>Fonctionnel</td>
+<td>Verifie via un vrai Job Kubernetes en cluster (RBAC dedie, voir ci-dessous) : <code>status.imageDigest</code> patche automatiquement, plus besoin d'intervention manuelle</td>
+</tr>
+<tr>
+<td><code>vm-supervisor</code> — boot Firecracker jaile</td>
+<td>Fonctionnel</td>
+<td>VM reelle demarree via jailer + capabilities, hors pod et dans un pod Kubernetes <strong>non privilegie</strong> (<code>atelier.dev/kvm</code> via <code>kvm-device-plugin</code> + <code>NET_ADMIN</code>/<code>SYS_ADMIN</code>/<code>SYS_RESOURCE</code>, voir composant <code>kvm-device-plugin</code> ci-dessous)</td>
+</tr>
+<tr>
+<td><code>kvm-device-plugin</code></td>
+<td>Fonctionnel</td>
+<td>Device plugin Kubernetes (API kubelet v1beta1) pour <code>/dev/kvm</code>+<code>/dev/net/tun</code> : DaemonSet qui annonce la ressource allouable <code>atelier.dev/kvm</code>, permettant a <code>vm-supervisor</code>/<code>image-builder</code> de tourner sans <code>securityContext.privileged: true</code>. Verifie reellement contre kind : <code>kubectl describe node</code> liste <code>atelier.dev/kvm: 32</code>, un pod non privilegie qui la demande ouvre reellement <code>/dev/kvm</code> (<code>exec 3&lt;&gt;/dev/kvm</code> reussit), et un vrai boot Firecracker aboutit (<code>microVM running</code>) dans un pod portant uniquement <code>NET_ADMIN</code>+<code>SYS_ADMIN</code>+<code>SYS_RESOURCE</code>, sans <code>privileged</code></td>
+</tr>
+<tr>
+<td><code>vm-supervisor</code> — snapshot/restore</td>
+<td>Fonctionnel (cross-process)</td>
+<td><code>Vm::restore_persisted</code> (nouveau) restaure une microVM depuis un snapshot <strong>sans</strong> avoir besoin de l'objet <code>Vm</code> d'origine vivant — contrairement a <code>Vm::restore</code> (fctools), qui a besoin d'une VM source dans le meme process. Teste reellement : VM source completement eteinte et son jail detruit avant la restauration dans un tout nouveau <code>Vm</code> (<code>crates/firecracker/tests/vm.rs</code>), puis en conditions reelles via le canal de controle HTTP (nouveau process, nouveau pod, cf. ci-dessous)</td>
+</tr>
+<tr>
+<td><code>crates/firecracker</code> (lib partagee, extrait de <code>vm-supervisor</code>)</td>
+<td>Fonctionnel</td>
+<td>Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert</td>
+</tr>
+<tr>
+<td><code>crates/firecracker::network</code> (TAP link-local)</td>
+<td>Fonctionnel</td>
+<td>Creation/config/suppression d'un vrai device TAP testee reellement (<code>unshare --net --map-root-user</code>, sans besoin de root), plus <code>restrict_to_net_proxy</code> (regles iptables de defense en profondeur, voir <code>docs/architecture/network-security.md</code>) — testees reellement (contenu exact des regles verifie via <code>iptables -S</code>). Desormais utilise par <code>vm-supervisor</code> (VM de l'agent), pas seulement la microVM "builder"</td>
+</tr>
+<tr>
+<td><code>crates/builder-vm-init</code> (guest init de la microVM "builder")</td>
+<td>Fonctionnel</td>
+<td>Cycle complet valide reellement : boot jaile + reseau + <code>envbuilder</code> (clone, build, push registre via <code>net-proxy</code>) + extinction propre de la VM detectee par l'hote, <code>crane manifest</code> confirme l'image poussee (<code>cargo test -p atelier-firecracker --test builder_vm</code>, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous</td>
+</tr>
+<tr>
+<td>Boucle complete Workshop → pod → microVM <code>Running</code></td>
+<td>Fonctionnel (automatique)</td>
+<td>Pour la premiere fois de bout en bout <strong>sans peuplage manuel du cache</strong> : <code>kubectl apply</code> d'un Workshop reel declenche le Job <code>image-builder</code> (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en <code>rootfs.ext4</code>, la publie dans le cache, patche <code>status.imageDigest</code> — puis le controller enchaine automatiquement sur le pod parent, <code>vm-supervisor</code> boote la microVM avec ce rootfs. Verifie reellement contre kind (<code>Job</code> <code>Complete</code>, <code>Workshop.status.phase=Running</code>)</td>
+</tr>
+<tr>
+<td>Observabilite (OpenTelemetry)</td>
+<td>Fonctionnel (base)</td>
+<td><code>atelier_common::telemetry::init()</code> cable sur tous les binaires, spans sur la boucle de reconciliation</td>
+</tr>
+<tr>
+<td><code>api-server</code></td>
+<td>Fonctionnel</td>
+<td>JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, <code>/oauth2/token</code> reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : <code>InvalidAudience</code> faute d'<code>aud</code> configure, CA auto-signee non fiee par <code>reqwest</code>/rustls) ; endpoints CRUD + suspend/resume sur <code>Workshop</code> via <code>kube::Api</code>, testes reellement contre kind (creation, isolation par <code>owner_subject</code>, suspend/resume, suppression) ; coordinateur de port-forward (<code>/v1/workshops/{name}/portforward</code>, authentifie puis relaie vers <code>net-proxy</code>), teste reellement de bout en bout (client websocket -&gt; api-server -&gt; net-proxy -&gt; serveur TCP cible) ; pont HTTP+WebSocket vers <code>code-server</code> (<code>/v1/workshops/{name}/vscode/*</code>, voir section dediee "UI dashboard")</td>
+</tr>
+<tr>
+<td><code>net-proxy</code> — egress (allowlist + proxy parent)</td>
+<td>Fonctionnel</td>
+<td>Proxy HTTP explicite (relai en clair + tunnel <code>CONNECT</code>) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (<code>ATELIER_UPSTREAM_PROXY</code>) avec bypass <code>ATELIER_NO_PROXY</code>. Premiere conteneurisation le mois dernier (<code>crates/net-proxy/Dockerfile</code>), deploye a la fois comme sidecar du Job <code>image-builder</code> et desormais comme conteneur du <strong>pod parent</strong> de l'agent, allowlist alimentee depuis <code>Workshop.spec.egress_allowlist</code>. Verifie contre un vrai pod en cluster (3/3 conteneurs <code>Running</code>, alias <code>identity-proxy</code> actif, chainage obligatoire confirme)</td>
+</tr>
+<tr>
+<td><code>net-proxy</code> — port-forward (microVM → exterieur)</td>
+<td>Fonctionnel</td>
+<td>Endpoint websocket <code>/portforward</code>, multiplexage de canaux dans le style <code>kubectl port-forward</code> (net-proxy = kubelet, <code>api-server</code> = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (<code>tokio-tungstenite</code>) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via <code>api-server</code> (<code>crates/api-server/tests/routes.rs</code>)</td>
+</tr>
+<tr>
+<td><code>net-proxy</code> — DNS (UDP+TCP)</td>
+<td>Fonctionnel (composant seul)</td>
+<td>Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → <code>REFUSED</code> local, jamais transmis a l'upstream). Teste reellement avec <code>dig</code> (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse)</td>
+</tr>
+<tr>
+<td><code>identity-proxy</code></td>
+<td>Fonctionnel</td>
+<td>Proxy HTTP explicite : injecte un en-tete (<code>Authorization</code> ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (<code>Workshop.spec.identityInjectionRules</code>, type partage avec <code>atelier-common</code>), puis relaie vers <code>net-proxy</code> (<code>ATELIER_NET_PROXY_ADDR</code>) via un tunnel <code>CONNECT</code>. <code>CONNECT</code>/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier <code>Dockerfile</code>, deploye comme conteneur du pod parent, regles alimentees depuis <code>Workshop.spec</code> par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1")</td>
+</tr>
+<tr>
+<td><code>mcp-gateway</code></td>
+<td>Fonctionnel (HTTP/SSE + vsock, 3 tools)</td>
+<td>Serveur MCP reel (SDK officiel <code>rmcp</code>) exposant <code>request_credential</code> (lecture OpenBao), <code>request_egress</code> (elargissement a chaud de l'allowlist <code>net-proxy</code>) et <code>enable_simulator</code> (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via <code>net-proxy</code>, et <code>AF_VSOCK</code> natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous</td>
+</tr>
+<tr>
+<td><code>dashboard</code></td>
+<td>Fonctionnel (CRUD + page de gestion + "ouvrir VS Code")</td>
+<td>Next.js 16 (App Router), pattern backend-for-frontend : <code>/api/auth/login</code> (PKCE) redirige vers l'UI Kanidm, <code>/api/auth/callback</code> echange le code et stocke l'<code>access_token</code> dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a <code>atelier-api-server</code> qui le revalide integralement. Page de detail par Workshop + bouton "Ouvrir VS Code" (nouvel onglet, <code>code-server</code> via le pont HTTP+WS de <code>api-server</code>, voir section dediee) ; serveur Next custom (<code>server.ts</code>) pour le WebSocket propre de <code>code-server</code>. Verifie reellement : flux complet login (scripte cote Kanidm comme <code>get-oauth2-token.sh</code>) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind</td>
+</tr>
+<tr>
+<td>Observabilite — Grafana/dashboard de supervision</td>
+<td>Backlog</td>
+<td>Explicitement reporte</td>
+</tr>
+<tr>
+<td>Repo GitHub</td>
+<td>Publie</td>
+<td>Depot prive cree et pousse via <code>gh</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="ce-qui-a-ete-construit-cette-session-resume-chronologique">Ce qui a ete construit cette session (resume chronologique)</h2>
+<ol>
+<li><strong>Scaffolding</strong> : workspace Rust (control plane) + dashboard Next.js,
+   CRD <code>Workshop</code> comme source de verite declarative.</li>
+<li><strong>Devcontainer comme contrat</strong> : decision que l'environnement livre a
+   l'agent est defini par un <code>.devcontainer/devcontainer.json</code> standard,
+   construit via <code>envbuilder</code>.</li>
+<li><strong>Convention OpenTelemetry</strong> imposee des le depart sur tous les
+   binaires, Grafana explicitement mis en backlog.</li>
+<li><strong>Firecracker/jailer</strong> : premiere version hand-rolled en HTTP-sur-socket
+   Unix, <strong>rejetee par l'utilisateur</strong> en faveur d'un SDK officiel —
+   migration vers <code>fctools</code>. Bascule de <code>sudo</code> vers des capabilities Linux
+   (<code>setcap</code>) sur le jailer apres avoir constate que le
+   <code>SudoProcessSpawner</code> de <code>fctools</code> (qui appelle <code>sudo -S -s</code>) est
+   incompatible avec une regle sudoers scopee finement.</li>
+<li><strong>Identite/secrets</strong> : Kanidm pour l'identite (federable), OpenBao pour
+   les secrets d'environnement, avec le principe explicite que seul
+   <code>identity-proxy</code> manipule jamais un secret de sortie — jamais l'agent.
+   Pont OpenBao choisi comme auth Kubernetes (ServiceAccount du pod
+   parent), pas federation JWT Kanidm → OpenBao (plus simple, deja
+   standard).</li>
+<li><strong>Finalizer</strong> de nettoyage Kanidm/OpenBao a la suppression d'un
+   Workshop ; suspend/resume explicitement exempte de ce nettoyage.</li>
+<li><strong>Pipeline image-builder</strong> : devcontainer → <code>envbuilder</code> → image OCI
+   poussee au registre → <code>crane export</code> → tarball → <code>mke2fs</code> → <code>rootfs.ext4</code>
+   → PVC de cache content-addressed (cle = digest de l'image). Pivot majeur
+   decouvert en testant reellement : <code>envbuilder</code> ne produit pas de dossier
+   d'export, il ecrase le filesystem de son propre conteneur — d'ou le
+   passage par un registre OCI intermediaire plutot qu'un simple montage de
+   volume.</li>
+<li><strong><code>vm-supervisor</code> reel dans le pod parent</strong> : conteneur privilegie,
+   montage <code>hostPath</code> de <code>/dev/kvm</code>, boot Firecracker jaile depuis le
+   rootfs du cache. Le blocage constate ("Operation not permitted" malgre
+   permissions et capabilities correctes) venait du device cgroup
+   controller de Kubernetes/containerd, pas d'un probleme de capabilities —
+   resolu par <code>privileged: true</code> en attendant un device plugin KVM dedie.</li>
+<li><strong>Depot GitHub prive</strong> publie.</li>
+<li><strong><code>api-server</code></strong> : validation JWT reelle (RS256, JWKS charge au
+    demarrage depuis <code>ATELIER_JWT_JWKS_URL</code>, algorithme derive du JWK quand
+    <code>alg</code> est absent) et endpoints CRUD + suspend/resume sur <code>Workshop</code> via
+    <code>kube::Api</code>, avec <code>owner_subject</code> toujours derive du sujet JWT
+    authentifie (jamais du corps de la requete, pour eviter qu'un client
+    usurpe un proprietaire) et un <code>404</code> (pas <code>403</code>) pour un Workshop
+    appartenant a quelqu'un d'autre (evite de confirmer son existence).
+    Teste reellement (<code>crates/api-server/tests/routes.rs</code>) : vraie crypto
+    (cle RSA <code>openssl</code>, JWKS derive de cette cle), vrai <code>kube::Client</code>
+    contre kind, vrai routeur axum (appele via <code>tower::ServiceExt::oneshot</code>,
+    pas de mock) — create/get/list/suspend/resume/delete et isolation entre
+    deux sujets JWT distincts, tous verifies contre le cluster reel.</li>
+<li><strong><code>api-server</code> contre un vrai flux OAuth2 Kanidm, puis coordinateur de
+    port-forward</strong> : un Resource Server OAuth2 public a ete cree dans le
+    Kanidm de dev (<code>deploy/dev/kanidm/README.md</code>, section dediee) et un
+    script reutilisable (<code>deploy/dev/kanidm/get-oauth2-token.sh</code>) automatise
+    le flux complet (PKCE S256, <code>/oauth2/authorise</code> + <code>/permit</code> +
+    <code>/oauth2/token</code>) pour obtenir un vrai <code>access_token</code>. Faire tourner
+    <code>api-server</code> contre ce flux reel (au lieu des JWT synthetiques des
+    tests) a revele deux bugs invisibles jusque-la : <code>Validation::new()</code> de
+    <code>jsonwebtoken</code> active <code>validate_aud</code> par defaut, et aucune audience
+    n'etait configuree — tous les vrais tokens etaient donc rejetes
+    (<code>InvalidAudience</code>) alors que les JWT synthetiques (sans <code>aud</code>)
+    passaient ; et <code>reqwest</code>/rustls ne fait pas confiance a la CA
+    auto-signee du Kanidm de dev, ni au trust store systeme. Corriges via
+    deux nouvelles variables d'environnement, <code>ATELIER_JWT_AUDIENCE</code>
+    (obligatoire des qu'un issuer est configure) et <code>ATELIER_JWT_CA_PATH</code>
+    (optionnelle). Cote port-forward : nouvel endpoint
+    <code>GET /v1/workshops/{name}/portforward</code>
+    (<code>crates/api-server/src/portforward.rs</code>) qui authentifie le client,
+    verifie qu'il est proprietaire du Workshop, puis relaie sa connexion
+    websocket vers l'endpoint <code>/portforward</code> de <code>net-proxy</code> (deja ecrit,
+    voir composant "port-forward" ci-dessus) — sur le modele
+    <code>kubectl port-forward</code> (<code>net-proxy</code> = kubelet, <code>api-server</code> =
+    coordinateur). Teste de bout en bout (<code>crates/api-server/tests/routes.rs</code>) :
+    vrai binaire <code>net-proxy</code>, vrai serveur TCP cible, vrai <code>Workshop</code>+<code>Pod</code>
+    sur kind, vrai client websocket a travers <code>api-server</code>.</li>
+<li><strong>Device plugin Kubernetes pour <code>/dev/kvm</code></strong> (<code>crates/kvm-device-plugin</code>) :
+    implemente l'API kubelet v1beta1 (proto vendore, <code>tonic</code>/<code>tonic-prost-build</code>)
+    pour sortir <code>vm-supervisor</code>/<code>image-builder</code> de <code>privileged: true</code>.
+    Deploye en DaemonSet (<code>deploy/dev/kvm-device-plugin/</code>), teste contre kind
+    reel a trois niveaux : (1) <code>kubectl describe node</code> liste bien
+    <code>atelier.dev/kvm: 32</code> une fois le plugin <code>Running</code> et enregistre aupres
+    du kubelet ; (2) un pod non privilegie demandant cette ressource ouvre
+    reellement <code>/dev/kvm</code> (pas juste visible, <code>exec 3&lt;&gt;/dev/kvm</code> reussit —
+    preuve que le device cgroup est bien configure par le kubelet) ; (3) un
+    vrai pod <code>vm-supervisor</code> avec exactement la spec desormais generee par
+    <code>reconcile.rs</code> (<code>resources.limits.atelier.dev/kvm=1</code>, capabilities
+    <code>NET_ADMIN</code>/<code>SYS_ADMIN</code>/<code>SYS_RESOURCE</code>, <strong>aucun</strong> <code>privileged</code>) boote
+    reellement Firecracker (<code>microVM running</code>). Au passage, decouverte que
+    <code>NET_ADMIN</code> seul suffit a creer le TAP mais pas a spawner le process
+    jailer (<code>Operation not permitted</code>) : <code>SYS_ADMIN</code>/<code>SYS_RESOURCE</code>
+    manquants, necessaires pour que les capabilities de fichier posees par
+    <code>setcap</code> sur le binaire <code>jailer</code> soient elevables a l'exec (voir
+    "Lecons retenues"). <code>image-builder</code> beneficie du meme mecanisme.</li>
+<li><strong>Dashboard</strong> (<code>dashboard/</code>, Next.js 16 App Router) : pattern
+    backend-for-frontend plutot qu'un client OAuth2 cote navigateur — le
+    dashboard lui-meme est le client public PKCE, jamais le JS servi au
+    navigateur. <code>/api/auth/login</code> genere le couple PKCE (<code>lib/pkce.ts</code>) et
+    redirige vers <code>${KANIDM_URL}/ui/oauth2</code> (pas directement
+    <code>/oauth2/authorise</code>, qui exige un <code>Authorization: Bearer</code> deja present —
+    inatteignable pour un navigateur sans session, decouvert en testant
+    reellement : 401 systematique sans ce header). Kanidm gere son propre
+    login+consentement puis redirige vers <code>/api/auth/callback</code>, qui echange
+    le code (<code>/oauth2/token</code>) et pose un cookie <strong>httpOnly</strong>
+    (<code>atelier_session</code>, jamais lisible par le JS navigateur). Toutes les
+    donnees (<code>lib/api-server.ts</code>) et mutations (<code>app/actions.ts</code>, Server
+    Actions suspend/resume/delete/create) relaient ce token en
+    <code>Authorization: Bearer</code> vers <code>atelier-api-server</code>, qui reste la seule
+    couche a revalider reellement le JWT — <code>proxy.ts</code> (ex-<code>middleware.ts</code>,
+    renomme dans Next 16) ne fait qu'une verification optimiste de presence
+    du cookie. Client OAuth2 Kanidm existant (<code>atelier</code>) reutilise, une
+    redirect_uri supplementaire ajoutee (<code>add-redirect-url</code> +
+    <code>enable-localhost-redirects</code>, necessaire pour un client public qui
+    redirige vers <code>localhost</code>, voir <code>deploy/dev/kanidm/README.md</code>). Verifie
+    reellement de bout en bout : <code>/api/auth/login</code> produit une redirection
+    Kanidm valide avec le bon <code>code_challenge</code>, le cote Kanidm du flux est
+    scripte comme <code>get-oauth2-token.sh</code> (login reel + consentement +
+    redirection avec un vrai <code>code</code>) puis rejoue contre <code>/api/auth/callback</code>
+    avec le cookie PKCE emis par le dashboard — echange de code reussi,
+    cookie de session pose avec un vrai JWT Kanidm, page d'accueil affichant
+    la vraie liste de Workshops (vide puis peuplee), creation reelle d'un
+    Workshop via <code>POST /v1/workshops</code> avec ce token, affiche dans la liste,
+    supprime. Seule la partie "clic humain dans l'UI de login Kanidm" n'est
+    pas automatisable ; tout le reste (echange de code, session, appels API)
+    est verifie contre de la vraie infrastructure, pas simule.</li>
+</ol>
+<h2 id="reseau-kind-registre-diagnostic-complet-activation-bloquee-par-un-risque-de-securite">Reseau kind ↔ registre : diagnostic complet, activation bloquee par un risque de securite</h2>
+<p>Investigation menee jusqu'au bout (cluster kind + registre + Kanidm reels,
+conformement au principe "pas de mocks" du projet) :</p>
+<ul>
+<li><strong>Cause du trou reseau, confirmee</strong> : le conteneur <code>atelier-registry-dev</code>
+  vit sur le reseau Docker <code>bridge</code> par defaut, le noeud kind sur le reseau
+  <code>kind</code> — deux reseaux Docker distincts, aucune route entre eux. Fix
+  verifie manuellement : <code>docker network connect kind atelier-registry-dev
+  --alias atelier-registry-dev</code> rend le registre joignable par IP depuis un
+  pod kind ; un <code>Service</code>/<code>EndpointSlice</code> Kubernetes statique pointant sur
+  cette IP donne un nom DNS stable en cluster (<code>atelier-registry-dev:5000</code>
+  depuis le namespace <code>default</code>). Verifie avec un pod <code>curl</code> jetable et via
+  un vrai Job <code>image-builder</code> (clone + build envbuilder + push registre +
+  <code>crane export</code> : tous reussis avec cette configuration).</li>
+<li><strong>Blocage decouvert en testant reellement, pas encore leve</strong> : le Job
+  <code>image-builder</code> echoue avant meme d'atteindre le registre
+  (<code>temp remount: bind mount ... operation not permitted</code>) tant que son
+  conteneur n'a pas de capacite de mount elevee. Cause : envbuilder remonte
+  <em>tous</em> les points de montage existants (PVC de cache, <code>emptyDir</code> d'outils,
+  token ServiceAccount) apres avoir vide le systeme de fichiers du
+  conteneur pour y extraire l'image cible — necessaire pour que ces volumes
+  restent utilisables apres le wipe, pas seulement pour le token SA.
+  <code>privileged: true</code> (comme dans le <code>docker run</code> manuel du README) leve le
+  blocage ; une version plus etroite (<code>securityContext.capabilities.add:
+  [SYS_ADMIN]</code> seul, toutes les autres capacites droppees) leve aussi le
+  blocage en test manuel.</li>
+<li><strong>Pourquoi ce n'est pas active</strong> : meme reduit a <code>SYS_ADMIN</code> seul, cette
+  capacite reste une des plus dangereuses qui existe (mount arbitraire,
+  plusieurs techniques d'evasion de conteneur connues) — et ici elle
+  s'appliquerait a un conteneur qui execute des instructions de build
+  (<code>RUN</code>, <code>postCreateCommand</code>, etc.) issues du <strong>depot cible du Workshop</strong>,
+  potentiellement non fiable, a la difference de <code>vm-supervisor</code> qui
+  n'execute que du code first-party (jailer/Firecracker) sous
+  <code>privileged: true</code>. Contrairement au blocage KVM de <code>vm-supervisor</code>
+  (device cgroup controller, pas de contournement plus etroit trouve), ici
+  le compromis n'a pas ete tranche : accorder cette capacite a du code non
+  fiable contredit le modele de securite du projet ("aucun acces direct au
+  reste du cluster" pour ce qui execute du contenu externe), donc le code
+  (RBAC <code>workshops/status</code> pour un ServiceAccount dedie <code>image-builder</code>,
+  <code>capabilities.add: [SYS_ADMIN]</code> sur le Job) n'a <strong>pas</strong> ete merge en
+  l'etat — revert delibere apres discussion.</li>
+<li><strong>Direction retenue</strong> : plutot que d'isoler le conteneur K8s du Job
+  (gVisor/Kata/NetworkPolicy), faire tourner <code>envbuilder</code> a l'interieur
+  d'une <strong>microVM Firecracker jetable</strong>, en reutilisant le plumbing
+  jailer/<code>fctools</code> deja ecrit et valide pour <code>vm-supervisor</code> — voir section
+  "Builder microVM" ci-dessous. Decision explicite : le rootfs <em>de la
+  builder VM elle-meme</em> (notre propre <code>Dockerfile</code>, contenu first-party)
+  peut etre construit dans un environnement moins contraint (<code>docker build</code>
+  classique) — la protection ne vise que le contenu du <strong>depot cible du
+  Workshop</strong>, execute a l'interieur de la VM une fois demarree, pas ce
+  rootfs.</li>
+<li><strong>Resolu</strong> : la microVM "builder" est desormais ecrite, validee et
+  branchee dans <code>image-builder</code>/<code>reconcile.rs</code> — voir section "Builder
+  microVM" ci-dessous, sous-section "Branchee dans <code>image-builder</code>/
+  <code>reconcile.rs</code>". Le Job <code>image-builder</code> n'a plus besoin de <code>SYS_ADMIN</code>.</li>
+</ul>
+<h2 id="builder-microvm-isoler-envbuilder-dune-microvm-jetable">Builder microVM : isoler <code>envbuilder</code> d'une microVM jetable</h2>
+<p>Composants nouveaux cette session (plan complet dans l'historique de
+conversation) :</p>
+<ul>
+<li><strong><code>crates/firecracker</code></strong> : le wrapper <code>fctools</code> (jailer, boot,
+  snapshot/restore) precedemment prive de <code>vm-supervisor</code>, extrait en lib
+  partagee — <code>vm-supervisor</code> en depend desormais sans changement de
+  comportement (meme test reel boot/snapshot/restore, toujours vert apres
+  le refactor). Ajout d'un module <code>network</code> (nouveau) : cree un device TAP</li>
+<li>un sous-reseau link-local <code>/30</code> point-a-point entre l'hote et le guest
+  — teste reellement (<code>crates/firecracker/tests/network.rs</code>, via <code>unshare
+  --net --map-root-user</code>, sans besoin de root reel pour ce test-la).</li>
+<li><strong><code>crates/builder-vm-init</code></strong> : init minimal (PID 1 du guest, pas de
+  systemd) qui monte <code>/proc</code>/<code>/sys</code>, configure <code>eth0</code> avec l'IP link-local
+  recue via les <code>boot_args</code> du kernel (<code>atelier.&lt;clef&gt;=&lt;valeur&gt;</code>, pas de
+  MMDS), lance <code>envbuilder</code> avec <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> pointant sur
+  <code>net-proxy</code> (<strong>pas</strong> d'acces reseau direct/NAT vers Internet — voir plus
+  bas), puis eteint la VM. Compile, image Docker construite, convertie en
+  <code>rootfs.ext4</code> bootable via le meme pipeline crane-export + <code>mke2fs</code> que
+  <code>image-builder</code> (deja valide cette session) — voir
+  <code>deploy/dev/builder-vm/README.md</code>.</li>
+<li><strong>Reseau via <code>net-proxy</code>, pas NAT brut</strong> : premiere version de
+  <code>crates/firecracker::network</code> posait un NAT (<code>iptables MASQUERADE</code>) vers
+  la sortie normale du pod. Remis en cause en cours de session : <code>net-proxy</code>
+  (deja "Fonctionnel", allowlist de domaines + tunnel <code>CONNECT</code>) doit rester
+  le <strong>seul</strong> chemin de sortie reseau pour une microVM, agent ou builder —
+  pas de raison d'en faire une exception pour cette derniere. Design revu :
+  le guest n'a qu'un lien point-a-point vers <code>net-proxy</code> (directement
+  joignable, pas de route par defaut necessaire), configure comme
+  <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> pour <code>envbuilder</code>. Plus simple (zero
+  <code>iptables</code>/<code>ip_forward</code> cote hote) et plus coherent avec le modele de
+  securite existant.</li>
+<li><strong><code>CAP_NET_ADMIN</code> finalement obtenu, deux voies</strong> : la premiere tentative
+  (<code>setcap cap_net_admin+eip</code> sur une copie de <code>ip</code>, meme pattern que
+  <code>jailer</code>) a echoue silencieusement — le process de l'agent tournait dans
+  un contexte qui ignore les capabilities de fichier sur le <strong>vrai</strong> netns
+  de la machine (confirme par un <code>RTNETLINK answers: Operation not
+  permitted</code> meme sur une simple modification de MTU de <code>lo</code>, capability
+  posee ou pas). Contournement qui fonctionne : <code>docker run --privileged
+  --device=/dev/net/tun --device=/dev/kvm</code> — un conteneur Docker recoit un
+  <strong>vrai</strong> netns isole avec <code>CAP_NET_ADMIN</code> effectif <em>et</em> une sortie
+  Internet reelle (NAT Docker par defaut), ce qui manquait a <code>unshare --net</code>
+  seul. C'est aussi l'environnement le plus proche de la cible reelle (pod
+  <code>privileged: true</code>).</li>
+<li><strong>Piege glibc en cross-environnement</strong> : premiere execution dans ce
+  conteneur <code>rust:1-bookworm</code> avec le depot hote monte en volume ratee en
+  silence — <code>cargo build</code> a reutilise un <code>atelier-net-proxy</code> deja compile
+  <strong>sur l'hote</strong> (Ubuntu 26.04, glibc 2.43) trouve dans <code>target/debug/</code>
+  partage via le montage, incompatible avec la glibc du conteneur (Debian
+  bookworm, 2.36) : <code>GLIBC_2.38' not found</code>. <code>cargo</code> ne detecte pas ce genre
+  d'incompatibilite (le fingerprint ne suit pas la version glibc de
+  l'environnement) — un <code>CARGO_TARGET_DIR</code> dedie au conteneur est
+  necessaire des qu'un repertoire <code>target/</code> hote est monte dedans.</li>
+<li><strong>Bug reel trouve et corrige en testant : les pipes stdout/stderr de
+  Firecracker devaient etre draines</strong> — sans lecteur cote hote, un pipe
+  Unix a un buffer fini (~64 Kio) ; une fois plein, l'ecriture du guest sur
+  sa console serie (<code>console=ttyS0</code>) bloque indefiniment, gelant tout le
+  guest bien avant qu'il atteigne le reseau. <code>Vm::boot</code>/<code>Vm::restore</code>
+  appellent desormais <code>take_pipes()</code> et draine en continu stdout/stderr
+  vers <code>tracing::debug!</code> (<code>crates/firecracker/src/vm.rs</code>). Corrige un vrai
+  bug latent (n'importe quelle VM produisant plus de 64 Kio de sortie
+  console l'aurait touche), <strong>mais n'a pas resolu le blocage du boot complet
+  de la builder VM</strong> — meme symptome observe apres le correctif (process de
+  test a 99.9% CPU en continu, jamais de sortie de <code>Vm::boot_with_network</code>,
+  aucune requete n'atteint jamais <code>net-proxy</code>).</li>
+</ul>
+<h3 id="blocage-resolu-cinq-causes-racines-boot-complet-valide-reellement">Blocage resolu : cinq causes racines, boot complet valide reellement</h3>
+<p>Le blocage total (process de test a 99.9% CPU, jamais de sortie de
+<code>Vm::boot_with_network</code>, aucune requete n'atteint jamais <code>net-proxy</code>) evoque
+en fin de session precedente n'avait aucun rapport avec <code>envbuilder</code> ni la
+configuration reseau du guest. Diagnostic repris et pousse jusqu'au bout
+cette session (isolation par <code>gdb</code>/<code>strace</code> sur le process de test, contre
+un environnement <code>docker run --privileged --network host</code> — voir "Lecons
+retenues" pour pourquoi cet environnement remplace un acces root reel).
+Cinq causes racines independantes, trouvees et corrigees dans l'ordre ou
+elles se sont revelees :</p>
+<ol>
+<li><strong>Chemin de socket jail Firecracker trop long</strong> : <code>sockaddr_un.sun_path</code>
+   est limite a 108 octets sur Linux ; les noms de jail/repertoire de travail
+   choisis dans <code>crates/firecracker/tests/builder_vm.rs</code>
+   (<code>atelier-builder-vm-test-&lt;pid&gt;</code> repete deux fois dans le chemin)
+   produisaient un chemin de 110 caracteres. <code>connect()</code> echouait donc en
+   <code>ENAMETOOLONG</code> a chaque tentative — et <code>fctools</code> 0.7.0-alpha.2
+   (<code>Vm::start</code>, boucle <code>loop { if client.get(...).is_ok() { break } }</code>,
+   <code>src/vm/mod.rs:244</code>) avale cette erreur dans une boucle qui ne cede
+   jamais la main a l'executeur async, empechant meme son propre timeout de
+   5s de se declencher : 100% CPU, aucun message d'erreur exploitable.
+   Confirme via <code>gdb -p &lt;pid&gt; -batch -ex bt</code> (pile figee dans
+   <code>hyper_client_sockets::uri::unix</code>) et un test de controle (<code>tests/vm.rs</code>,
+   chemin de 96 caracteres) qui passait sans probleme dans le meme
+   environnement. Corrige en raccourcissant les noms (<code>bvm-&lt;pid&gt;</code>).</li>
+<li><strong><code>KANIKO_DIR</code> absent</strong> : le <code>Dockerfile</code> de <code>builder-vm-init</code> fixe
+   <code>ENV KANIKO_DIR=/.envbuilder</code> (garde-fou interne d'envbuilder/Kaniko avant
+   de vider le filesystem), mais cette metadonnee OCI n'est interpretee que
+   par un runtime de conteneur — perdue lors de la conversion en
+   <code>rootfs.ext4</code> brut (<code>crane export</code> + <code>mke2fs</code>), puisque ce guest n'a pas
+   de runtime de conteneur, seulement <code>atelier-builder-vm-init</code> en PID 1.
+   <code>envbuilder</code> refusait donc de demarrer ("KANIKO_DIR is not set to
+   /.envbuilder. Bailing!"). Corrige en passant la variable explicitement
+   dans <code>run_envbuilder()</code>.</li>
+<li><strong>Rootfs trop petit</strong> : la marge de 512 Mo (README) suffisait pour la
+   base de l'image <code>builder-vm-init</code> mais pas pour un vrai build devcontainer
+   (paquets <code>apt</code>/<code>pip</code>, ex: <code>gcc</code> pour le devcontainer Python de test) —
+   <code>no space left on device</code> en plein build. Marge passee a 4096 Mo.</li>
+<li><strong>Adresse de registre <code>localhost</code> exemptee du proxy</strong> : <code>envbuilder</code>
+   (client HTTP Go, <code>golang.org/x/net/http/httpproxy</code>) exclut
+   inconditionnellement <code>localhost</code>/loopback du proxy configure via
+   <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>, meme sans <code>NO_PROXY</code> — comportement cable en
+   dur dans cette bibliotheque. Avec <code>ATELIER_TEST_REGISTRY_ADDR=localhost:
+   5000</code> (cas courant en dev), le guest tentait une connexion directe vers
+   "lui-meme" et echouait (pas de route par defaut). Corrige en construisant
+   la reference d'image donnee au guest avec l'IP hote du lien
+   point-a-point (<code>network.host_ip</code>), jamais litteralement <code>localhost</code>.</li>
+<li><strong><code>reboot(RB_POWER_OFF)</code> sans effet</strong> : cette microVM minimale n'a pas
+   d'ACPI (<code>pci=off</code>), donc aucun handler <code>pm_power_off</code> a invoquer — le
+   noyau se contentait d'un <code>halt</code> ("reboot: System halted") sans que
+   Firecracker detecte la fin de la VM (<code>is_running()</code> restait vrai
+   indefiniment, alors qu'<code>envbuilder</code> avait bien clone, construit ET
+   pousse l'image avec succes). <code>reboot=k</code> (deja present dans les
+   <code>boot_args</code>) demande au noyau d'utiliser un reset via le controleur
+   clavier i8042 pour un <strong>reboot</strong>, pas un power-off — signal que
+   Firecracker intercepte lui-meme comme fin de VM (pattern standard des
+   inits minimaux Firecracker). Corrige en appelant
+   <code>reboot(RebootMode::RB_AUTOBOOT)</code> plutot que <code>RB_POWER_OFF</code>.</li>
+</ol>
+<p>Cycle complet valide reellement une fois les cinq corrections en place :
+boot jaile + configuration reseau + <code>envbuilder</code> (clone du dépôt public
+<code>vscode-remote-try-python</code>, build du devcontainer, push vers le registre de
+dev via <code>net-proxy</code>) + extinction propre detectee par l'hote, <code>crane
+manifest</code> confirmant que l'image attendue est bien presente
+(<code>cargo test -p atelier-firecracker --test builder_vm</code>, 35s, voir
+<code>deploy/dev/builder-vm/README.md</code>).</p>
+<h3 id="branchee-dans-image-builderreconcilers-boucle-complete-automatique">Branchee dans <code>image-builder</code>/<code>reconcile.rs</code> : boucle complete automatique</h3>
+<p>Composant desormais utilise reellement par le Job <code>image-builder</code>, plus
+seulement valide en isolation :</p>
+<ul>
+<li><strong><code>crates/image-builder</code></strong> : <code>build_and_push()</code> (invocation directe
+  d'<code>envbuilder</code>) remplace par <code>build_via_microvm()</code>, qui reprend le meme
+  cycle boot/attente-extinction que <code>tests/builder_vm.rs</code>. Le rootfs de la
+  microVM builder n'est plus un fichier pre-dimensionne fourni a la main :
+  un rootfs de base (contenu minimal, marge reduite) est baque dans l'image
+  <code>image-builder</code> elle-meme au build Docker (voir plus bas), puis copie et
+  agrandi (<code>truncate</code> + <code>resize2fs</code>, marge par defaut 4096 Mio) a chaque
+  build reel — <code>resolve_builder_rootfs()</code>. <code>ATELIER_BUILDER_VM_ROOTFS_PATH</code>
+  reste disponible pour court-circuiter ce mecanisme en test manuel.</li>
+<li><strong><code>crates/image-builder/Dockerfile</code></strong> : reecrit en build multi-etapes.
+  Le contenu guest de la microVM builder (identique a
+  <code>crates/builder-vm-init/Dockerfile</code>) est construit dans un stage
+  intermediaire puis <strong>aplati directement en rootfs.ext4</strong> via
+  <code>COPY --from=&lt;stage&gt; /</code> + <code>mke2fs</code> — sans passer par un registre OCI
+  intermediaire ni <code>crane export</code> (contrairement a la procedure manuelle de
+  <code>deploy/dev/builder-vm/README.md</code>) : un stage Docker multi-etapes fait
+  deja ce travail de aplatissement localement. Simplification decouverte en
+  ecrivant ce Dockerfile, pas anticipee au depart.</li>
+<li><strong>Alias <code>registry</code> de <code>net-proxy</code></strong> (<code>crates/net-proxy::internal</code>,
+  troisieme alias interne apres <code>identity-proxy</code>/<code>mcp-gateway</code>) : la
+  microVM builder doit joindre le registre interne (ou <code>envbuilder</code> pousse
+  l'image), un detail d'implementation que l'utilisateur ne doit pas avoir
+  a ajouter a <code>Workshop.spec.egress_allowlist</code> (decision explicite,
+  discutee en session : cette allowlist reste reservee a l'usage — package
+  managers du devcontainer compris — que l'utilisateur choisit
+  explicitement d'autoriser). <code>ATELIER_REGISTRY_ALIAS_ADDR</code> (cote
+  <code>net-proxy</code>) et <code>ATELIER_BUILDER_REGISTRY_ALIAS</code> (cote <code>image-builder</code>,
+  cable par le controller) ferment la boucle.</li>
+<li><strong><code>net-proxy</code> conteneurise pour la premiere fois</strong> (<code>crates/net-proxy/Dockerfile</code>,
+  n'existait pas avant cette session — jusqu'ici teste uniquement via
+  <code>cargo run</code>/tests d'integration reels) et deploye comme <strong>sidecar natif</strong>
+  du Job <code>image-builder</code> (<code>initContainer</code> avec <code>restartPolicy: Always</code>,
+  K8s &gt;= 1.28/1.29, KEP-753) : un simple <code>containers[]</code> long-vivant
+  empecherait le Job de jamais se terminer (un <code>Job</code> n'est marque termine
+  que quand tous ses <code>containers[]</code>, pas ses sidecars natifs, ont fini).
+  Verifie reellement contre kind (K8s 1.34).</li>
+<li><strong>RBAC dedie</strong> (<code>ensure_image_build_rbac</code> : <code>ServiceAccount</code> + <code>Role</code> +
+  <code>RoleBinding</code> par Job, scopes au Workshop precis via <code>resourceNames</code>) :
+  bloque depuis la session precedente par le compromis <code>SYS_ADMIN</code>
+  (voir plus haut, "Reseau kind ↔ registre") — plus necessaire puisque
+  <code>envbuilder</code> ne tourne plus dans le conteneur du Job. Un
+  <code>Role</code>/<code>RoleBinding</code> orphelin issu d'un test manuel anterieur trainait
+  sur le cluster de dev, non gere par le code (nettoye).</li>
+<li><strong>Valide de bout en bout contre un vrai cluster kind</strong> : <code>kubectl apply</code>
+  d'un <code>Workshop</code> reel (<code>vscode-remote-try-python</code>, <code>egressAllowlist:
+  ["*"]</code>) declenche tout le pipeline sans aucune intervention manuelle —
+  Job <code>image-builder</code> <code>Complete</code> (1/1, ~100s), <code>status.imageDigest</code>
+  renseigne, le controller enchaine automatiquement sur le pod parent,
+  <code>vm-supervisor</code> boote reellement la microVM avec le rootfs construit
+  ("microVM running"). Premiere fois que cette boucle complete tourne sans
+  peuplage manuel du PVC de cache.</li>
+<li><strong>Bugs trouves en testant ce chemin (distincts des cinq de la section
+  precedente, specifiques a l'integration K8s)</strong> :</li>
+<li><code>iproute2</code> (<code>ip</code>) absent de l'image finale <code>image-builder</code> (present
+    dans le stage guest, oublie dans le stage final) — <code>Vm::boot_with_network</code>
+    echoue a la creation du TAP avec une erreur <code>No such file or directory</code>
+    trompeuse (ressemble a un probleme de binaire Firecracker/jailer, pas
+    de <code>ip</code>).</li>
+<li>L'image <code>atelier-net-proxy:dev</code> rechargee dans kind AVANT l'ajout du
+    code de l'alias <code>registry</code> a produit un echec silencieux et rapide (VM
+    eteinte en 3s, <code>crane export</code> en erreur <code>MANIFEST_UNKNOWN</code>) : toujours
+    reconstruire ET recharger (<code>kind load docker-image</code>) une image avant de
+    re-tester en cluster, une image perimee ne donne aucun signal
+    explicite qu'elle est perimee.</li>
+<li>Un <code>Workshop</code> de test sans <code>egressAllowlist</code> bloque tout l'egress de la
+    microVM builder (allowlist vide = tout refuse, comportement voulu) —
+    piege facile en testant manuellement, pas un bug.</li>
+</ul>
+<h2 id="canal-de-controle-suspendresume-snapshot-firecracker-reel">Canal de controle suspend/resume : snapshot Firecracker reel</h2>
+<p>Item 2 de la roadmap ("canal de controle vsock entre <code>controller</code>/
+<code>vm-supervisor</code>") : le terme "vsock" du TODO d'origine etait trompeur —
+<code>AF_VSOCK</code> est le canal guest&lt;-&gt;hote <em>a l'interieur</em> d'un meme pod (deja
+utilise par <code>mcp-gateway</code>, voir <code>docs/architecture/network-security.md</code>),
+alors que <code>controller</code> et <code>vm-supervisor</code> sont deux process dans deux pods
+distincts : un simple canal HTTP sur le reseau normal du cluster (IP de
+pod) est le bon outil, pas <code>vsock</code>.</p>
+<ul>
+<li><strong>Obstacle principal, resolu par construction plutot que par
+  contournement</strong> : l'API <code>fctools</code> (<code>VmSnapshot</code>/<code>Vm::restore</code>) n'est pas
+  concue pour survivre a un redemarrage complet du process — <code>Vm::restore</code>
+  prend <code>&amp;mut self</code> sur la VM source, dont le <code>ResourceSystem</code> vivant
+  fournit les ressources <code>Moved</code> (kernel/rootfs) a recopier dans le nouveau
+  jail, et <code>VmConfigurationData</code> ne derive que <code>Serialize</code> (pas
+  <code>Deserialize</code>) : rien de tout ca ne peut etre serialise puis recharge plus
+  tard dans un tout autre process. Contournement : <code>VmConfigurationData</code>
+  est entierement determinee par les memes parametres qu'un boot normal
+  (kernel, rootfs, vcpu/mem, boot_args, reseau), tous deja connus
+  independamment de tout etat runtime — <code>Vm::restore_persisted</code> (nouveau,
+  <code>crates/firecracker/src/vm.rs</code>) la <strong>reconstruit a l'identique</strong> plutot
+  que de la deserialiser, exactement comme le ferait un nouveau
+  <code>Vm::boot</code>/<code>Vm::boot_with_network</code>, avec pour seule difference
+  <code>VmConfiguration::RestoredFromSnapshot</code> a la place de
+  <code>VmConfiguration::New</code>. Validite garantie par le <code>FlatVirtualPathResolver</code>
+  du jail (chemin virtuel base sur le nom de fichier, pas sur l'identite de
+  la ressource) : la configuration serialisee vers Firecracker reference
+  "/vmlinux.bin"/"/rootfs.ext4" quel que soit l'objet <code>Resource</code> interne qui
+  les a produits. Teste reellement en abandonnant completement la VM source
+  (eteinte, jail detruit) avant de restaurer dans un <code>Vm</code> flambant neuf
+  (<code>crates/firecracker/tests/vm.rs::snapshot_persist_and_restore_without_source_vm</code>).</li>
+<li><strong><code>crates/vm-supervisor</code></strong> : petit serveur HTTP (<code>axum</code>, port 8081 par
+  defaut, <code>ATELIER_VM_CONTROL_ADDR</code>) expose <code>POST /snapshot</code> — fige la VM
+  (<code>vm.snapshot()</code>), publie <code>snapshot.state</code>/<code>snapshot.mem</code> sur le cache
+  partage (<code>ATELIER_VM_SNAPSHOT_DIR</code>, ecriture atomique via fichiers <code>.tmp</code></li>
+<li><code>rename</code>), renvoie un digest sha256 informatif, puis arrete proprement
+  la VM et sort du process. Au demarrage, si ce repertoire contient deja un
+  snapshot, restauration via <code>Vm::restore_persisted</code> plutot que boot direct
+  — decouverte automatique, sans variable d'environnement supplementaire
+  pour distinguer boot/resume. Premiere conteneurisation testee de bout en
+  bout de ce canal : boot -&gt; snapshot via l'API -&gt; arret propre -&gt; reprise
+  dans un <strong>process totalement neuf</strong>, valide manuellement avant meme le
+  passage par Kubernetes.</li>
+<li><strong><code>crates/controller/src/reconcile.rs</code></strong> : <code>ensure_suspended</code> appelle ce
+  canal (<code>request_snapshot</code>, best-effort — un echec de connexion, un
+  timeout ou une reponse non exploitable degradent silencieusement vers
+  "suspension sans snapshot" plutot que de bloquer indefiniment la
+  suspension demandee) avant de liberer le pod, et publie
+  <code>status.snapshotDigest</code>. <code>ensure_parent_pod</code> monte desormais le cache en
+  lecture-ecriture (necessaire pour que <code>vm-supervisor</code> y publie) et passe
+  <code>ATELIER_VM_SNAPSHOT_DIR</code> (<code>snapshot_cache_subdir</code>, nouveau dans
+  <code>storage.rs</code> — scope par Workshop, pas content-addressed comme le cache
+  d'images : un snapshot n'a pas besoin de dedup entre Workshops).</li>
+<li><strong>Premiere conteneurisation du <code>controller</code></strong> (<code>crates/controller/Dockerfile</code>,
+  n'existait pas non plus avant cette session) : necessaire pour valider ce
+  canal en conditions reelles — le <code>controller</code>, lance depuis le poste de
+  dev (hors cluster, comme durant toute la session), ne peut pas joindre
+  une IP de pod kind directement (reseau du CNI non route vers l'hote).
+  Contourne en lancant le conteneur <code>controller</code> avec
+  <code>--network container:&lt;noeud-kind&gt;</code> (partage le netns du noeud, qui lui
+  route bien vers les pods qu'il heberge) — meme categorie de contournement
+  que l'usage de <code>--network host</code> pour la microVM builder plus haut. Une
+  fois ce partage de netns en place, la requete <code>POST /snapshot</code> atteint
+  bien le pod et le cycle complet fonctionne.</li>
+<li><strong>Valide de bout en bout contre kind reel</strong> : Workshop reel -&gt; <code>Running</code>
+  -&gt; <code>desiredState: Suspended</code> -&gt; <code>vm-supervisor</code> recoit <code>POST /snapshot</code>,
+  publie <code>snapshot.state</code>/<code>snapshot.mem</code> sur le PVC, <code>status.snapshotDigest</code>
+  renseigne, pod libere (<code>phase: Suspended</code>) -&gt; <code>desiredState: Running</code> -&gt;
+  nouveau pod parent, log <code>"restoring microVM from persisted snapshot"</code>
+  (pas <code>"booting microVM"</code>) : preuve que la restauration cross-process,
+  cross-pod, fonctionne reellement.</li>
+<li><strong>Note observee, pas un bug</strong> : pendant la periode de grace de suppression
+  du pod (delai par defaut ~30s), un reconcile peut encore voir le pod
+  (<code>Terminating</code>) et retenter <code>POST /snapshot</code> sur une VM deja eteinte par
+  le premier appel reussi — echoue en 500, journalise en <code>WARN</code>, sans
+  consequence : <code>ensure_suspended</code> ne remplace <code>status.snapshotDigest</code> que
+  sur un appel reussi, jamais par <code>None</code>.</li>
+</ul>
+<h2 id="reseau-de-lagent-net-proxyidentity-proxy-dans-le-pod-parent">Reseau de l'agent + <code>net-proxy</code>/<code>identity-proxy</code> dans le pod parent</h2>
+<p>Item 3 de la roadmap. Le mecanisme d'isolation reseau etait deja
+integralement specifie dans <code>docs/architecture/network-security.md</code> (session
+precedente) — cette partie de la session l'a implemente et valide.</p>
+<ul>
+<li><strong><code>Workshop.spec.identityInjectionRules</code></strong> (nouveau champ) : meme type
+  (<code>IdentityInjectionRule</code>) defini une seule fois dans <code>atelier_common::crd</code>
+  et reexporte par <code>crates/identity-proxy::rules</code> (<code>pub use ... as
+  InjectionRule</code>, methode <code>secret_cache_key()</code> deplacee dans un trait
+  d'extension puisque le type n'est plus local a ce crate) — le controller
+  serialise le contenu du CR tel quel vers <code>ATELIER_IDENTITY_INJECTION_RULES</code>
+  (JSON, camelCase des deux cotes). CRD regenere (<code>crds/workshop.yaml</code>) et
+  reapplique sur kind.</li>
+<li><strong>TAP reseau pour la VM de l'agent</strong> (<code>crates/vm-supervisor/src/main.rs</code>) :
+  <code>vm-supervisor</code> cree desormais un TAP link-local (<code>setup_link_local_tap</code>,
+  meme mecanisme que la microVM "builder", mais sans NAT) et pose les regles
+  iptables de <code>NetworkSetup::restrict_to_net_proxy</code> (nouveau,
+  <code>crates/firecracker/src/network.rs</code>) avant de booter. Contrairement a la
+  microVM "builder" (init personnalise <code>atelier-builder-vm-init</code>),
+  <code>vm-supervisor</code> boote le devcontainer construit par <code>image-builder</code> tel
+  quel — impossible de lui faire executer du code de configuration reseau a
+  nous. Solution : le parametre de boot noyau standard <code>ip=&lt;guest&gt;::&lt;hote&gt;:
+  &lt;masque&gt;::eth0:off</code> (autoconfiguration IP Linux, <code>Documentation/admin-guide/
+  nfs/nfsroot.rst</code>), qui configure l'interface et la route par defaut <strong>avant
+  meme que l'init du guest ne demarre</strong>, sans aucune cooperation requise.
+  Verifie reellement (<code>RUST_LOG=atelier_firecracker=debug</code>, console du
+  guest) : <code>IP-Config: Complete: device=eth0, ipaddr=169.254.0.2,
+  mask=255.255.255.252, gw=169.254.0.1</code>. Regles iptables verifiees a
+  l'identique de la specification (<code>iptables -S atelier-vm-&lt;tap&gt;</code> : <code>ACCEPT</code>
+  sur le port <code>net-proxy</code> + DNS <code>:53</code>, puis <code>DROP</code>).</li>
+<li><strong><code>net-proxy</code> et <code>identity-proxy</code> comme conteneurs du pod parent</strong>
+  (<code>ensure_parent_pod</code>, <code>crates/controller/src/reconcile.rs</code>) : contrairement
+  au sidecar du Job <code>image-builder</code> (qui devait etre un <code>initContainer</code>
+  <code>restartPolicy: Always</code> pour ne pas empecher le Job de se terminer), ici
+  ce sont de simples <code>containers[]</code> — le Pod parent est cense tourner
+  indefiniment, aucune contrainte de "completion" ne s'applique.
+  <code>ATELIER_VM_ADDR</code> (net-proxy) est fixe a <code>169.254.0.2</code> : deterministe,
+  <code>vm-supervisor</code> utilise toujours l'index de sous-reseau <code>0</code> (une seule
+  microVM par pod). Premier <code>Dockerfile</code> d'<code>identity-proxy</code> (n'existait pas
+  non plus avant cette session).</li>
+<li><strong>Bug trouve en testant reellement (meme categorie que pour
+  <code>image-builder</code>)</strong> : <code>iproute2</code>/<code>iptables</code> absents de l'image Docker finale
+  de <code>vm-supervisor</code> (presents nulle part avant, puisque cette image ne
+  faisait jusqu'ici jamais de reseau) — <code>CrashLoopBackOff</code> avec <code>lancement de
+  ip: No such file or directory</code>. Corrige en les ajoutant a
+  <code>crates/vm-supervisor/Dockerfile</code>.</li>
+<li><strong>Valide de bout en bout contre kind reel</strong> : <code>Workshop</code> avec
+  <code>egressAllowlist: ["*"]</code> et une regle <code>identityInjectionRules</code> reelle -&gt;
+  pod parent <code>3/3 Running</code> -&gt; logs confirmant chaque piece : <code>vm-supervisor</code>
+  ("microVM running"), <code>net-proxy</code> (<code>identity_proxy_alias=true</code>,
+  <code>identity_proxy_mandatory_hop=true</code>), <code>identity-proxy</code> ("regles
+  d'injection chargees count=1").</li>
+<li><strong>Explicitement hors scope de cette session</strong> (voir
+  <code>docs/architecture/network-security.md</code>, section mise a jour) : le TAP et
+  le pare-feu donnent au guest un chemin <em>possible</em> vers <code>net-proxy</code>, mais
+  rien a l'interieur du guest ne configure encore <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>
+  pour s'en servir — un devcontainer construit sans le savoir tenterait une
+  connexion directe, silencieusement bloquee par les regles iptables. Reste
+  a injecter ces variables dans l'image construite par <code>image-builder</code> (ex:
+  <code>/etc/environment</code>), voir "Prochaines etapes".</li>
+</ul>
+<h2 id="mcp-gateway-premier-serveur-mcp-reel"><code>mcp-gateway</code> : premier serveur MCP reel</h2>
+<p>Dernier composant du tableau ci-dessus a sortir de "Non demarre". Design
+cible documente de longue date (<code>docs/ARCHITECTURE.md</code>,
+<code>docs/architecture/network-security.md</code>) : un point d'entree structure pour
+que l'agent demande des reglages a l'atelier plutot que d'agir en direct.</p>
+<ul>
+<li><strong>Decision d'architecture : HTTP/SSE via <code>net-proxy</code>, pas <code>vsock</code>, pour ce
+  lot.</strong> Le design documente presente <code>vsock</code> comme transport primaire (deja
+  cable cote design, jamais construit : <code>crates/firecracker/src/vm.rs</code> fixe
+  <code>vsock_device: None</code> sur toute VM) et l'alias HTTP de <code>net-proxy</code>
+  (<code>ATELIER_MCP_GATEWAY_ADDR</code>, deja present dans <code>crates/net-proxy/src/internal.rs</code>
+  mais jamais branche jusqu'ici) comme repli pour les clients qui prefèrent
+  HTTP/SSE. Batir <code>vsock</code> correctement (device Firecracker, plumbing hote,
+  cote guest) est un chantier de l'ampleur du TAP reseau deja fait pour
+  l'agent — differe. La garantie de securite recherchee ("mcp-gateway jamais
+  joint directement par la VM") ne depend pas de vsock : elle est deja
+  assuree par le meme mecanisme que pour <code>identity-proxy</code> (pare-feu TAP, la
+  VM ne connait que <code>net-proxy</code>).</li>
+<li><strong><code>crates/common::openbao_client</code></strong> : <code>login()</code>/<code>read_field()</code>
+  (authentification Kubernetes-auth OpenBao + lecture KV v2) extraits de
+  <code>crates/identity-proxy/src/secrets.rs</code> vers un client partage — la policy
+  provisionnee par <code>crates/controller/src/openbao.rs::ensure_workshop_role</code>
+  couvre deja tout <code>secret/data/workshops/&lt;name&gt;/*</code>, donc <code>mcp-gateway</code>
+  peut lire un sous-chemin different (<code>workshops/&lt;name&gt;/mcp</code>) avec le meme
+  role, sans aucun changement de provisioning. <code>identity-proxy</code> refactore
+  pour consommer ce client, son cache/rafraichissement periodique restant
+  local (specifique a l'injection continue de credentials HTTP).</li>
+<li><strong><code>crates/net-proxy</code> : allowlist mutable a chaud + endpoint d'admin
+  loopback-only.</strong> <code>EgressConfig.allowlist</code>/<code>DnsConfig.allowlist</code> passent de
+  <code>Arc&lt;Vec&lt;String&gt;&gt;</code> a <code>Arc&lt;RwLock&lt;Vec&lt;String&gt;&gt;&gt;</code> (<code>proxy.rs</code>, <code>dns.rs</code>,
+  <code>main.rs</code>). Nouveau module <code>admin.rs</code> : <code>POST /internal/allowlist/add</code>,
+  servi sur un <strong>second listener</strong> lie explicitement a <code>127.0.0.1</code>
+  (<code>ATELIER_NET_PROXY_ADMIN_ADDR</code>, defaut <code>127.0.0.1:9001</code>) — jamais
+  <code>0.0.0.0</code>, contrairement au port de controle du port-forward
+  (<code>ATELIER_NET_PROXY_CONTROL_ADDR</code>) qui n'est protege que par les regles
+  iptables du TAP. Verifie manuellement (conteneurs Docker reels, meme
+  netns) : un appel externe sur le port publie de ce listener echoue
+  (connexion refusee, le bind loopback n'est routable que depuis l'interieur
+  du conteneur), alors qu'un appel depuis un conteneur partageant le netns
+  (<code>mcp-gateway</code>) reussit. Pas de persistance : un ajout ne survit pas a un
+  redemarrage de <code>net-proxy</code> ni ne modifie <code>Workshop.spec.egress_allowlist</code>.</li>
+<li><strong><code>crates/mcp-gateway</code></strong> : SDK officiel <code>rmcp</code> (meme choix de principe que
+  pour <code>fctools</code> : SDK officiel plutot que hand-roll), transport streamable
+  HTTP (<code>StreamableHttpService</code> + <code>axum::Router::nest_service</code>, feature
+  <code>tower</code> de <code>rmcp</code>). Deux tools reels, actifs seulement si leur nom figure
+  dans <code>Workshop.spec.tools</code> (<code>ATELIER_TOOLS</code>, verifie au moment de l'appel,
+  pas filtre de <code>tools/list</code>) :</li>
+<li><code>request_credential { field }</code> : lit <code>workshops/&lt;name&gt;/mcp</code> via le
+    client OpenBao partage, retourne le champ demande.</li>
+<li><code>request_egress { host }</code> : appelle l'endpoint d'admin de <code>net-proxy</code>
+    (ci-dessus) sur <code>127.0.0.1:9001</code> (meme pod).</li>
+<li><code>enable_simulator</code> : <strong>non implemente</strong> — aucun simulateur n'existe
+    encore (roadmap item 5, "mcp-gateway et le premier simulateur, candidat
+    LocalStack" reste a faire).
+  <code>allowed_hosts</code> de <code>rmcp</code> (protection anti DNS-rebinding, restreint par
+  defaut a <code>localhost</code>/<code>127.0.0.1</code>) etendu explicitement a <code>mcp-gateway</code> :
+  <code>net-proxy</code> relaie la requete de la VM telle quelle recue
+  (<code>crate::proxy::forward</code>), Host header compris, potentiellement
+  <code>Host: mcp-gateway</code> plutot qu'une IP.</li>
+<li><strong><code>crates/controller/src/reconcile.rs</code></strong> : conteneur <code>mcp-gateway</code> ajoute
+  au pod parent (<code>containers[]</code>, comme <code>net-proxy</code>/<code>identity-proxy</code> —
+  tourne indefiniment), env <code>ATELIER_WORKSHOP_NAME</code>, <code>ATELIER_TOOLS</code>
+  (serialisation CSV de <code>workshop.spec.tools</code>), <code>ATELIER_NET_PROXY_ADMIN_ADDR</code>,
+  <code>OPENBAO_ADDR</code> (si configure). Alias <code>ATELIER_MCP_GATEWAY_ADDR</code> enfin
+  branche cote conteneur <code>net-proxy</code> (le code le supportait deja, jamais
+  utilise jusqu'ici).</li>
+<li><strong>Verifie reellement, sans mock</strong> (conteneurs Docker construits et
+  executes, pas seulement <code>cargo test</code>) :</li>
+<li><code>request_egress</code> bout en bout : un appel MCP <code>tools/call</code> reel
+    (handshake <code>initialize</code>/<code>notifications/initialized</code>/<code>tools/call</code> via
+    <code>curl</code>, protocole streamable HTTP) contre un vrai conteneur
+    <code>atelier-mcp-gateway</code> elargit l'allowlist d'un vrai conteneur
+    <code>atelier-net-proxy</code> (partage de netns Docker, meme scenario que deux
+    conteneurs d'un pod) ; un <code>CONNECT</code> HTTPS ulterieur vers l'hote ajoute
+    (<code>crates.io</code>) reussit alors un vrai handshake TLS complet a travers le
+    tunnel, la ou il echouait avant l'appel.</li>
+<li><code>request_credential</code> bout en bout : provisioning reel d'un role
+    OpenBao (<code>workshop-mcpdemo</code>, methode Kubernetes-auth, meme sequence que
+    <code>deploy/dev/openbao/README.md</code>) et d'un secret KV v2
+    (<code>workshops/mcpdemo/mcp</code>), interroge via <code>mcp-gateway</code> lance en local
+    avec un vrai token de ServiceAccount Kubernetes — la valeur exacte du
+    secret est retournee par l'appel MCP.</li>
+<li>Test d'integration controller etendu
+    (<code>apply_creates_owned_parent_pod_once_image_ready</code>) : verifie contre
+    kind reel que le pod parent genere porte bien les quatre conteneurs
+    (<code>vm-supervisor</code>, <code>net-proxy</code>, <code>identity-proxy</code>, <code>mcp-gateway</code>).</li>
+<li>~~<strong>Reste a faire</strong> : verification bout-en-bout depuis l'interieur d'une
+  vraie microVM agent~~ — <strong>fait cette session</strong>, voir "Verification MCP
+  depuis l'interieur d'une vraie microVM agent" ci-dessous.</li>
+</ul>
+<h3 id="enable_simulator-premier-simulateur-localstack-fait-verifie-de-bout-en-bout"><code>enable_simulator</code> + premier simulateur (LocalStack) : fait, verifie de bout en bout</h3>
+<ul>
+<li><strong>Decision de design : alias <code>simulator</code> "gate", pas un alias interne
+  classique.</strong> Les alias existants (<code>identity-proxy</code>/<code>mcp-gateway</code>/<code>registry</code>,
+  <code>crates/net-proxy/src/internal.rs</code>) sont fixes au demarrage et toujours
+  joignables — corrects pour des composants de confiance structurels, mais
+  un simulateur AWS local n'a pas vocation a etre joignable par defaut,
+  seulement quand l'agent le demande explicitement. Nouvel etat mutable
+  distinct (<code>EgressConfig::simulator</code>, <code>Arc&lt;RwLock&lt;Option&lt;(String, u16)&gt;&gt;&gt;</code>,
+  <code>crates/net-proxy/src/proxy.rs</code>) : initialise a <code>None</code> (donc l'hote
+  <code>simulator</code> retombe sur l'allowlist normale, qui le refuse sauf <code>*</code>, et de
+  toute facon <code>simulator</code> n'est pas un nom DNS reel) ; ne devient <code>Some</code>
+  qu'apres un appel a <code>POST /internal/simulator/enable</code> (nouveau,
+  <code>crates/net-proxy/src/admin.rs</code>, meme serveur loopback-only que
+  <code>request_egress</code>).</li>
+<li><strong><code>crates/mcp-gateway</code></strong> : nouveau tool <code>enable_simulator</code> (sans
+  parametre), gate par <code>"enable_simulator"</code> dans <code>Workshop.spec.tools</code>
+  (meme convention que les autres tools) — relaie simplement l'appel vers
+  l'endpoint d'admin ci-dessus.</li>
+<li><strong><code>crates/controller/src/reconcile.rs</code></strong> : conteneur <code>simulator</code> ajoute au
+  pod parent <strong>seulement si</strong> <code>Workshop.spec.tools</code> contient
+  <code>enable_simulator</code> — image officielle <code>localstack/localstack:3</code> (pas de
+  fork/rebuild maison), lie a <code>127.0.0.1:4566</code> (<code>GATEWAY_LISTEN</code>, "edge
+  port" LocalStack qui sert la quasi-totalite des API AWS emulees sur ce
+  seul port), donc structurellement injoignable par la VM (netns distincte)
+  et par tout ce qui n'est pas dans le pod. <code>net-proxy</code> recoit
+  <code>ATELIER_SIMULATOR_ADDR=127.0.0.1:4566</code> dans ce cas, sinon rien (pas de
+  conteneur, pas d'adresse configuree : <code>enable_simulator</code> echoue proprement
+  avec un message explicite plutot que de planter).</li>
+<li><strong>Verifie de bout en bout, sans mock</strong> (conteneurs Docker reels,
+  <code>atelier-net-proxy:dev</code> + <code>atelier-mcp-gateway:dev</code> + <code>localstack/localstack:3</code>
+  officiel, partage de netns Docker) : avant <code>enable_simulator</code>, une requete
+  via <code>net-proxy</code> vers l'hote <code>simulator</code> echoue (502, ne resout jamais
+  reellement le nom "simulator") ; un vrai handshake MCP complet par HTTP
+  (<code>initialize</code>/<code>notifications/initialized</code>/<code>tools/call enable_simulator</code>,
+  meme protocole que pour <code>request_egress</code> documente plus haut) retourne
+  <code>"simulateur active"</code> ; la meme requete vers <code>simulator</code> a travers
+  <code>net-proxy</code> reussit alors (200, vraie reponse JSON de sante LocalStack
+  listant les ~34 services AWS emules) — preuve que le gate fonctionne dans
+  les deux sens et que le chemin complet agent -&gt; mcp-gateway -&gt; net-proxy -&gt;
+  LocalStack est reellement cable.</li>
+<li><strong>Limite assumee</strong> : verifie via <code>net-proxy</code> directement (curl a travers
+  le proxy HTTP), pas encore depuis l'interieur d'une vraie microVM agent
+  (meme limite que le reste de cette section) ; pas de test contre kind reel
+  non plus (conteneurs Docker isoles, pas de pod K8s) — le cablage
+  <code>reconcile.rs</code> (volume, conteneur conditionnel, env vars) est verifie par
+  <code>cargo check</code>/compilation mais pas encore par un test d'integration contre
+  un cluster reel.</li>
+</ul>
+<h3 id="transport-vsock-natif-fait-verifie-de-bout-en-bout">Transport <code>vsock</code> natif : fait, verifie de bout en bout</h3>
+<p>Composant desormais construit (etait le seul morceau manquant du design
+cible documente pour <code>mcp-gateway</code>) :</p>
+<ul>
+<li><strong><code>crates/firecracker::vm</code></strong> : <code>VmConfig.vsock: Option&lt;VsockConfig&gt;</code>
+  (<code>guest_cid</code>, <code>uds_relative_path</code>) — <code>build_configuration_data</code> declare le
+  socket "principal" comme ressource <code>Produced</code> (meme mecanisme que les
+  fichiers de snapshot, voir <code>Vm::snapshot</code>) : chemin <strong>relatif au jail</strong>
+  (<code>/vsock.sock</code>), Firecracker le cree lui-meme au boot, le chemin hote reel
+  resulte de la resolution du jail.</li>
+<li><strong><code>crates/vm-supervisor</code></strong> : device vsock toujours actif
+  (<code>ATELIER_VM_VSOCK_GUEST_CID</code>, defaut <code>3</code> ; <code>ATELIER_VM_VSOCK_UDS_FILENAME</code>,
+  defaut <code>vsock.sock</code>) — sans emplacement partage avec <code>mcp-gateway</code>, reste
+  simplement inutilise, cout nul.</li>
+<li><strong><code>crates/mcp-gateway</code></strong> : second transport actif en parallele du HTTP
+  existant, meme <code>Gateway</code> (<code>ServerHandler</code>) des deux cotes. Convention
+  Firecracker pour les connexions <strong>initiees par le guest</strong> : ce process lie
+  lui-meme un <code>UnixListener</code> a <code>&lt;uds_path&gt;_&lt;port&gt;</code>
+  (<code>ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH</code>, <code>ATELIER_MCP_GATEWAY_VSOCK_PORT</code>
+  defaut <code>10000</code>) — pas de transport HTTP a reimplementer : <code>rmcp</code> expose
+  <code>ServiceExt::serve</code> sur n'importe quel <code>AsyncRead + AsyncWrite</code>
+  (<code>rmcp::transport::async_rw</code>, meme framing JSON-RPC delimite par newline
+  que le style stdio MCP standard), un <code>tokio::net::UnixStream</code> convient
+  donc directement, une session MCP complete par connexion acceptee.</li>
+<li><strong><code>crates/controller/src/reconcile.rs</code></strong> : nouveau volume <code>emptyDir</code>
+  "jailer" partage entre les conteneurs <code>vm-supervisor</code> et <code>mcp-gateway</code> du
+  pod parent, monte au meme chemin absolu (<code>/srv/jailer</code>,
+  <code>ATELIER_VM_CHROOT_BASE_DIR</code> fixe explicitement plutot que de dependre du
+  defaut binaire) dans les deux — necessaire puisque le socket vsock
+  "principal" vit <strong>a l'interieur</strong> de l'arborescence du jail, pas a un
+  chemin choisi arbitrairement. <code>ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH</code> calcule
+  par le controller a partir des memes constantes (<code>VM_JAIL_ID</code>,
+  <code>VM_VSOCK_UDS_FILENAME</code>) que celles passees a <code>vm-supervisor</code>.</li>
+<li><strong>Piege trouve en testant reellement</strong> : le jailer insere le nom de
+  l'executable comme composant de chemin —
+  <code>&lt;chroot_base_dir&gt;/&lt;exec_file_name&gt;/&lt;jail_id&gt;/root/</code> (donc
+  <code>/srv/jailer/firecracker/atelier-vm/root/...</code>), pas
+  <code>&lt;chroot_base_dir&gt;/&lt;jail_id&gt;/root/</code> comme la seule lecture de la doc
+  <code>--chroot-base-dir</code> le suggererait — corrige apres inspection reelle de
+  l'arborescence produite (<code>find /srv/jailer</code>).</li>
+<li><strong>Verifie de bout en bout, sans mock</strong> (<code>demo/vsock-probe/</code>, nouveau) :
+  vrai <code>atelier-vm-supervisor</code> + vrai <code>atelier-mcp-gateway</code> (binaires
+  natifs, pas de conteneur Docker pour ce test-la — les deux process
+  partagent directement <code>/srv/jailer</code> sur le systeme de fichiers de
+  l'environnement de test), devcontainer minimal (systemd + <code>python3</code>) dont
+  un service ecrit un <strong>vrai client MCP</strong> a la main (stdlib <code>socket</code> avec
+  <code>socket.AF_VSOCK</code>, disponible nativement sur Linux depuis Python 3.9) qui
+  fait un handshake MCP complet (<code>initialize</code> -&gt; <code>notifications/initialized</code>
+  -&gt; <code>tools/list</code>) contre <code>mcp-gateway</code> en passant uniquement par
+  <code>AF_VSOCK</code>. Resultat lu apres coup dans le <code>rootfs.ext4</code> du guest
+  (<code>debugfs -R "cat ..."</code>, meme technique que pour la validation
+  HTTP_PROXY) : les trois etapes reussissent, <code>tools/list</code> renvoie bien
+  <code>request_credential</code>/<code>request_egress</code>. Voir <code>demo/vsock-probe/README.md</code>.</li>
+<li><strong>Limite assumee</strong> : ce test prouve que le <strong>transport</strong> fonctionne
+  (jailer+firecracker+vsock+rmcp s'assemblent correctement), pas qu'un
+  client MCP standard (Claude Code, etc.) choisirait ce chemin plutot que
+  HTTP aujourd'hui — rien ne l'annonce au guest (pas d'equivalent au
+  <code>HTTP_PROXY</code> injecte dans <code>/etc/environment</code> pour signaler ce transport).
+  Egalement non teste : le comportement en conditions Kubernetes reelles
+  (volume <code>emptyDir</code> partage entre conteneurs d'un vrai pod, teste ici en
+  isolation avec deux process natifs partageant un repertoire local).</li>
+</ul>
+<h3 id="verification-mcp-depuis-linterieur-dune-vraie-microvm-agent-fait">Verification MCP depuis l'interieur d'une vraie microVM agent : fait</h3>
+<p>Dernier point ouvert de la section <code>mcp-gateway</code> : tous les tests HTTP
+precedents (<code>request_egress</code>, <code>request_credential</code>, <code>enable_simulator</code>)
+etaient verifies via un client <code>curl</code> tournant sur l'<strong>hote</strong>, partageant le
+netns Docker avec <code>net-proxy</code> — jamais depuis un guest reellement boote par
+<code>vm-supervisor</code>, donc jamais a travers le pare-feu TAP de production.</p>
+<ul>
+<li><strong><code>demo/mcp-agent-probe/</code></strong> (nouveau) : devcontainer minimal (systemd +
+  <code>curl</code>) dont le seul acces reseau est celui d'un devcontainer normal —
+  aucun raccourci, contrairement a <code>demo/vsock-probe/</code> (pas de partage de
+  netns/process avec l'hote). <code>mcp_probe.sh</code> fait un vrai handshake MCP
+  (<code>initialize</code> -&gt; <code>notifications/initialized</code> -&gt; <code>tools/call
+  request_egress</code>) contre <code>http://mcp-gateway/mcp</code>, en s'appuyant
+  uniquement sur <code>HTTP_PROXY</code> (lu depuis <code>/etc/environment</code> via
+  <code>EnvironmentFile=</code> systemd) — exactement le chemin qu'un vrai client MCP
+  dans un devcontainer emprunterait.</li>
+<li><strong><code>/etc/environment</code> injecte a la main</strong> avec le contenu exact produit par
+  <code>inject_net_proxy_config</code> (deja verifie octet pour octet contre le vrai
+  pipeline <code>image-builder</code> plus tot dans cette session) : reproduit
+  manuellement plutot que rejoue via le pipeline complet, pour eviter le
+  blocage connu d'auth git sur un depot prive (meme limite que
+  <code>demo/ministack-workshop/</code>).</li>
+<li><strong>Boot avec les vrais binaires</strong> <code>atelier-vm-supervisor</code> (TAP +
+  <code>restrict_to_net_proxy</code>, le pare-feu de production, pas une version
+  allegee), <code>atelier-net-proxy</code> (alias <code>mcp-gateway</code> configure) et
+  <code>atelier-mcp-gateway</code> (tool <code>egress</code> active).</li>
+<li><strong>Verifie de bout en bout, avec preuve croisee</strong> (pas seulement "le guest
+  dit que ca a marche") : le guest recupere bien <code>HTTP_PROXY=http://169.254.0.1:3128</code>
+  (log de la sonde), les trois etapes du handshake MCP reussissent (log de
+  la sonde, lu apres extinction via <code>debugfs</code>), <strong>et</strong> <code>net-proxy</code> (systeme
+  tiers independant) journalise de son cote <code>allowlist elargie a chaud
+  (request_egress) host="example.com" count=1</code> — la meme requete qui a
+  transite par le pare-feu TAP a reellement modifie l'etat de <code>net-proxy</code>.
+  Voir <code>demo/mcp-agent-probe/README.md</code>.</li>
+</ul>
+<h2 id="devcontainer-de-demo-ministack-workshop-le-boot-firecracker-de-lagent-exige-systemd">Devcontainer de demo <code>ministack-workshop</code> : le boot Firecracker de l'agent exige systemd</h2>
+<p>Question ouverte depuis la conception de <code>vm-supervisor</code> (qui boote le
+rootfs d'un devcontainer arbitraire <strong>sans</strong> <code>init=</code> personnalise,
+contrairement a la microVM "builder") : le PID 1 par defaut d'une image
+devcontainer standard demarre-t-il seulement, et fait-il tourner quoi que
+ce soit tout seul ? Verifie reellement cette session avec
+<code>demo/ministack-workshop</code> (devcontainer combinant docker-in-docker,
+<code>ministack</code>, Claude Code, <code>code-server</code> — voir
+<code>demo/ministack-workshop/README.md</code>) :</p>
+<ul>
+<li><strong>Rootfs construit a la main, meme procedure qu'<code>image-builder</code></strong> (export
+  d'image Docker + <code>mke2fs -F -t ext4 -d</code>, cf. <code>crates/image-builder/src/main.rs</code>),
+  boote directement avec <code>atelier-firecracker</code>, boot_args identiques a
+  <code>crates/vm-supervisor/src/main.rs</code> (nouveau test
+  <code>crates/firecracker/tests/agent_boot_smoke.rs</code>, sur le modele de
+  <code>tests/builder_vm.rs</code>) : reproduit fidelement les conditions reelles sans
+  passer par tout le pipeline K8s (Job <code>image-builder</code>, registre,
+  controller), qui aurait ajoute des variables sans rapport avec la
+  question posee (notamment l'auth git sur un depot prive).</li>
+<li><strong>Constat initial : le PID 1 par defaut ne demarre rien.</strong> Console du
+  guest (draine vers <code>tracing::debug!</code>, seul canal de diagnostic sans
+  vsock) : le noyau tente <code>/sbin/init</code>, <code>/etc/init</code>, <code>/bin/init</code>, ne trouve
+  aucun des trois (l'image <code>mcr.microsoft.com/devcontainers/base</code> n'a pas
+  de systeme init installe, pensee pour tourner sous un runtime de
+  conteneur classique, pas pour booter seule) et retombe sur un <code>/bin/sh</code>
+  nu comme PID 1 — rien ne demarre. <code>postStartCommand</code>
+  (<code>devcontainer.json</code>) est un concept du CLI <code>devcontainer</code>, jamais
+  rejoue par le noyau : sans lui, aucun mecanisme ne lance
+  <code>dockerd</code>/<code>ministack</code>/<code>code-server</code>.</li>
+<li><strong>Corrige</strong> : <code>systemd</code>/<code>systemd-sysv</code> ajoutes a l'image
+  (<code>demo/ministack-workshop/.devcontainer/Dockerfile</code>), nos services
+  demarres via deux unites systemd dediees
+  (<code>atelier-ministack.service</code>/<code>atelier-code-server.service</code>,
+  <code>WantedBy=multi-user.target</code>) plutot que via <code>postStartCommand</code>, qui
+  reste par ailleurs utile pour l'usage <code>devcontainer up</code> classique
+  (Docker, testee au debut de cette session).</li>
+<li><strong>Piege trouve en corrigeant</strong> : <code>systemctl enable</code> echoue silencieusement
+  dans cette image (exit 0, aucun symlink cree) — un script factice
+  intercepte <code>systemctl</code>/<code>service</code> ("systemd is not running in this
+  container due to its overhead"), place par l'image de base pour eviter
+  que l'installation de paquets <code>.deb</code> fournissant des unites systemd
+  echoue pendant un <code>docker build</code> classique (sans PID 1 systemd). Les
+  paquets eux-memes (ex: <code>docker.service</code>, installe par la feature
+  <code>docker-in-docker</code>) s'activent correctement malgre tout via
+  <code>deb-systemd-helper</code> (appele par leur script <code>postinst</code>), qui manipule
+  les symlinks directement sans passer par ce faux <code>systemctl</code> — repris a
+  la main (<code>ln -s</code> dans <code>/etc/systemd/system/multi-user.target.wants/</code>)
+  pour nos deux unites.</li>
+<li><strong>Resultat, verifie reellement</strong> : boot confirme (meme environnement que
+  les autres tests Firecracker de ce crate, <code>docker run --privileged
+  --network host</code> avec <code>/dev/kvm</code>+<code>/dev/net/tun</code>, voir "Lecons retenues"),
+  <code>code-server:8080</code> et <code>ministack:4566</code> repondent tous les deux a une
+  vraie connexion TCP depuis l'hote — dans une microVM bootee exactement
+  comme le fait <code>vm-supervisor</code> en production (memes boot_args, aucune
+  concession).</li>
+<li><strong>Portee de ce resultat</strong> : ce n'est pas seulement une bizarrerie de ce
+  devcontainer de demo — c'est la premiere verification reelle que
+  l'architecture "n'importe quel depot Dev Containers standard" (<code>docs/ARCHITECTURE.md</code>)
+  a une limite concrete non documentee jusqu'ici : un devcontainer sans
+  systeme init installe ne fera jamais tourner ses <code>postCreateCommand</code>/
+  <code>postStartCommand</code> une fois boote comme microVM (contrairement a
+  l'usage normal via le CLI <code>devcontainer</code>/VS Code). Implication pour tout
+  futur Workshop : soit le devcontainer source installe lui-meme un
+  systeme init et declare ses propres services demarres au boot (comme
+  fait ici), soit <code>image-builder</code>/<code>vm-supervisor</code> devront un jour injecter
+  un mecanisme generique equivalent — non tranche, laisse ouvert.</li>
+<li><strong>Reste a faire</strong> : creer un vrai <code>Workshop</code> K8s pointant sur ce depot
+  (bloque sur l'auth git a un depot prive, jamais testee jusqu'ici — les
+  Workshops de test utilisaient des depots publics) pour valider la meme
+  chose a travers le pipeline complet, pas seulement en isolation.</li>
+</ul>
+<h2 id="ui-dashboard-gestion-ouvrir-vs-code">UI dashboard : gestion + "ouvrir VS Code"</h2>
+<p>Premiere page de detail par Workshop et pont HTTP+WebSocket pour ouvrir
+<code>code-server</code> (port 8080 dans la microVM agent) directement depuis le
+navigateur, au-dessus du protocole <code>portforward</code> existant (raw TCP/UDP
+multiplexe, pas HTTP-aware).</p>
+<ul>
+<li><strong><code>crates/api-server/src/vscode.rs</code></strong> (nouveau) : ouvre un flux d'octets
+  vers <code>code-server</code> via le protocole <code>portforward</code> (websocket vers
+  <code>net-proxy</code>, canal 0 = donnees) — pont via <code>tokio::io::duplex</code> + une tache
+  de fond, pas de <code>Sink</code>/<code>Stream</code> a la main. <code>hyper::client::conn::http1</code>
+  par-dessus (<code>hyper_util::rt::TokioIo</code>), <code>.with_upgrades()</code>. Requetes
+  normales : relayees avec le prefixe <code>/v1/workshops/{name}/vscode</code> retire
+  (<code>code-server</code> supporte nativement d'etre servi sous un sous-chemin
+  arbitraire, documente officiellement par <code>coder/code-server</code> — URLs
+  relatives, prefixe strippe avant de l'atteindre). Upgrade WebSocket (canal
+  "live" propre de <code>code-server</code>) : <code>hyper::upgrade::on</code> capture cote
+  requete entrante <em>avant</em> de la consommer, meme mecanisme cote reponse
+  amont si <code>101</code>, puis <code>tokio::io::copy_bidirectional</code> — relai brut, sans
+  reinterpreter les frames (meme philosophie que <code>net-proxy::proxy::tunnel</code>
+  pour <code>CONNECT</code>). Helper partage <code>resolve_running_pod_ip</code> extrait dans
+  <code>routes.rs</code> (<code>portforward.rs</code> refactore pour le reutiliser).</li>
+<li><strong>Verifie reellement, sans mock</strong> (<code>crates/api-server/tests/routes.rs</code>,
+  vrai <code>net-proxy</code>, vrai Workshop/Pod sur kind) : un test relaie un <code>GET</code>
+  HTTP a travers tout le pont jusqu'a un vrai petit serveur de test,
+  verifie que le prefixe est bien retire ; un second test verifie le
+  chemin d'upgrade de bout en bout (client TCP brut envoyant une requete
+  <code>Upgrade: websocket</code>, reponse <code>101</code> reelle, octets echoes a travers tout
+  le tunnel) — les deux stables sur plusieurs execution repetees,
+  y compris en parallele l'un de l'autre (verrou de test partage sur les
+  variables d'environnement globales que les deux mutent).</li>
+<li><strong>Dashboard</strong> : nouvelle page <code>app/workshops/[name]/page.tsx</code> (statut,
+  suspendre/reprendre/supprimer, lien "Ouvrir VS Code" en nouvel onglet si
+  <code>phase === "Running"</code>), Route Handler catch-all
+  <code>app/workshops/[name]/vscode/[[...path]]/route.ts</code> (reverse-proxy
+  same-origin fin, ajoute <code>Authorization: Bearer</code> cote serveur a partir du
+  cookie de session existant — le navigateur ne voit jamais le token) pour
+  tous les assets HTTP normaux de <code>code-server</code>. Preset "Demo ministack"
+  sur <code>workshops/new</code> (pre-remplit le formulaire existant avec le depot de
+  ce projet + le chemin du devcontainer de demo).</li>
+<li><strong><code>dashboard/server.ts</code></strong> (nouveau, serveur Next custom — necessaire
+  seulement pour le WebSocket "live" de <code>code-server</code>, qu'un Route Handler
+  standard ne peut pas hijacker) : intercepte l'evenement Node <code>'upgrade'</code>,
+  lit le cookie de session directement dans les en-tetes (aucune API Next
+  disponible hors contexte de requete), ouvre une connexion sortante avec
+  <code>ws</code> vers <code>api-server</code> (<code>Authorization: Bearer</code> ajoute cote serveur),
+  relie les deux cotes. <code>package.json</code> : <code>dev</code>/<code>start</code> utilisent desormais
+  <code>tsx server.ts</code> au lieu de <code>next dev</code>/<code>next start</code>.</li>
+<li><strong>Bug reel trouve en testant manuellement (pas par les tests
+  automatises)</strong> : la premiere version appelait <code>wss.handleUpgrade</code>
+  (qui envoie inconditionnellement un <code>101</code> au navigateur) <strong>avant</strong> de
+  savoir si la connexion amont vers <code>api-server</code> reussissait — un
+  navigateur pouvait donc recevoir un <code>101</code> "reussi" alors que le canal
+  restait mort en silence juste apres. Corrige : la connexion amont est
+  ouverte et son evenement <code>open</code> attendu <em>avant</em> d'appeler
+  <code>wss.handleUpgrade</code> ; un client WebSocket standard n'envoie de toute
+  facon aucune trame avant d'avoir recu son propre <code>101</code>, rien n'est perdu
+  a attendre. Egalement corrige au passage : <code>socket.destroy()</code>
+  immediatement apres <code>socket.write()</code> peut tronquer l'ecriture avant
+  qu'elle ne parte reellement (constate en pratique : le client ne
+  recevait rien du tout sur le chemin d'erreur) — <code>socket.end(data)</code> a la
+  place (ecrit puis ferme proprement une fois le buffer vide).</li>
+<li><strong>Limite assumee</strong> : verifie manuellement contre un Workshop de test
+  (Pod avec <code>podIP</code> controle a la main, meme technique que les tests
+  automatises) et un service de remplacement pour <code>code-server</code> — pas
+  encore contre un vrai <code>code-server</code> reel ni un vrai <code>Workshop</code> complet
+  (bloque sur le meme point que <code>demo/ministack-workshop</code> : auth git sur
+  un depot prive, cf. section dediee plus haut). Port <code>code-server</code> fixe a
+  8080 par convention (<code>ATELIER_VSCODE_PORT</code> overridable, surtout utile
+  pour les tests), pas encore un champ du CRD <code>Workshop</code>.</li>
+</ul>
+<h2 id="lecons-retenues-a-ne-pas-re-decouvrir">Lecons retenues (a ne pas re-decouvrir)</h2>
+<ul>
+<li><code>fctools</code> 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
+  features <code>vm</code> + <code>jailed-vmm-executor</code> + <code>tokio-runtime</code> +
+  <code>nix-syscall-backend</code> : il faut aussi <code>direct-process-spawner</code>.</li>
+<li><code>/tmp</code> est <code>tmpfs,nodev</code> sur la plupart des distros : un jail Firecracker
+  qui y est enracine a des device nodes inertes, et le message d'erreur
+  Firecracker ("configure the ACL") est trompeur. Utiliser un
+  <code>chroot_base_dir</code> sur un filesystem sans <code>nodev</code> (<code>/var/tmp</code> en dev).</li>
+<li>Pour un snapshot <code>fctools</code>, les ressources <code>Produced</code> (ex: fichiers de
+  snapshot) doivent recevoir un <code>initial_path</code> <strong>relatif au jail</strong>
+  (<code>/snapshot.state</code>), pas un chemin hote absolu — contrairement aux
+  ressources <code>Moved</code>, qui se resolvent automatiquement.</li>
+<li><code>Vm::shutdown()</code> de <code>fctools</code> renonce a <code>cleanup()</code> si la VM n'est pas
+  Paused/Running au moment de l'appel (ex: rootfs de test qui s'est deja
+  eteint tout seul) ; il faut appeler <code>cleanup()</code> inconditionnellement pour
+  eviter de laisser trainer un jail orphelin.</li>
+<li>Un patch JSON merge partiel sur <code>status</code> echoue en 422 si l'objet n'a
+  encore aucun statut : le tout premier write de statut doit toujours etre
+  complet.</li>
+<li><code>ENVBUILDER_GIT_CLONE_REF</code> n'existe pas ; la revision s'encode dans
+  <code>ENVBUILDER_GIT_URL</code> sous la forme <code>&lt;repo&gt;#&lt;revision&gt;</code>.</li>
+<li><code>ENVBUILDER_DEVCONTAINER_JSON_PATH</code> est relatif a
+  <code>ENVBUILDER_DEVCONTAINER_DIR</code> (<code>.devcontainer</code> par defaut), pas a la
+  racine du depot — source d'un bug de chemin double
+  (<code>.devcontainer/.devcontainer/...</code>) avant correction.</li>
+<li>Compiler un binaire avec une image <code>rust:*-bookworm</code> puis le faire tourner
+  dans <code>debian:bookworm-slim</code> casse sur un mismatch de version glibc ; il
+  faut un build multi-stage avec la meme base pour build et run.</li>
+<li><code>ip tuntap add &lt;nom&gt; mode tap</code> echoue avec un message trompeur
+  (<code>argument "&lt;nom&gt;" is wrong: "mode"/"dev"/"name" not a valid ifname</code>,
+  quel que soit l'ordre des arguments) des que <code>&lt;nom&gt;</code> depasse 15
+  caracteres (IFNAMSIZ Linux = 16 octets, terminateur nul inclus) — le
+  message ne mentionne jamais la longueur, seulement un mot-cle de la
+  commande elle-meme, ce qui egare completement le diagnostic.</li>
+<li>Pour tester du code necessitant <code>CAP_NET_ADMIN</code> (creation de TAP,
+  configuration d'IP) sans root ni sudo interactif :
+  <code>unshare --net --map-root-user -- &lt;commande&gt;</code> donne un espace de noms
+  reseau isole avec toutes les capacites necessaires, sans mot de passe.
+  Insuffisant en revanche pour un test qui a aussi besoin d'une vraie route
+  de sortie vers Internet (le namespace isole n'a que <code>lo</code>) — cf. section
+  "Builder microVM".</li>
+<li><code>setcap cap_net_admin+eip</code> sur un binaire ne suffit pas toujours : dans un
+  environnement d'agent sandboxe, meme une copie dediee du binaire avec la
+  capability posee peut echouer en <code>Operation not permitted</code> sur le <strong>vrai</strong>
+  netns (confirme via <code>getcap</code> correct + <code>strace</code> montrant un simple appel
+  RTNETLINK refuse) — la sandbox elle-meme filtre l'operation independamment
+  des capabilities Linux. <code>docker run --privileged</code> (nouveau netns isole
+  avec <code>CAP_NET_ADMIN</code> effectif + sortie Internet via le NAT Docker par
+  defaut) contourne ce blocage, la ou <code>unshare --net</code> seul n'a pas de route
+  de sortie.</li>
+<li>axum 0.8 a change la syntaxe des parametres de route : <code>:nom</code> (ancienne
+  syntaxe) panique au demarrage avec un message qui suggere <code>{nom}</code> — pas
+  une erreur de compilation, une panique runtime au premier <code>Router::route</code>
+  concerne.</li>
+<li><code>jsonwebtoken</code> 11 exige d'activer explicitement une feature de fournisseur
+  crypto (<code>rust_crypto</code> ou <code>aws_lc_rs</code>) ; sans ca, toute operation JWK
+  panique au runtime avec un message qui explique le probleme (pas d'erreur
+  de compilation) — <code>rust_crypto</code> evite une dependance a un compilateur C.</li>
+<li><code>jsonwebtoken::jwk::Jwk::from_encoding_key(&amp;EncodingKey, Algorithm)</code>
+  derive directement les parametres publics (n/e pour RSA, x/y pour EC)
+  depuis une cle privee : pratique pour construire un JWKS de test reel
+  (vraie paire de cles, vraie signature) sans dupliquer la logique
+  d'encodage/decodage a la main.</li>
+<li><code>docker run --privileged --network host --device=/dev/kvm --device=/dev/net/tun</code>
+  est une alternative viable a un acces <code>sudo</code> interactif reel pour les
+  tests necessitant a la fois <code>CAP_NET_ADMIN</code> (creation de TAP) ET une
+  vraie sortie reseau vers des services de l'hote (<code>net-proxy</code>, registre
+  OCI de dev) : contrairement a un <code>docker run --privileged</code> isole (NAT
+  Docker, netns separe), <code>--network host</code> partage directement le netns de
+  l'hote — le TAP cree dans le conteneur est immediatement visible et
+  routable depuis l'hote, sans configuration NAT/forwarding supplementaire.
+  Compiler avec un <code>CARGO_TARGET_DIR</code> dedie dans ce conteneur (meme piege
+  glibc que plus haut).</li>
+<li><code>sockaddr_un.sun_path</code> (Linux) est limite a 108 octets : un chemin de
+  jail Firecracker trop long (noms de test verbeux repetes dans le chemin,
+  ex: <code>{chroot_base_dir}/firecracker/{jail_id}/root/run/firecracker.socket</code>)
+  fait echouer <code>connect()</code> en <code>ENAMETOOLONG</code> a chaque tentative — silencieux
+  et non exploitable si le code appelant (ici <code>fctools</code> 0.7.0-alpha.2,
+  <code>Vm::start</code>) avale l'erreur dans une boucle de retry sans jamais la
+  remonter (voir aussi le bullet suivant). Choisir des noms de jail/dossier
+  de travail courts dans les tests.</li>
+<li><code>fctools</code> 0.7.0-alpha.2 : la boucle d'attente du socket API dans
+  <code>Vm::start</code> (<code>src/vm/mod.rs:244</code>,
+  <code>loop { if client.get(...).await.is_ok() { break } }</code>) ne cede jamais la
+  main a l'executeur async si <code>client.get()</code> echoue de facon synchrone a
+  chaque iteration (ex: <code>ENAMETOOLONG</code> sur le chemin du socket) — elle
+  tourne alors indefiniment a 100% CPU sur un seul thread, empechant meme
+  le <code>timeout()</code> englobant de se declencher (aucune erreur ni panic, juste
+  un blocage total). A diagnostiquer via <code>gdb -p &lt;pid&gt; -batch -ex bt</code> sur le
+  thread actif (pas <code>strace</code>, qui ne voit rien d'utile si le blocage est
+  purement en espace utilisateur sans syscall bloquant) : la pile remonte
+  directement jusqu'a la ligne fautive.</li>
+<li>Une image OCI convertie en <code>rootfs.ext4</code> brut (<code>crane export</code> + <code>mke2fs</code>,
+  sans passer par un runtime de conteneur au boot) perd toute sa metadonnee
+  <code>ENV</code>/<code>ENTRYPOINT</code>/etc. — un guest qui boote directement ce filesystem
+  (init custom en PID 1, cas de <code>atelier-builder-vm-init</code>) doit re-fournir
+  explicitement toute variable d'environnement dont un binaire de l'image
+  a besoin (ex: <code>KANIKO_DIR</code> pour <code>envbuilder</code>), meme si le <code>Dockerfile</code>
+  source la definit via <code>ENV</code>.</li>
+<li><code>golang.org/x/net/http/httpproxy</code> (utilise par le client HTTP standard de
+  Go, donc par <code>envbuilder</code>) exclut <strong>inconditionnellement</strong> <code>localhost</code> et
+  les IP loopback du proxy configure via <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> — meme
+  sans <code>NO_PROXY</code>, comportement non desactivable depuis l'environnement.
+  Un service passe comme <code>localhost:&lt;port&gt;</code> a un process qui doit y acceder
+  <em>via</em> un proxy explicite (ex: guest microVM sans route par defaut) doit
+  plutot recevoir une adresse non-loopback (IP reelle de l'hote/du lien
+  point-a-point).</li>
+<li><code>reboot(RebootMode::RB_POWER_OFF)</code> (crate <code>nix</code>) n'a aucun effet observable
+  dans une microVM Firecracker minimale sans ACPI (<code>pci=off</code> dans les
+  <code>boot_args</code>) : le noyau n'a pas de handler <code>pm_power_off</code> a invoquer et se
+  contente d'un <code>halt</code> ("reboot: System halted"), sans que Firecracker
+  detecte la fin de la VM. Avec <code>reboot=k</code> dans les <code>boot_args</code> (deja
+  necessaire pour ce type de machine minimale), c'est
+  <code>reboot(RebootMode::RB_AUTOBOOT)</code> (reboot standard, pas power-off) qu'il
+  faut appeler : il declenche un reset via le controleur clavier i8042 que
+  Firecracker intercepte lui-meme comme signal de fin de VM.</li>
+<li>Un <code>Job</code> Kubernetes n'est marque termine que lorsque tous ses
+  <code>containers[]</code> (pas ses <code>initContainers[]</code>, sidecars natifs compris) ont
+  fini avec succes : un sidecar long-vivant (ex: <code>net-proxy</code>, jamais de code
+  de sortie) doit etre declare comme <code>initContainer</code> avec
+  <code>restartPolicy: "Always"</code> (K8s &gt;= 1.28/1.29, KEP-753 "sidecar containers")
+  et non dans <code>containers[]</code>, sous peine d'un <code>Job</code> qui reste <code>Running</code>
+  indefiniment meme apres la fin reelle du conteneur principal.</li>
+<li><code>COPY --from=&lt;stage&gt; /</code> dans un <code>Dockerfile</code> multi-etapes aplatit
+  l'integralite du filesystem de ce stage sans passer par un registre OCI :
+  equivalent local a <code>crane export</code> + <code>tar xf</code> (utilise ailleurs dans ce
+  projet pour aplatir une image deja poussee), mais inutile ici puisque le
+  contenu est deja disponible localement dans le build multi-etapes —
+  simplifie significativement la construction d'un rootfs bootable a partir
+  d'un stage Docker intermediaire (voir <code>crates/image-builder/Dockerfile</code>).</li>
+<li>Une image Docker rechargee dans <code>kind</code> (<code>kind load docker-image</code>) ne
+  signale jamais qu'elle est perimee : reconstruire le code sans reconstruire
+  ET recharger l'image dans le cluster produit des echecs silencieux et
+  deroutants (le nouveau code n'est simplement jamais execute). Toujours
+  verifier <code>docker images &lt;nom&gt;</code> / refaire <code>kind load</code> apres tout changement
+  de code affectant une image utilisee en cluster.</li>
+<li><code>fctools</code> 0.7.0-alpha.2 : <code>VmConfigurationData</code> ne derive que <code>Serialize</code>
+  (pas <code>Deserialize</code>), et <code>Vm::restore</code> exige un <code>Vm</code> source vivant dans le
+  meme process (son <code>ResourceSystem</code> fournit les ressources a recopier) —
+  cette API n'est pas concue pour un snapshot qui doit survivre a un
+  redemarrage complet du process appelant. Contournement viable : ne pas
+  serialiser <code>VmConfigurationData</code> du tout, la <strong>reconstruire a l'identique</strong>
+  a partir des memes parametres qu'un boot normal (elle est entierement
+  determinee par eux) — la coherence du chemin virtuel jaile
+  (<code>FlatVirtualPathResolver</code>, base sur le nom de fichier, pas sur l'identite
+  de la ressource) rend cette reconstruction valide sans avoir besoin de
+  l'objet source. Voir <code>Vm::restore_persisted</code>,
+  <code>crates/firecracker/src/vm.rs</code>.</li>
+<li>Le <code>controller</code>, lance depuis un poste de dev (hors cluster), ne peut pas
+  joindre une IP de pod kind directement — le reseau du CNI (10.244.0.0/16)
+  n'est pas route vers l'hote par defaut. <code>docker run --network
+  container:&lt;nom-du-noeud-kind&gt;</code> (partage le netns du noeud, qui lui route
+  bien vers ses propres pods) contourne ce blocage pour du test manuel —
+  meme categorie de contournement que celui deja documente pour
+  <code>CAP_NET_ADMIN</code>/la microVM builder plus haut. En production, le
+  <code>controller</code> tournant <em>dans</em> le cluster (pas encore le cas dans cette
+  session de dev), ce probleme ne se pose simplement pas.</li>
+<li>Un <code>Job</code> Kubernetes ne supprime pas son pod a la fin (<code>Complete</code>) — le
+  pod reste visible (<code>Terminating</code> puis disparait apres la periode de
+  grace par defaut, ~30s) : un controller qui interroge ce pod pendant
+  cette fenetre (ex: pour un appel de controle avant liberation) peut le
+  voir "encore la" alors que son process principal a deja fini — prevoir
+  l'idempotence/tolerance a un second appel plutot que supposer qu'un seul
+  suffira.</li>
+<li>Le parametre de boot noyau Linux standard <code>ip=&lt;client-ip&gt;:&lt;server-ip&gt;:
+  &lt;gw-ip&gt;:&lt;netmask&gt;:&lt;hostname&gt;:&lt;device&gt;:&lt;autoconf&gt;</code> (autoconfiguration IP,
+  cf. <code>Documentation/admin-guide/nfs/nfsroot.rst</code>) configure une interface
+  et sa route par defaut <strong>avant que l'init du guest ne demarre</strong>, sans
+  aucune cooperation de celui-ci — le bon outil pour donner une IP a une VM
+  dont on ne controle pas l'init (contrairement a la microVM "builder", qui
+  a son propre init personnalise et peut donc configurer son reseau
+  elle-meme en espace utilisateur).</li>
+<li>Chaque nouvelle image Docker qui commence a faire du reseau/pare-feu doit
+  explicitement installer <code>iproute2</code>/<code>iptables</code> — l'oubli est facile
+  (<code>image-builder</code> puis <code>vm-supervisor</code> ont chacun ete oublies une fois
+  cette session) et le symptome (<code>lancement de ip: No such file or
+  directory</code>, ou pire un <code>CrashLoopBackOff</code> sans message clair au premier
+  coup d'oeil) ne pointe pas immediatement vers la cause.</li>
+<li><code>jsonwebtoken::Validation::new()</code> active <code>validate_aud: true</code> par defaut :
+  sans <code>set_audience(...)</code> explicite, n'importe quel token portant un <code>aud</code>
+  (le cas de tout token OAuth2 reel emis par Kanidm) est rejete en
+  <code>InvalidAudience</code> — invisible avec des JWT de test synthetiques qui
+  n'incluent jamais <code>aud</code>. A ne decouvrir qu'en testant contre un vrai flux
+  OAuth2, jamais avec des tokens fabriques a la main pour les tests.</li>
+<li><code>reqwest</code> compile avec la feature <code>rustls-tls</code> ignore le trust store
+  systeme et <code>SSL_CERT_FILE</code> : contre un service TLS a CA auto-signee (ex:
+  Kanidm de dev), il faut construire un <code>Client</code> avec
+  <code>.add_root_certificate(reqwest::Certificate::from_pem(...))</code> explicitement
+  — un simple <code>reqwest::get()</code> echoue toujours, meme si <code>curl</code>/le systeme
+  font confiance a cette CA.</li>
+<li>Donner a un <code>Pod</code> de test un vrai conteneur planifiable (ex:
+  <code>registry.k8s.io/pause:3.9</code>) fait qu'un vrai kubelet le prend en charge et
+  <strong>ecrase</strong> tout <code>status.podIP</code> patche manuellement par son adresse CNI
+  reelle des que le conteneur demarre — y compris apres un premier
+  <code>patch_status</code> reussi (course avec la reconciliation continue du
+  kubelet). Pour un test qui a seulement besoin de controler <code>status.podIP</code>
+  sans faire tourner de vrai conteneur, fixer <code>spec.nodeName</code> sur un nom de
+  noeud inexistant : le Pod reste <code>Pending</code> a jamais (aucun kubelet ne le
+  reclame), et le patch de statut manuel n'est plus jamais ecrase.</li>
+<li><code>tonic-build</code> 0.14 a deplace toute la generation de code liee a <code>prost</code>
+  vers un crate separe, <code>tonic-prost-build</code> (<code>tonic_build::configure()</code>
+  n'existe plus) — cote runtime, le crate correspondant est
+  <code>tonic-prost</code> (pas seulement <code>prost</code>). <code>tonic-prost-build</code> (comme
+  <code>prost-build</code>) invoque le binaire externe <code>protoc</code> au moment du build ;
+  sur une machine sans <code>apt</code>/<code>sudo</code>, un binaire precompile
+  (github.com/protocolbuffers/protobuf/releases) pointe via la variable
+  d'environnement <code>PROTOC</code> (<code>.cargo/config.toml</code> local, non commite car
+  specifique a la machine) fonctionne tout aussi bien.</li>
+<li>Un <code>DaemonSet</code> qui bind-mounte tout <code>/dev</code> de l'hote (au lieu de devices
+  individuels) casse le mount par defaut de kubelet sur
+  <code>/dev/termination-log</code> (<code>CrashLoopBackOff</code> immediat, "read-only file
+  system" au moment de creer ce point de montage) : toujours monter les
+  devices necessaires individuellement (<code>hostPath</code> par device, type
+  <code>CharDevice</code>), jamais <code>/dev</code> entier.</li>
+<li>Pour un device plugin Kubernetes (<code>/dev/kvm</code> ici), <code>securityContext.capabilities.add: [NET_ADMIN]</code>
+  suffit a creer un TAP (<code>ip tuntap add</code>) mais <strong>pas</strong> a spawner un process
+  dont les capabilities effectives viennent de <code>setcap</code> sur son binaire
+  (ex: <code>jailer</code>, cf. Dockerfile <code>vm-supervisor</code>) : celui-ci echoue en
+  "Operation not permitted" au spawn si <code>SYS_ADMIN</code>/<code>SYS_RESOURCE</code> ne sont
+  pas <em>aussi</em> explicitement ajoutees au conteneur — les capabilities de
+  fichier ne peuvent etre elevees a l'exec que si elles font deja partie du
+  bounding set du conteneur, l'ensemble par defaut containerd/Docker
+  (<code>CHOWN</code>, <code>DAC_OVERRIDE</code>, <code>FOWNER</code>, <code>SETUID</code>, <code>SETGID</code>, <code>SYS_CHROOT</code>,
+  <code>MKNOD</code>, etc.) ne les couvrant pas. Un restart de pod qui echoue <em>apres</em>
+  la creation du TAP mais <em>avant</em> que Firecracker demarre laisse ce TAP
+  vivant dans le netns du pod (partage entre redemarrages d'un meme pod,
+  contrairement a un nouveau pod) : le redemarrage suivant echoue alors en
+  <code>EBUSY</code> sur la creation du TAP, masquant completement l'erreur d'origine
+  (<code>SYS_ADMIN</code> manquant) derriere un symptome different — a diagnostiquer
+  avec <code>restartPolicy: Never</code> pour capturer le tout premier essai sans
+  bruit de redemarrage.</li>
+<li>L'endpoint API <code>/oauth2/authorise</code> de Kanidm (utilise par
+  <code>get-oauth2-token.sh</code>) exige un <code>Authorization: Bearer</code> deja present —
+  confirme en testant reellement : <code>401 Unauthorized</code> systematique sans ce
+  header, jamais de redirection vers une page de login. Ce n'est donc PAS
+  l'URL a utiliser pour un flux browser-based classique (un navigateur sans
+  session ne peut pas fournir ce bearer sur une simple navigation) :
+  <code>/ui/oauth2</code> (meme query params) sert la SPA Kanidm, qui gere son propre
+  login+consentement en JS avant de rediriger reellement le navigateur vers
+  <code>redirect_uri</code> — c'est cette URL qu'un client OAuth2 browser-based doit
+  cibler, pas l'endpoint API.</li>
+<li>Un client OAuth2 public Kanidm (<code>create-public</code>, PKCE) refuse par defaut
+  toute <code>redirect_uri</code> pointant vers <code>localhost</code> (protection standard contre
+  le detournement d'un client public en local) : necessite
+  <code>enable-localhost-redirects</code> explicite en plus de <code>add-redirect-url</code>,
+  sans quoi l'echange de code echoue meme avec une redirect_uri par ailleurs
+  correctement enregistree.</li>
+<li>Une image devcontainer standard (<code>mcr.microsoft.com/devcontainers/base</code>)
+  n'a <strong>pas</strong> de systeme init installe : bootee directement par un noyau
+  (sans runtime de conteneur), le PID 1 retombe sur un <code>/bin/sh</code> nu apres
+  l'echec de <code>/sbin/init</code>/<code>/etc/init</code>/<code>/bin/init</code> — rien ne demarre tout
+  seul, <code>postStartCommand</code> n'etant rejoue que par le CLI <code>devcontainer</code>.
+  Ajouter <code>systemd</code>/<code>systemd-sysv</code> et declarer ses propres services comme
+  unites systemd est necessaire pour tout devcontainer destine a booter
+  comme microVM.</li>
+<li>Dans une image devcontainer standard, <code>systemctl enable &lt;unit&gt;</code> echoue
+  silencieusement (exit 0, aucun symlink cree) : un faux <code>systemctl</code> y est
+  installe pour eviter que l'installation de paquets <code>.deb</code> porteurs
+  d'unites systemd echoue pendant un <code>docker build</code> classique (pas de PID 1
+  systemd a ce moment-la). Contournement : creer soi-meme le symlink
+  d'activation (<code>ln -s ../mon-service.service
+  /etc/systemd/system/multi-user.target.wants/mon-service.service</code>), comme
+  le fait <code>deb-systemd-helper</code> pour les paquets (qui, lui, n'est pas
+  intercepte).</li>
+</ul>
+<h2 id="prochaines-etapes-par-priorite">Prochaines etapes (par priorite)</h2>
+<ol>
+<li>~~Brancher la microVM "builder" dans <code>image-builder</code>/<code>reconcile.rs</code>~~ —
+   <strong>fait cette session</strong>, voir "Builder microVM" ci-dessus. Le pipeline
+   complet <code>image-builder</code> (microVM) → cache → <code>vm-supervisor</code> tourne
+   automatiquement de bout en bout, verifie contre kind reel, sans peuplage
+   manuel du PVC. Reste ouvert dans ce voisinage : le registre interne
+   (<code>ctx.registry_addr</code>) n'est joignable par la microVM builder que via
+   l'alias <code>registry</code> de <code>net-proxy</code>, pas encore par la VM de l'agent
+   (n'a pas de reseau du tout aujourd'hui, voir point 3).</li>
+<li>~~Canal de controle entre <code>controller</code>/<code>vm-supervisor</code> pour que <code>suspend</code>
+   declenche un vrai <code>snapshot/create</code> avant liberation du pod~~ — <strong>fait
+   cette session</strong>, voir "Canal de controle suspend/resume" ci-dessus.
+   Canal HTTP (pas <code>vsock</code>, terme initial trompeur — voir cette section) ;
+   <code>status.snapshotDigest</code> reellement renseigne, restauration cross-process/
+   cross-pod validee contre kind. Reste ouvert : le <code>controller</code> lui-meme
+   ne tourne pas encore <em>dans</em> le cluster (premier <code>Dockerfile</code> ecrit cette
+   session, mais uniquement pour ce test manuel — pas encore de
+   Deployment/RBAC cluster-wide dedies), donc ce canal n'est valide qu'en
+   conditions de test, pas encore en deploiement reel.</li>
+<li>~~<code>net-proxy</code>/<code>identity-proxy</code> comme conteneurs du pod parent + TAP
+   reseau pour la VM de l'agent~~ — <strong>fait cette session</strong>, voir "Reseau de
+   l'agent + net-proxy/identity-proxy dans le pod parent" ci-dessus. Le TODO
+   de <code>docs/ARCHITECTURE.md</code> (l'agent parle-t-il a <code>identity-proxy</code> en
+   direct ou seulement via <code>net-proxy</code>) etait deja tranche par
+   <code>docs/architecture/network-security.md</code> (session precedente) : jamais en
+   direct, uniquement via <code>net-proxy</code>. ~~Reste ouvert, distinct : faire en
+   sorte que le devcontainer construit utilise reellement ce chemin~~ —
+   <strong>fait cette session</strong> : plutot que de chercher un mecanisme cote
+   <code>envbuilder</code> (aucun hook natif trouve, et de toute facon inutilisable ici
+   — l'export brut <code>crane export</code>+<code>mke2fs</code> perd deja toute metadonnee OCI
+   <code>ENV</code>, voir "Lecons retenues"), <code>image-builder::inject_net_proxy_config</code>
+   (nouveau, <code>crates/image-builder/src/main.rs</code>) ecrit directement
+   <code>/etc/environment</code> (complete le fichier existant, <code>HTTP_PROXY</code>/
+   <code>HTTPS_PROXY</code>/variantes minuscules + <code>NO_PROXY</code> vers <code>169.254.0.1:3128</code>)
+   et <code>/etc/resolv.conf</code> (<code>nameserver 169.254.0.1</code>, remplace un eventuel
+   symlink <code>systemd-resolved</code>) dans l'arborescence exportee, entre
+   <code>export_image_filesystem</code> et <code>package_ext4</code> — meme adresse fixe de lien
+   point-a-point et meme port que <code>vm-supervisor</code>/<code>controller</code> (constante
+   <code>3128</code>, cf. <code>crates/controller/src/reconcile.rs</code>). <code>/etc/environment</code> est
+   le bon point d'injection pour un guest sans init personnalise (boote le
+   PID 1 du devcontainer tel quel) : lu par <code>pam_env</code> pour toute session de
+   login (SSH/terminal interactif — code-server, Claude Code).
+   <strong>Verifie contre le vrai pipeline <code>image-builder</code></strong> (pas seulement
+   <code>cargo check</code>) : conteneurs Docker reels <code>atelier-image-builder:dev</code> +
+   <code>atelier-net-proxy:dev</code> (partage du netns hote, meme registre <code>:5000</code>
+   reel), vrai devcontainer (<code>vscode-remote-try-python</code>) construit par la
+   microVM builder via <code>envbuilder</code>, push registre reel, <code>crane export</code> +
+   injection + <code>mke2fs</code> reels. Contenu du <code>rootfs.ext4</code> resultant inspecte
+   directement (<code>debugfs -R "cat ..."</code>, sans montage) : <code>/etc/environment</code>
+   et <code>/etc/resolv.conf</code> (fichier regulier, pas un symlink residuel) portent
+   bien le contenu attendu.
+   <strong>Usage reel par un guest boot, verifie ensuite</strong> (<code>demo/net-proxy-probe/</code>,
+   nouveau) : devcontainer minimal (systemd + <code>curl</code> + service qui fait un
+   vrai <code>CONNECT</code> HTTPS vers <code>example.com</code>) boote avec le <strong>vrai binaire</strong>
+   <code>atelier-vm-supervisor</code> (pas une reimplementation de test), a cote d'un
+   vrai <code>atelier-net-proxy</code>, meme protocole A/B qu'ailleurs dans cette
+   section : rootfs identique avec/sans les deux fichiers injectes. Preuve
+   observee dans les logs du <strong>vrai</strong> <code>net-proxy</code> (pas dans un mock) :
+   variante avec injection -&gt; <code>egress autorise ... host="example.com"
+   port=443 method=CONNECT allowed=true</code> (le guest a bien lu <code>HTTPS_PROXY</code>
+   et l'a utilise) ; variante sans injection -&gt; aucune entree de log
+   pendant toute la fenetre du run (la tentative directe de <code>curl</code> est
+   silencieusement rejetee par <code>restrict_to_net_proxy</code>, jamais un <code>CONNECT</code>
+   n'atteint <code>net-proxy</code>). Voir <code>demo/net-proxy-probe/README.md</code> pour le
+   protocole complet et la limite restante (sonde TCP directe sur le port
+   du guest non fiable dans cet environnement, non bloquant vu que la preuve
+   par les logs <code>net-proxy</code> suffit).</li>
+<li>~~<code>api-server</code> : valider contre un vrai flux OAuth2 Kanidm, et role de
+   coordinateur de port-forward~~ — <strong>fait cette session</strong>, voir point 11
+   du resume chronologique ci-dessus. Resource Server OAuth2 reel configure
+   dans Kanidm de dev, deux bugs reels trouves et corriges
+   (<code>ATELIER_JWT_AUDIENCE</code>, <code>ATELIER_JWT_CA_PATH</code>), endpoint
+   <code>/v1/workshops/{name}/portforward</code> ecrit et teste de bout en bout.</li>
+<li>~~<code>mcp-gateway</code>~~ — <strong>base faite cette session</strong>, voir section dediee
+   ci-dessus : serveur MCP reel (<code>request_credential</code>, <code>request_egress</code>) via
+   HTTP/SSE. Reste ouvert : le premier simulateur (candidat toujours
+   LocalStack pour AWS) et le tool <code>enable_simulator</code> associe, le transport
+   <code>vsock</code> natif, et une verification depuis l'interieur d'une vraie
+   microVM agent (pas encore d'agent MCP dans le devcontainer de test).</li>
+<li>~~Device plugin Kubernetes pour <code>/dev/kvm</code>, afin de sortir du pod
+   <code>privileged: true</code>~~ — <strong>fait cette session</strong>, voir point 12 du resume
+   chronologique ci-dessus. <code>vm-supervisor</code> et <code>image-builder</code> tournent
+   desormais sans <code>privileged: true</code>, verifie contre kind reel (boot
+   Firecracker reussi dans un pod portant uniquement <code>NET_ADMIN</code>/<code>SYS_ADMIN</code>/
+   <code>SYS_RESOURCE</code> + la ressource <code>atelier.dev/kvm</code>).</li>
+<li>Offload/reload du cache d'images vers S3 (prevu des la conception,
+   explicitement differe).</li>
+<li>Stack d'observabilite complet : collector OTLP + backend de stockage +
+   Grafana.</li>
+<li>~~Devcontainer de demo <code>ministack-workshop</code>~~ : boot Firecracker reel
+   <strong>verifie</strong>, ~~UI dashboard dediee~~ <strong>construite cette session</strong> (voir
+   section dediee "UI dashboard" ci-dessus : page de gestion par Workshop,
+   pont HTTP+WS <code>api-server</code> -&gt; <code>code-server</code>, preset de creation). Reste
+   ouvert : creer un vrai <code>Workshop</code> K8s pointant sur le depot
+   <code>ministack-workshop</code> (bloque sur l'auth git a un depot prive, mecanisme
+   cote <code>image-builder</code> en cours ailleurs, pas encore verifie de bout en
+   bout avec ce pont) pour la premiere validation reellement complete.</li>
+<li>LLM Proxy (Claude Code, ou tout autre agent, a besoin d'inference —
+    routage vers OpenAI/Grok/Vertex/Bedrock, credentials injectes selon le
+    meme modele qu'<code>identity-proxy</code>/<code>mcp-gateway</code>) : besoin identifie cette
+    session, conception a faire separement (voir memoire de session,
+    non commitee ici).</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Retour en haut de la page
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copi\u00e9 dans le presse-papier", "clipboard.copy": "Copier dans le presse-papier", "search.result.more.one": "1 de plus sur cette page", "search.result.more.other": "# de plus sur cette page", "search.result.none": "Aucun document trouv\u00e9", "search.result.one": "1 document trouv\u00e9", "search.result.other": "# documents trouv\u00e9s", "search.result.placeholder": "Taper pour d\u00e9marrer la recherche", "search.result.term.missing": "Non trouv\u00e9", "select.version": "S\u00e9lectionner la version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
