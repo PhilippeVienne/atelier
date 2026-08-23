@@ -557,3 +557,177 @@ async fn apply_provisions_openbao_role_when_configured() {
         .ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
+
+/// Necessite OPENBAO_ADDR/OPENBAO_TOKEN (voir deploy/dev/openbao/README.md),
+/// silencieusement ignore sans ces variables.
+///
+/// Tache 1.2.6 (docs/specs/PLAN-ACTION-GLOBAL.md) : verifie le role OpenBao
+/// cluster-wide `atelier-api-server` (pas scope a un seul Workshop, voir
+/// `crates/controller/src/openbao.rs::ensure_api_server_role`). Contrairement
+/// au role `workshop-<name>` teste ci-dessus, celui-ci doit permettre de
+/// lire le secret `session_auth` de N'IMPORTE QUEL Workshop (a partir d'un
+/// seul ServiceAccount cluster-wide, celui du Deployment `api-server`), mais
+/// rien d'autre (pas les autres secrets d'un Workshop, ex: `git`).
+#[tokio::test]
+async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else() {
+    atelier_common::telemetry::ensure_crypto_provider();
+
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "atelier-system-test";
+    let sa_name = "atelier-api-server-test";
+    let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(client.clone());
+    let _ = namespaces
+        .create(
+            &PostParams::default(),
+            &k8s_openapi::api::core::v1::Namespace {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(ns.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await;
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let _ = service_accounts
+        .create(
+            &PostParams::default(),
+            &k8s_openapi::api::core::v1::ServiceAccount {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(sa_name.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let openbao_config = atelier_controller::openbao::OpenBaoConfig {
+        addr: openbao_addr.clone(),
+        token: openbao_token.clone(),
+    };
+    atelier_controller::openbao::ensure_api_server_role(&openbao_config, ns, sa_name)
+        .await
+        .expect("ensure_api_server_role ne doit pas echouer");
+
+    // Deux Workshops distincts, avec un vrai secret session_auth chacun
+    // (ecrit directement via le token d'administration OpenBao, comme le
+    // ferait le controller via `ensure_session_auth` en conditions
+    // reelles) : le role cluster-wide doit pouvoir lire les DEUX, avec le
+    // meme token client.
+    let http = reqwest::Client::new();
+    for (name, password) in [
+        ("api-server-role-test-a", "password-a"),
+        ("api-server-role-test-b", "password-b"),
+    ] {
+        http.put(format!(
+            "{openbao_addr}/v1/secret/data/workshops/{name}/session_auth"
+        ))
+        .header("X-Vault-Token", &openbao_token)
+        .json(&serde_json::json!({ "data": { "password": password } }))
+        .send()
+        .await
+        .expect("ecriture du secret session_auth de test")
+        .error_for_status()
+        .expect("ecriture du secret session_auth de test refusee");
+    }
+    // Un secret HORS `session_auth` sous le meme Workshop : le wildcard `+`
+    // de la policy `atelier-api-server` ne couvre que le dernier segment de
+    // chemin (`session_auth` precis), pas les autres secrets d'un Workshop.
+    http.put(format!(
+        "{openbao_addr}/v1/secret/data/workshops/api-server-role-test-a/git"
+    ))
+    .header("X-Vault-Token", &openbao_token)
+    .json(&serde_json::json!({ "data": { "password": "git-secret-should-stay-out-of-reach" } }))
+    .send()
+    .await
+    .expect("ecriture du secret git de test")
+    .error_for_status()
+    .expect("ecriture du secret git de test refusee");
+
+    let output = std::process::Command::new("kubectl")
+        .args(["create", "token", sa_name, "-n", ns])
+        .output()
+        .expect("kubectl doit etre disponible");
+    assert!(
+        output.status.success(),
+        "kubectl create token a echoue: {output:?}"
+    );
+    let sa_token = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+    let login: serde_json::Value = http
+        .post(format!("{openbao_addr}/v1/auth/kubernetes/login"))
+        .json(&serde_json::json!({
+            "jwt": sa_token,
+            "role": atelier_controller::openbao::API_SERVER_ROLE,
+        }))
+        .send()
+        .await
+        .expect("requete de login OpenBao")
+        .error_for_status()
+        .expect("le login OpenBao doit reussir avec le token du ServiceAccount api-server")
+        .json()
+        .await
+        .expect("reponse JSON de login OpenBao");
+    let client_token = login["auth"]["client_token"]
+        .as_str()
+        .expect("client_token dans la reponse de login")
+        .to_string();
+
+    for (name, expected_password) in [
+        ("api-server-role-test-a", "password-a"),
+        ("api-server-role-test-b", "password-b"),
+    ] {
+        let secret: serde_json::Value = http
+            .get(format!(
+                "{openbao_addr}/v1/secret/data/workshops/{name}/session_auth"
+            ))
+            .header("X-Vault-Token", &client_token)
+            .send()
+            .await
+            .expect("requete de lecture session_auth")
+            .error_for_status()
+            .expect("le role api-server doit pouvoir lire session_auth de n'importe quel Workshop")
+            .json()
+            .await
+            .expect("reponse JSON de lecture session_auth");
+        assert_eq!(
+            secret["data"]["data"]["password"].as_str(),
+            Some(expected_password),
+            "mot de passe session_auth inattendu pour {name}"
+        );
+    }
+
+    let git_secret_denied = http
+        .get(format!(
+            "{openbao_addr}/v1/secret/data/workshops/api-server-role-test-a/git"
+        ))
+        .header("X-Vault-Token", &client_token)
+        .send()
+        .await
+        .expect("requete de lecture du secret git");
+    assert_eq!(
+        git_secret_denied.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "le role api-server ne doit PAS pouvoir lire un secret autre que session_auth"
+    );
+
+    let _ = service_accounts
+        .delete(sa_name, &DeleteParams::default())
+        .await;
+    let _ = namespaces.delete(ns, &DeleteParams::default()).await;
+}

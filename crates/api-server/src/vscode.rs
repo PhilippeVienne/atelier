@@ -21,6 +21,7 @@ use axum::body::Body;
 use axum::extract::{Extension, Path, State};
 use axum::http::{self, Request, StatusCode};
 use axum::response::Response;
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -127,6 +128,31 @@ pub(crate) async fn proxy_to_guest_port(
     );
     if !is_upgrade {
         parts.headers.remove(http::header::CONNECTION);
+    }
+    // Mot de passe de session provisionne par le controller
+    // (`crates/controller/src/openbao.rs::ensure_session_auth`), injecte
+    // ici plutot que laisse au client : `code-server`/`ttyd` exigent tous
+    // les deux ce Basic Auth (voir `crates/net-proxy/src/metadata.rs`), et
+    // un client externe ne doit jamais avoir besoin de le connaitre — seul
+    // `api-server` (via son role OpenBao cluster-wide `atelier-api-server`,
+    // voir `crate::session_auth`) le lit. Remplace un eventuel `Authorization`
+    // du client (son JWT `Bearer`, deja verifie par `require_auth` pour
+    // atteindre ce handler) : ce n'est de toute facon pas ce que le guest
+    // attend. Si le secret est absent/OpenBao non configure, on relaie tel
+    // quel (comportement degrade, pas d'erreur bloquante).
+    if let Some(session_auth) = &state.session_auth {
+        if let Some(password) = session_auth.session_password(&name).await {
+            let credentials =
+                base64::engine::general_purpose::STANDARD.encode(format!("atelier:{password}"));
+            match http::HeaderValue::from_str(&format!("Basic {credentials}")) {
+                Ok(value) => {
+                    parts.headers.insert(http::header::AUTHORIZATION, value);
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "en-tete Authorization Basic invalide, requete relayee sans injection");
+                }
+            }
+        }
     }
     let outbound = Request::from_parts(parts, body);
 

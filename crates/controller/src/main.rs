@@ -43,5 +43,30 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Provisioning cluster-wide, une seule fois au demarrage (pas par
+    // reconciliation) : le role OpenBao dedie a `api-server`, qui n'est pas
+    // scope a un seul Workshop (voir doc de
+    // `atelier_controller::openbao::ensure_api_server_role`). Meme
+    // convention que le reste des fonctionnalites optionnelles : silencieux
+    // si `OPENBAO_ADDR` est absent.
+    if let Some(openbao_config) = atelier_controller::openbao::config_from_env()? {
+        let api_server_namespace = std::env::var("ATELIER_API_SERVER_NAMESPACE")
+            .unwrap_or_else(|_| "atelier-system".to_string());
+        let api_server_service_account = std::env::var("ATELIER_API_SERVER_SERVICE_ACCOUNT")
+            .unwrap_or_else(|_| "atelier-api-server".to_string());
+        atelier_controller::openbao::ensure_api_server_role(
+            &openbao_config,
+            &api_server_namespace,
+            &api_server_service_account,
+        )
+        .await
+        .context("provisioning du role OpenBao cluster-wide pour api-server")?;
+        tracing::info!(
+            namespace = %api_server_namespace,
+            service_account = %api_server_service_account,
+            "role OpenBao cluster-wide 'atelier-api-server' provisionne"
+        );
+    }
+
     atelier_controller::reconcile::run().await
 }

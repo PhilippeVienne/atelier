@@ -157,14 +157,14 @@ graph TD
     base64 = "0.22"
     ```
 * **Fichier impacté** : [`crates/api-server/src/auth.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/src/auth.rs)
-  - [-/claude-code/sess-6f3eef77-a] **1.2.2** : Nettoyer la documentation pour universaliser le composant au-delà de Kanidm (standard OIDC RFC 7517 / RFC 7636).
-  - [-/claude-code/sess-6f3eef77-a] **1.2.3** : Implémenter le cache JWKS dynamique (background refresh toutes les 10 min et refetch immédiat à la volée sur `kid` inconnu).
-  - [-/claude-code/sess-6f3eef77-a] **1.2.4** : Dans la struct `Claims`, extraire et injecter `sub`, `preferred_username`, `email`, `groups`.
-  - [-/claude-code/sess-6f3eef77-a] **1.2.5** : Dans le middleware d'authentification `auth_middleware`, insérer l'instance `Claims` dans les extensions de la requête Axum.
+  - [x] **1.2.2** : Nettoyer la documentation pour universaliser le composant au-delà de Kanidm (standard OIDC RFC 7517 / RFC 7636).
+  - [x] **1.2.3** : Implémenter le cache JWKS dynamique (background refresh toutes les 10 min et refetch immédiat à la volée sur `kid` inconnu).
+  - [x] **1.2.4** : Dans la struct `Claims`, extraire et injecter `sub`, `preferred_username`, `email`, `groups`.
+  - [x] **1.2.5** : Dans le middleware d'authentification `auth_middleware`, insérer l'instance `Claims` dans les extensions de la requête Axum.
 * **Fichier impacté** : [`crates/api-server/src/routes.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/src/routes.rs) & `proxy_to_guest_port`
-  - [-/claude-code/sess-6f3eef77-a] **1.2.6** : Sécuriser les tunnels VS Code (`/vscode/*`) et Terminal (`/terminal/*`) :
+  - [x] **1.2.6** : Sécuriser les tunnels VS Code (`/vscode/*`) et Terminal (`/terminal/*`) :
     - Récupérer le secret de session depuis OpenBao (`secret/data/workshops/<name>/session_auth`).
-    - Injecter automatiquement l'en-tête `Authorization: Basic <base64(atelier:password)>` lors du relai HTTP et du handshake WebSocket vers `vm-supervisor` / microVM.
+    - Injecter automatiquement l'en-tête `Authorization: Basic <base64(atelier:password)>` lors du relai HTTP et du handshake WebSocket vers `vm-supervisor` / microVM. *(Rôle OpenBao cluster-wide dédié `atelier-api-server`, provisionné une seule fois au démarrage du controller — `crates/controller/src/openbao.rs::ensure_api_server_role` — policy read-only sur `secret/{data,metadata}/workshops/+/session_auth`. Terminée par claude-code après interruption d'une session précédente : import manquant `use base64::Engine;` corrigé, suite de tests entièrement revérifiée.)*
   - [x] **1.2.7** : Ajouter les endpoints de santé Kubernetes :
     - `GET /health/liveness` : Répond 200 si le serveur web tourne.
     - `GET /health/readiness` : Vérifie la connectivité active PostgreSQL (`SELECT 1`) et OpenBao avant de répondre 200. *(OpenBao seulement si `OPENBAO_ADDR` est configuré, même convention que le reste des fonctionnalités optionnelles.)*

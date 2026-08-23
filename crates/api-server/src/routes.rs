@@ -25,12 +25,16 @@ pub struct AppState {
     pub client: Client,
     pub namespace: String,
     pub db_pool: sqlx::PgPool,
-    /// Adresse d'OpenBao (`OPENBAO_ADDR`), utilisee uniquement pour la sonde
-    /// de disponibilite `/health/readiness` pour l'instant (voir
-    /// `health_readiness`) — pas encore de lecture de secrets cote
-    /// api-server (tache 1.2.6, en attente d'une decision d'architecture
-    /// sur le modele d'acces OpenBao d'un composant cluster-wide).
+    /// Adresse d'OpenBao (`OPENBAO_ADDR`), utilisee pour la sonde de
+    /// disponibilite `/health/readiness` (voir `health_readiness`).
     pub openbao_addr: Option<String>,
+    /// Client de lecture du secret `session_auth` d'un Workshop (mot de
+    /// passe Basic Auth injecte dans les tunnels VS Code/Terminal, voir
+    /// `crate::session_auth` et `crate::vscode::proxy_to_guest_port`).
+    /// `None` si `OPENBAO_ADDR` est absent : les tunnels relaient alors sans
+    /// injecter de Basic Auth (fonctionnalite optionnelle si non
+    /// configuree, meme convention que le reste du projet).
+    pub session_auth: Option<crate::session_auth::SessionAuthClient>,
 }
 
 pub fn router(state: AppState, auth: AuthState) -> Router {

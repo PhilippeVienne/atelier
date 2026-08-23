@@ -27,6 +27,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("execution des migrations PostgreSQL")?;
     let openbao_addr = std::env::var("OPENBAO_ADDR").ok();
+    let session_auth = openbao_addr
+        .clone()
+        .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
 
     let app = routes::router(
         AppState {
@@ -34,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
             namespace,
             db_pool,
             openbao_addr,
+            session_auth,
         },
         auth,
     );

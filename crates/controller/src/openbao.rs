@@ -102,6 +102,69 @@ pub async fn ensure_workshop_role(
     Ok(role_name)
 }
 
+/// Role OpenBao cluster-wide (pas scope a un seul Workshop) utilise par
+/// `api-server` pour lire le secret `session_auth` de N'IMPORTE QUEL
+/// Workshop (voir `crates/common/src/openbao_client.rs::OpenBaoClient::
+/// from_env_with_role`) — `api-server` est une seule instance partagee par
+/// tous les Workshops (pas un pod par Workshop), il ne peut donc pas
+/// s'authentifier avec le role `workshop-<name>` d'un Workshop precis comme
+/// le font `identity-proxy`/`mcp-gateway`/`net-proxy`, qui tournent chacun
+/// DANS le pod du Workshop concerne.
+pub const API_SERVER_ROLE: &str = "atelier-api-server";
+
+/// Cree (ou met a jour, idempotent) la policy et le role Kubernetes-auth
+/// cluster-wide utilise par `api-server` (voir [`API_SERVER_ROLE`]) :
+/// bound au ServiceAccount du Deployment `api-server` (pas a celui d'un
+/// Workshop), avec une policy `read` seule (jamais d'ecriture) sur
+/// `secret/data|metadata/workshops/+/session_auth` — le `+` est un
+/// wildcard OpenBao/Vault KV v2 pour un seul segment de chemin : couvre
+/// `session_auth` de n'importe quel Workshop, mais rien d'autre
+/// (`secret/workshops/<name>/git`, `secret/workshops/<name>/<injection
+/// rule>` restent hors de portee, reserves aux composants qui tournent
+/// dans le pod du Workshop concerne).
+///
+/// A appeler une seule fois au demarrage du controller (`main.rs`), pas a
+/// chaque reconciliation : ce role ne depend d'aucun Workshop particulier.
+pub async fn ensure_api_server_role(
+    config: &OpenBaoConfig,
+    api_server_namespace: &str,
+    api_server_service_account: &str,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+
+    let policy_hcl = "path \"secret/data/workshops/+/session_auth\" { capabilities = [\"read\"] }\npath \"secret/metadata/workshops/+/session_auth\" { capabilities = [\"read\"] }".to_string();
+
+    client
+        .put(format!("{}/v1/sys/policy/{API_SERVER_ROLE}", config.addr))
+        .header("X-Vault-Token", &config.token)
+        .json(&serde_json::json!({ "policy": policy_hcl }))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("ecriture de la policy OpenBao (api-server): {e}"))?;
+
+    client
+        .put(format!(
+            "{}/v1/auth/kubernetes/role/{API_SERVER_ROLE}",
+            config.addr
+        ))
+        .header("X-Vault-Token", &config.token)
+        .json(&serde_json::json!({
+            "bound_service_account_names": [api_server_service_account],
+            "bound_service_account_namespaces": [api_server_namespace],
+            "policies": [API_SERVER_ROLE],
+            "ttl": "15m",
+        }))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| {
+            anyhow::anyhow!("ecriture du role kubernetes-auth OpenBao (api-server): {e}")
+        })?;
+
+    Ok(())
+}
+
 /// Supprime le role kubernetes-auth et la policy d'un Workshop. Idempotent :
 /// un 404 (deja absent) n'est pas une erreur ; toute autre erreur est
 /// remontee pour que le finalizer retente plutot que de laisser un role

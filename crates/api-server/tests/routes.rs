@@ -16,6 +16,7 @@ use atelier_api_server::routes::{self, AppState};
 use atelier_common::Workshop;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use jsonwebtoken::jwk::{Jwk, JwkSet};
@@ -131,6 +132,7 @@ async fn health_endpoints_respond_without_auth() {
             namespace: "default".to_string(),
             db_pool: test_db_pool().await,
             openbao_addr: None,
+            session_auth: None,
         },
         auth,
     );
@@ -174,11 +176,11 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
     let mut jwk =
         Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
-    let auth = AuthState::Configured {
-        issuer: ISSUER.to_string(),
-        audience: AUDIENCE.to_string(),
-        jwks: JwkSet { keys: vec![jwk] },
-    };
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
@@ -189,6 +191,7 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
             namespace,
             db_pool: test_db_pool().await,
             openbao_addr: None,
+            session_auth: None,
         },
         auth,
     );
@@ -417,11 +420,11 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
     let mut jwk =
         Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
-    let auth = AuthState::Configured {
-        issuer: ISSUER.to_string(),
-        audience: AUDIENCE.to_string(),
-        jwks: JwkSet { keys: vec![jwk] },
-    };
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
     let owner_token = sign_jwt(&key, "portforward-owner@test.atelier");
 
     let namespace = "default".to_string();
@@ -516,6 +519,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             namespace: namespace.clone(),
             db_pool: test_db_pool().await,
             openbao_addr: None,
+            session_auth: None,
         },
         auth,
     );
@@ -664,11 +668,11 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
     let mut jwk =
         Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
-    let auth = AuthState::Configured {
-        issuer: ISSUER.to_string(),
-        audience: AUDIENCE.to_string(),
-        jwks: JwkSet { keys: vec![jwk] },
-    };
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
     let owner_token = sign_jwt(&key, "vscode-owner@test.atelier");
 
     let namespace = "default".to_string();
@@ -760,6 +764,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             namespace: namespace.clone(),
             db_pool: test_db_pool().await,
             openbao_addr: None,
+            session_auth: None,
         },
         auth,
     );
@@ -846,11 +851,11 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
     let mut jwk =
         Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
     jwk.common.key_id = Some(key.kid.clone());
-    let auth = AuthState::Configured {
-        issuer: ISSUER.to_string(),
-        audience: AUDIENCE.to_string(),
-        jwks: JwkSet { keys: vec![jwk] },
-    };
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
     let owner_token = sign_jwt(&key, "vscode-ws-owner@test.atelier");
 
     let namespace = "default".to_string();
@@ -935,6 +940,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             namespace: namespace.clone(),
             db_pool: test_db_pool().await,
             openbao_addr: None,
+            session_auth: None,
         },
         auth,
     );
@@ -1077,4 +1083,352 @@ async fn spawn_stub_http_server(
         let _ = socket.write_all(response.as_bytes()).await;
     });
     (port, observed)
+}
+
+/// Variante de [`spawn_stub_http_server`] qui capture l'en-tete
+/// `Authorization` recu (au lieu de la ligne de requete) — utilisee pour
+/// verifier que `crate::session_auth`/`proxy_to_guest_port` injecte bien le
+/// Basic Auth de session attendu (tache 1.2.6).
+async fn spawn_stub_http_server_capturing_authorization(
+    response_body: &'static str,
+) -> (u16, std::sync::Arc<tokio::sync::Mutex<Option<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let observed = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let observed_clone = observed.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut reader = BufReader::new(socket);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {
+            return;
+        }
+        let mut authorization = None;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) if line == "\r\n" => break,
+                Ok(_) => {
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("authorization") {
+                            authorization = Some(value.trim().to_string());
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        *observed_clone.lock().await = authorization;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        let mut socket = reader.into_inner();
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+    (port, observed)
+}
+
+/// Tache 1.2.6 (docs/specs/PLAN-ACTION-GLOBAL.md), en conditions reelles :
+/// verifie que le pont VS Code (`crate::vscode::proxy_to_guest_port`, aussi
+/// emprunte par le terminal) injecte bien l'en-tete `Authorization: Basic
+/// base64(atelier:<password>)` attendu par `code-server`/`ttyd` (voir
+/// `crates/net-proxy/src/metadata.rs`), a partir du VRAI secret
+/// `session_auth` d'un Workshop, lu via le role OpenBao cluster-wide
+/// `atelier-api-server` (`crate::session_auth::SessionAuthClient`) — pas une
+/// simulation du client OpenBao.
+///
+/// Reutilise le role/ServiceAccount `atelier-api-server` dans le namespace
+/// `atelier-system`, memes valeurs par defaut que
+/// `atelier_controller::openbao::ensure_api_server_role` appelee par
+/// `controller` au demarrage (voir `crates/controller/src/main.rs`) : les
+/// (re)provisionner ici avec les memes valeurs est idempotent et sans danger
+/// pour le role reel du cluster de dev partage.
+///
+/// Necessite en plus OPENBAO_ADDR/OPENBAO_TOKEN et `kubectl` (pour obtenir
+/// un vrai token du ServiceAccount `atelier-api-server`, comme Kubernetes le
+/// projetterait dans le pod du Deployment `api-server` en conditions
+/// reelles) : silencieusement ignore sans ces variables.
+#[tokio::test]
+async fn vscode_proxy_injects_real_session_auth_basic_header() {
+    let Some(client) = try_client().await else {
+        eprintln!("pas de kubeconfig accessible, test ignore");
+        return;
+    };
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+    let net_proxy_bin = std::env::var("ATELIER_TEST_NET_PROXY_BIN")
+        .unwrap_or_else(|_| "../../target/debug/atelier-net-proxy".to_string());
+    if !std::path::Path::new(&net_proxy_bin).exists() {
+        eprintln!("binaire net-proxy introuvable ({net_proxy_bin}), test ignore (cargo build -p atelier-net-proxy)");
+        return;
+    }
+
+    let _env_guard = env_lock().lock().await;
+
+    // Meme convention que `crates/controller/src/main.rs` (defauts de
+    // `ATELIER_API_SERVER_NAMESPACE`/`ATELIER_API_SERVER_SERVICE_ACCOUNT`) :
+    // reutilise le role reel `atelier-api-server`, en le (re)provisionnant
+    // avec les memes valeurs (idempotent) plutot qu'un role de test isole,
+    // pour exercer exactement le chemin que suivra le vrai Deployment
+    // `api-server`.
+    let ns = "atelier-system";
+    let sa_name = "atelier-api-server";
+    let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(client.clone());
+    let _ = namespaces
+        .create(
+            &Default::default(),
+            &k8s_openapi::api::core::v1::Namespace {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(ns.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await;
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let _ = service_accounts
+        .create(
+            &Default::default(),
+            &k8s_openapi::api::core::v1::ServiceAccount {
+                metadata: kube::api::ObjectMeta {
+                    name: Some(sa_name.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let http = reqwest::Client::new();
+    http.put(format!("{openbao_addr}/v1/sys/policy/atelier-api-server"))
+        .header("X-Vault-Token", &openbao_token)
+        .json(&serde_json::json!({
+            "policy": "path \"secret/data/workshops/+/session_auth\" { capabilities = [\"read\"] }\npath \"secret/metadata/workshops/+/session_auth\" { capabilities = [\"read\"] }"
+        }))
+        .send()
+        .await
+        .expect("ecriture de la policy atelier-api-server")
+        .error_for_status()
+        .expect("ecriture de la policy atelier-api-server refusee");
+    http.put(format!(
+        "{openbao_addr}/v1/auth/kubernetes/role/atelier-api-server"
+    ))
+    .header("X-Vault-Token", &openbao_token)
+    .json(&serde_json::json!({
+        "bound_service_account_names": [sa_name],
+        "bound_service_account_namespaces": [ns],
+        "policies": ["atelier-api-server"],
+        "ttl": "15m",
+    }))
+    .send()
+    .await
+    .expect("ecriture du role atelier-api-server")
+    .error_for_status()
+    .expect("ecriture du role atelier-api-server refusee");
+
+    let output = std::process::Command::new("kubectl")
+        .args(["create", "token", sa_name, "-n", ns])
+        .output()
+        .expect("kubectl doit etre disponible");
+    assert!(
+        output.status.success(),
+        "kubectl create token a echoue: {output:?}"
+    );
+    let sa_token_path = std::env::temp_dir().join(format!(
+        "atelier-api-server-sa-token-test-{}.txt",
+        std::process::id()
+    ));
+    tokio::fs::write(&sa_token_path, output.stdout)
+        .await
+        .expect("ecriture du fichier de token de test");
+
+    let (stub_port, observed_authorization) =
+        spawn_stub_http_server_capturing_authorization("bonjour depuis code-server").await;
+
+    let control_port = pick_free_port().await;
+    let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
+        .env("ATELIER_NET_PROXY_LISTEN_ADDR", "127.0.0.1:0")
+        .env(
+            "ATELIER_NET_PROXY_CONTROL_ADDR",
+            format!("127.0.0.1:{control_port}"),
+        )
+        .env("ATELIER_DNS_LISTEN_ADDR", "127.0.0.1:0")
+        .env("ATELIER_VM_ADDR", "127.0.0.1")
+        .env("ATELIER_EGRESS_ALLOWLIST", "*")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("lancement du binaire net-proxy");
+    wait_for_port(control_port).await;
+
+    let key = generate_test_key();
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    jwk.common.key_id = Some(key.kid.clone());
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
+    let owner_token = sign_jwt(&key, "vscode-session-auth-owner@test.atelier");
+
+    let namespace = "default".to_string();
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
+    let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), &namespace);
+    let name = format!("api-vscode-session-auth-test-{}", std::process::id());
+    let pod_name = format!("{name}-parent");
+
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+
+    let password = "s3cr3t-session-password-for-test";
+    http.put(format!(
+        "{openbao_addr}/v1/secret/data/workshops/{name}/session_auth"
+    ))
+    .header("X-Vault-Token", &openbao_token)
+    .json(&serde_json::json!({ "data": { "password": password } }))
+    .send()
+    .await
+    .expect("ecriture du secret session_auth de test")
+    .error_for_status()
+    .expect("ecriture du secret session_auth de test refusee");
+
+    let workshop = Workshop::new(
+        &name,
+        atelier_common::WorkshopSpec {
+            devcontainer: atelier_common::DevcontainerSource {
+                repo: "https://example.invalid/repo.git".to_string(),
+                revision: "HEAD".to_string(),
+                config_path: ".devcontainer/devcontainer.json".to_string(),
+            },
+            resources: atelier_common::WorkshopResources {
+                cpu: "1".into(),
+                memory: "512Mi".into(),
+                disk: None,
+                max_llm_budget_usd: None,
+            },
+            egress_allowlist: vec![],
+            tools: vec![],
+            identity_injection_rules: vec![],
+            owner_subject: "vscode-session-auth-owner@test.atelier".to_string(),
+            desired_state: atelier_common::WorkshopDesiredState::Running,
+        },
+    );
+    workshops
+        .create(&Default::default(), &workshop)
+        .await
+        .expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "status": { "phase": "Running", "podName": pod_name } })),
+        )
+        .await
+        .expect("ecriture de status.podName");
+
+    let pod = k8s_openapi::api::core::v1::Pod {
+        metadata: kube::api::ObjectMeta {
+            name: Some(pod_name.clone()),
+            namespace: Some(namespace.clone()),
+            ..Default::default()
+        },
+        spec: Some(k8s_openapi::api::core::v1::PodSpec {
+            node_name: Some("atelier-test-fake-node".into()),
+            containers: vec![k8s_openapi::api::core::v1::Container {
+                name: "placeholder".into(),
+                image: Some("registry.k8s.io/pause:3.9".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    pods.create(&Default::default(), &pod)
+        .await
+        .expect("creation du Pod");
+    pods.patch_status(
+        &pod_name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({ "status": { "podIP": "127.0.0.1" } })),
+    )
+    .await
+    .expect("ecriture de status.podIP");
+
+    // SAFETY (test) : proteges par `env_lock()` contre la concurrence avec
+    // les autres tests de ce binaire qui mutent des variables globales.
+    unsafe {
+        std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string());
+        std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
+        std::env::set_var("ATELIER_K8S_SA_TOKEN_PATH", &sa_token_path);
+    }
+
+    let session_auth =
+        atelier_api_server::session_auth::SessionAuthClient::from_env(openbao_addr.clone());
+
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace: namespace.clone(),
+            db_pool: test_db_pool().await,
+            openbao_addr: Some(openbao_addr.clone()),
+            session_auth: Some(session_auth),
+        },
+        auth,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let http_client = reqwest::Client::new();
+    let response = http_client
+        .get(format!(
+            "http://127.0.0.1:{api_port}/v1/workshops/{name}/vscode/static/foo.js"
+        ))
+        .header("Authorization", format!("Bearer {owner_token}"))
+        .send()
+        .await
+        .expect("requete vers le pont vscode");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let expected_credentials =
+        base64::engine::general_purpose::STANDARD.encode(format!("atelier:{password}"));
+    assert_eq!(
+        observed_authorization.lock().await.as_deref(),
+        Some(format!("Basic {expected_credentials}").as_str()),
+        "le guest doit recevoir le Basic Auth derive du vrai secret session_auth"
+    );
+
+    server.abort();
+    net_proxy.start_kill().ok();
+    unsafe {
+        std::env::remove_var("ATELIER_K8S_SA_TOKEN_PATH");
+    }
+    let _ = tokio::fs::remove_file(&sa_token_path).await;
+    let _ = pods.delete(&pod_name, &DeleteParams::default()).await;
+    let _ = workshops
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })),
+        )
+        .await;
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
 }
