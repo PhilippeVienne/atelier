@@ -4,6 +4,14 @@ Merci de contribuer au projet **Atelier** ! Atelier est une plateforme cloud-nat
 
 ---
 
+## 📜 Contributor License Agreement (CLA)
+
+En contribuant au projet **Atelier**, vous acceptez les termes du [**Contributor License Agreement (CLA)**](CLA.md). 
+
+Le CLA me confère (en tant que mainteneur du projet) le droit non exclusif de sous-licencier, re-licencier ou proposer le projet sous double-licence (open source ou commerciale) à l'avenir tout en conservant le code ouvert sous AGPLv3.
+
+---
+
 ## 🛠️ Environnement de Développement
 
 ### Prérequis

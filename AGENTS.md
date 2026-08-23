@@ -18,6 +18,9 @@ Ce document régit les règles de développement et de collaboration applicables
    - Plusieurs agents peuvent travailler simultanément sur le dépôt.
    - Inspectez systématiquement `git status` et `git diff` avant toute modification ou commit pour ne pas écraser les contributions d'un autre agent.
 
+4. **Acceptation du CLA** :
+   - Toute contribution produite par ou avec l'assistance d'un agent IA et soumise au dépôt est régie par les termes du [Contributor License Agreement (`CLA.md`)](CLA.md), accordant au mainteneur le droit de re-licencier ou double-licencier le projet.
+
 ---
 
 ## 🛠️ Règles Spécifiques Claude Code & Agents IA
