@@ -33,7 +33,11 @@ function WorkshopRow({ workshop }: { workshop: Workshop }) {
 
   return (
     <tr className="border-b border-neutral-200 last:border-0">
-      <td className="py-3 pr-4 font-medium">{name}</td>
+      <td className="py-3 pr-4 font-medium">
+        <Link href={`/workshops/${encodeURIComponent(name)}`} className="hover:underline">
+          {name}
+        </Link>
+      </td>
       <td className="py-3 pr-4">
         <PhaseBadge phase={phase} />
       </td>
@@ -74,6 +78,12 @@ export default async function DashboardPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Workshops</h1>
         <div className="flex gap-3">
+          <Link
+            href="/workshops/new?preset=ministack"
+            className="rounded-full border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 transition-colors"
+          >
+            Demo ministack
+          </Link>
           <Link
             href="/workshops/new"
             className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity"

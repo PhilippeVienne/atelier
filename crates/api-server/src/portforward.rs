@@ -14,13 +14,11 @@
 //! qui reste le seul point d'entree autorise pour un client final.
 
 use crate::auth::AuthenticatedUser;
-use crate::routes::{ensure_owner, workshops_api, ApiError, AppState};
+use crate::routes::{ensure_owner, resolve_running_pod_ip, workshops_api, ApiError, AppState};
 use axum::extract::ws::{CloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Path, Query, State};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
-use k8s_openapi::api::core::v1::Pod;
-use kube::api::Api;
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite::Message as TsMessage;
 
@@ -30,7 +28,7 @@ const DEFAULT_NET_PROXY_CONTROL_PORT: u16 = 9000;
 /// net-proxy, cf. `crates/net-proxy/src/main.rs`) — configurable
 /// (`ATELIER_NET_PROXY_CONTROL_PORT`) pour les tests, fixe en production
 /// (meme pod, meme port a chaque Workshop).
-fn net_proxy_control_port() -> u16 {
+pub(crate) fn net_proxy_control_port() -> u16 {
     std::env::var("ATELIER_NET_PROXY_CONTROL_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -53,19 +51,7 @@ pub async fn portforward(
 ) -> Result<Response, ApiError> {
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
-
-    let pod_name = workshop
-        .status
-        .as_ref()
-        .and_then(|s| s.pod_name.clone())
-        .ok_or_else(|| ApiError::bad_request("le Workshop n'a pas de pod parent actif (suspendu ?)"))?;
-    let pods: Api<Pod> = Api::namespaced(state.client.clone(), &state.namespace);
-    let pod = pods.get(&pod_name).await?;
-    let pod_ip = pod
-        .status
-        .as_ref()
-        .and_then(|s| s.pod_ip.clone())
-        .ok_or_else(|| ApiError::bad_request("le pod parent n'a pas encore d'adresse IP"))?;
+    let pod_ip = resolve_running_pod_ip(&state, &workshop).await?;
 
     let target_url = format!(
         "ws://{pod_ip}:{}/portforward?ports={}",

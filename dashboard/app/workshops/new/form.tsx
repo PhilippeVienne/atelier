@@ -32,7 +32,11 @@ function Field({
   );
 }
 
-export function NewWorkshopForm() {
+export function NewWorkshopForm({
+  defaults,
+}: {
+  defaults?: { repo: string; revision: string; configPath: string };
+}) {
   const [state, action, pending] = useActionState(createWorkshopAction, initialState);
 
   return (
@@ -42,14 +46,20 @@ export function NewWorkshopForm() {
         label="Depot devcontainer"
         name="repo"
         placeholder="https://github.com/org/repo"
+        defaultValue={defaults?.repo}
         required
       />
-      <Field label="Revision" name="revision" placeholder="HEAD" defaultValue="HEAD" />
+      <Field
+        label="Revision"
+        name="revision"
+        placeholder="HEAD"
+        defaultValue={defaults?.revision ?? "HEAD"}
+      />
       <Field
         label="Chemin devcontainer.json"
         name="configPath"
         placeholder=".devcontainer/devcontainer.json"
-        defaultValue=".devcontainer/devcontainer.json"
+        defaultValue={defaults?.configPath ?? ".devcontainer/devcontainer.json"}
       />
       <div className="grid grid-cols-2 gap-4">
         <Field label="CPU" name="cpu" placeholder="1" defaultValue="1" />

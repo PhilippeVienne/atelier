@@ -187,6 +187,16 @@ fn run_envbuilder(params: &HashMap<String, String>) -> Result<()> {
     if let Some(devcontainer_dir) = devcontainer_dir.filter(|d| !d.is_empty()) {
         cmd.env("ENVBUILDER_DEVCONTAINER_DIR", devcontainer_dir);
     }
+    // Identifiants git optionnels (depot prive), lus par `image-builder`
+    // depuis OpenBao et transmis via les boot_args du kernel — voir le
+    // commentaire de `build_via_microvm` cote `crates/image-builder` pour la
+    // limite assumee (visibles en clair dans les logs debug de la console).
+    if let Some(username) = params.get("git_username") {
+        cmd.env("ENVBUILDER_GIT_USERNAME", username);
+    }
+    if let Some(password) = params.get("git_password") {
+        cmd.env("ENVBUILDER_GIT_PASSWORD", password);
+    }
 
     step("lancement de /.envbuilder/bin/envbuilder");
     let status = cmd.status().context("lancement du binaire envbuilder")?;

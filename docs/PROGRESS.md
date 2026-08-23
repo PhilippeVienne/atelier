@@ -29,13 +29,13 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
-| `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) |
+| `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) ; pont HTTP+WebSocket vers `code-server` (`/v1/workshops/{name}/vscode/*`, voir section dediee "UI dashboard") |
 | `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation le mois dernier (`crates/net-proxy/Dockerfile`), deploye a la fois comme sidecar du Job `image-builder` et desormais comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (3/3 conteneurs `Running`, alias `identity-proxy` actif, chainage obligatoire confirme) |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock, 3 tools) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao), `request_egress` (elargissement a chaud de l'allowlist `net-proxy`) et `enable_simulator` (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous |
-| `dashboard` | Fonctionnel (CRUD de base) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
+| `dashboard` | Fonctionnel (CRUD + page de gestion + "ouvrir VS Code") | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Page de detail par Workshop + bouton "Ouvrir VS Code" (nouvel onglet, `code-server` via le pont HTTP+WS de `api-server`, voir section dediee) ; serveur Next custom (`server.ts`) pour le WebSocket propre de `code-server`. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub | Publie | Depot prive cree et pousse via `gh` |
 
@@ -879,6 +879,77 @@ ce soit tout seul ? Verifie reellement cette session avec
   Workshops de test utilisaient des depots publics) pour valider la meme
   chose a travers le pipeline complet, pas seulement en isolation.
 
+## UI dashboard : gestion + "ouvrir VS Code"
+
+Premiere page de detail par Workshop et pont HTTP+WebSocket pour ouvrir
+`code-server` (port 8080 dans la microVM agent) directement depuis le
+navigateur, au-dessus du protocole `portforward` existant (raw TCP/UDP
+multiplexe, pas HTTP-aware).
+
+- **`crates/api-server/src/vscode.rs`** (nouveau) : ouvre un flux d'octets
+  vers `code-server` via le protocole `portforward` (websocket vers
+  `net-proxy`, canal 0 = donnees) — pont via `tokio::io::duplex` + une tache
+  de fond, pas de `Sink`/`Stream` a la main. `hyper::client::conn::http1`
+  par-dessus (`hyper_util::rt::TokioIo`), `.with_upgrades()`. Requetes
+  normales : relayees avec le prefixe `/v1/workshops/{name}/vscode` retire
+  (`code-server` supporte nativement d'etre servi sous un sous-chemin
+  arbitraire, documente officiellement par `coder/code-server` — URLs
+  relatives, prefixe strippe avant de l'atteindre). Upgrade WebSocket (canal
+  "live" propre de `code-server`) : `hyper::upgrade::on` capture cote
+  requete entrante *avant* de la consommer, meme mecanisme cote reponse
+  amont si `101`, puis `tokio::io::copy_bidirectional` — relai brut, sans
+  reinterpreter les frames (meme philosophie que `net-proxy::proxy::tunnel`
+  pour `CONNECT`). Helper partage `resolve_running_pod_ip` extrait dans
+  `routes.rs` (`portforward.rs` refactore pour le reutiliser).
+- **Verifie reellement, sans mock** (`crates/api-server/tests/routes.rs`,
+  vrai `net-proxy`, vrai Workshop/Pod sur kind) : un test relaie un `GET`
+  HTTP a travers tout le pont jusqu'a un vrai petit serveur de test,
+  verifie que le prefixe est bien retire ; un second test verifie le
+  chemin d'upgrade de bout en bout (client TCP brut envoyant une requete
+  `Upgrade: websocket`, reponse `101` reelle, octets echoes a travers tout
+  le tunnel) — les deux stables sur plusieurs execution repetees,
+  y compris en parallele l'un de l'autre (verrou de test partage sur les
+  variables d'environnement globales que les deux mutent).
+- **Dashboard** : nouvelle page `app/workshops/[name]/page.tsx` (statut,
+  suspendre/reprendre/supprimer, lien "Ouvrir VS Code" en nouvel onglet si
+  `phase === "Running"`), Route Handler catch-all
+  `app/workshops/[name]/vscode/[[...path]]/route.ts` (reverse-proxy
+  same-origin fin, ajoute `Authorization: Bearer` cote serveur a partir du
+  cookie de session existant — le navigateur ne voit jamais le token) pour
+  tous les assets HTTP normaux de `code-server`. Preset "Demo ministack"
+  sur `workshops/new` (pre-remplit le formulaire existant avec le depot de
+  ce projet + le chemin du devcontainer de demo).
+- **`dashboard/server.ts`** (nouveau, serveur Next custom — necessaire
+  seulement pour le WebSocket "live" de `code-server`, qu'un Route Handler
+  standard ne peut pas hijacker) : intercepte l'evenement Node `'upgrade'`,
+  lit le cookie de session directement dans les en-tetes (aucune API Next
+  disponible hors contexte de requete), ouvre une connexion sortante avec
+  `ws` vers `api-server` (`Authorization: Bearer` ajoute cote serveur),
+  relie les deux cotes. `package.json` : `dev`/`start` utilisent desormais
+  `tsx server.ts` au lieu de `next dev`/`next start`.
+- **Bug reel trouve en testant manuellement (pas par les tests
+  automatises)** : la premiere version appelait `wss.handleUpgrade`
+  (qui envoie inconditionnellement un `101` au navigateur) **avant** de
+  savoir si la connexion amont vers `api-server` reussissait — un
+  navigateur pouvait donc recevoir un `101` "reussi" alors que le canal
+  restait mort en silence juste apres. Corrige : la connexion amont est
+  ouverte et son evenement `open` attendu *avant* d'appeler
+  `wss.handleUpgrade` ; un client WebSocket standard n'envoie de toute
+  facon aucune trame avant d'avoir recu son propre `101`, rien n'est perdu
+  a attendre. Egalement corrige au passage : `socket.destroy()`
+  immediatement apres `socket.write()` peut tronquer l'ecriture avant
+  qu'elle ne parte reellement (constate en pratique : le client ne
+  recevait rien du tout sur le chemin d'erreur) — `socket.end(data)` a la
+  place (ecrit puis ferme proprement une fois le buffer vide).
+- **Limite assumee** : verifie manuellement contre un Workshop de test
+  (Pod avec `podIP` controle a la main, meme technique que les tests
+  automatises) et un service de remplacement pour `code-server` — pas
+  encore contre un vrai `code-server` reel ni un vrai `Workshop` complet
+  (bloque sur le meme point que `demo/ministack-workshop` : auth git sur
+  un depot prive, cf. section dediee plus haut). Port `code-server` fixe a
+  8080 par convention (`ATELIER_VSCODE_PORT` overridable, surtout utile
+  pour les tests), pas encore un champ du CRD `Workshop`.
+
 ## Lecons retenues (a ne pas re-decouvrir)
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
@@ -1235,15 +1306,14 @@ ce soit tout seul ? Verifie reellement cette session avec
    explicitement differe).
 8. Stack d'observabilite complet : collector OTLP + backend de stockage +
    Grafana.
-9. Devcontainer de demo `ministack-workshop` : boot Firecracker reel
-   **verifie cette session** (voir section dediee ci-dessus,
-   `code-server`/`ministack` reellement joignables). Reste ouvert : creer
-   un vrai `Workshop` K8s pointant sur ce depot (bloque sur l'auth git a un
-   depot prive, jamais geree jusqu'ici), puis une UI dashboard dediee
-   (demarrage/gestion/connexion, bouton "ouvrir VS Code" via un pont
-   HTTP+WS a construire cote `api-server` au-dessus du protocole
-   `portforward` existant — decision d'architecture deja prise, a
-   planifier separement).
+9. ~~Devcontainer de demo `ministack-workshop`~~ : boot Firecracker reel
+   **verifie**, ~~UI dashboard dediee~~ **construite cette session** (voir
+   section dediee "UI dashboard" ci-dessus : page de gestion par Workshop,
+   pont HTTP+WS `api-server` -> `code-server`, preset de creation). Reste
+   ouvert : creer un vrai `Workshop` K8s pointant sur le depot
+   `ministack-workshop` (bloque sur l'auth git a un depot prive, mecanisme
+   cote `image-builder` en cours ailleurs, pas encore verifie de bout en
+   bout avec ce pont) pour la premiere validation reellement complete.
 10. LLM Proxy (Claude Code, ou tout autre agent, a besoin d'inference —
     routage vers OpenAI/Grok/Vertex/Bedrock, credentials injectes selon le
     meme modele qu'`identity-proxy`/`mcp-gateway`) : besoin identifie cette

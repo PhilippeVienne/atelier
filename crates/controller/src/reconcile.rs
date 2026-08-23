@@ -456,7 +456,7 @@ async fn ensure_image_build_job(
     storage::ensure_image_cache_pvc(&ctx.client, ns, "20Gi").await?;
 
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ns);
-    let job_name = format!("{name}-image-build");
+    let job_name = image_build_service_account(name);
 
     let owner_ref = workshop
         .controller_owner_ref(&())
@@ -472,6 +472,20 @@ async fn ensure_image_build_job(
     // Cette capacite n'est plus necessaire : `envbuilder` tourne desormais
     // dans la microVM builder, pas dans ce conteneur.
     ensure_image_build_rbac(ctx, ns, &job_name, name, &owner_ref).await?;
+
+    // Meme role/policy OpenBao que le pod parent (secret/workshops/<name>/*) :
+    // permet a image-builder de lire d'eventuels identifiants git prives
+    // (workshops/<name>/git) sans qu'aucun champ dedie n'existe dans le CRD
+    // — le secret est simplement absent pour un depot public, lu au besoin
+    // sinon (voir plus bas, resolve_git_credentials).
+    if let Some(openbao_config) = &ctx.openbao {
+        if let Err(err) =
+            openbao::ensure_workshop_role(openbao_config, name, ns, &[&job_name, &format!("{name}-parent")])
+                .await
+        {
+            tracing::error!(%err, "provisioning du role OpenBao (image-builder) echoue");
+        }
+    }
 
     let net_proxy_port: u16 = 3128;
     let registry_port = ctx
@@ -511,7 +525,10 @@ async fn ensure_image_build_job(
         // et `image_ref_for_guest` dans `crates/image-builder/src/main.rs`).
         env_var("ATELIER_BUILDER_REGISTRY_ALIAS", &format!("registry:{registry_port}")),
         env_var("ATELIER_BUILDER_NET_PROXY_PORT", &net_proxy_port.to_string()),
-    ];
+    ]
+    .into_iter()
+    .chain(ctx.openbao.as_ref().map(|c| env_var("OPENBAO_ADDR", &c.addr)))
+    .collect::<Vec<_>>();
 
     let cache_volume = Volume {
         name: "cache".to_string(),
@@ -694,8 +711,13 @@ async fn ensure_parent_pod(
         .await?;
 
     if let Some(openbao_config) = &ctx.openbao {
-        if let Err(err) =
-            openbao::ensure_workshop_role(openbao_config, name, ns, &sa_name).await
+        if let Err(err) = openbao::ensure_workshop_role(
+            openbao_config,
+            name,
+            ns,
+            &[&sa_name, &image_build_service_account(name)],
+        )
+        .await
         {
             tracing::error!(%err, "provisioning du role OpenBao echoue");
         }
@@ -962,6 +984,13 @@ fn carry_forward_status(
         kanidm_entity_id,
         conditions: BTreeMap::new(),
     }
+}
+
+/// Nom du ServiceAccount du Job `image-builder` d'un Workshop — memes regles
+/// de nommage que `job_name` (`ensure_image_build_job`), extrait ici pour
+/// que `ensure_parent_pod` puisse le referencer sans dupliquer le format.
+fn image_build_service_account(workshop_name: &str) -> String {
+    format!("{workshop_name}-image-build")
 }
 
 fn env_var(name: &str, value: &str) -> EnvVar {

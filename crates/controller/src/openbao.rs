@@ -49,12 +49,20 @@ pub fn secrets_metadata_path(workshop_name: &str) -> String {
 /// Cree (ou met a jour, idempotent) la policy et le role Kubernetes-auth
 /// scopant l'acces d'un Workshop a ses seuls secrets. Renvoie le nom du role
 /// (deterministe : `workshop-{name}`), a utiliser comme `role` lors du login
-/// depuis `identity-proxy`.
+/// (`identity-proxy`, `mcp-gateway`, et desormais `image-builder` pour lire
+/// d'eventuels identifiants git — voir `crates/image-builder/src/main.rs`).
+///
+/// Accepte plusieurs ServiceAccounts (pas un seul) : le pod parent et le Job
+/// `image-builder` d'un meme Workshop ont chacun le leur, mais partagent le
+/// meme role/policy OpenBao (memes secrets, `secret/workshops/<name>/*`) —
+/// un seul appel avec la liste complete, plutot que d'ecraser
+/// `bound_service_account_names` a chaque appel avec un seul nom (PUT
+/// remplace tout le champ, pas un ajout).
 pub async fn ensure_workshop_role(
     config: &OpenBaoConfig,
     workshop_name: &str,
     namespace: &str,
-    service_account: &str,
+    service_accounts: &[&str],
 ) -> anyhow::Result<String> {
     let client = reqwest::Client::new();
     let role_name = format!("workshop-{workshop_name}");
@@ -78,7 +86,7 @@ pub async fn ensure_workshop_role(
         .put(format!("{}/v1/auth/kubernetes/role/{role_name}", config.addr))
         .header("X-Vault-Token", &config.token)
         .json(&serde_json::json!({
-            "bound_service_account_names": [service_account],
+            "bound_service_account_names": service_accounts,
             "bound_service_account_namespaces": [namespace],
             "policies": [role_name],
             "ttl": "15m",

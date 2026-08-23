@@ -32,7 +32,7 @@
 //!    docs/ARCHITECTURE.md).
 
 use anyhow::{ensure, Context, Result};
-use atelier_common::{patch_workshop_status, DevcontainerSource};
+use atelier_common::{patch_workshop_status, DevcontainerSource, OpenBaoClient};
 use atelier_firecracker::network::setup_link_local_tap;
 use atelier_firecracker::vm::{Vm, VmConfig};
 use kube::Client;
@@ -72,8 +72,10 @@ async fn main() -> Result<()> {
     let work_dir = PathBuf::from("/var/tmp/atelier-image-builder-work");
     tokio::fs::create_dir_all(&work_dir).await?;
 
-    tracing::info!(repo = %source.repo, revision = %source.revision, %image_ref, "building devcontainer via envbuilder (microVM builder)");
-    build_via_microvm(&source, &image_ref, registry_insecure, &work_dir).await?;
+    let git_credentials = resolve_git_credentials(&workshop_name).await;
+
+    tracing::info!(repo = %source.repo, revision = %source.revision, %image_ref, git_auth = git_credentials.is_some(), "building devcontainer via envbuilder (microVM builder)");
+    build_via_microvm(&source, &image_ref, registry_insecure, &work_dir, git_credentials.as_ref()).await?;
 
     tracing::info!(%image_ref, "exporting image filesystem");
     let rootfs_dir = export_image_filesystem(&crane_bin, &image_ref, &work_dir, registry_insecure).await?;
@@ -106,6 +108,37 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Identifiants git optionnels pour un depot prive, lus au mieux depuis
+/// OpenBao (`workshops/<name>/git`, champs `username`/`password`) — aucun
+/// champ dedie dans le CRD `Workshop` : le secret est simplement absent pour
+/// un depot public (cas le plus courant jusqu'ici), l'utilisateur le
+/// provisionne lui-meme dans OpenBao s'il en a besoin, meme convention que
+/// `workshops/<name>/mcp` pour `mcp-gateway`. `password` seul (sans
+/// `username`) est accepte : convention GitHub/GitLab courante pour un token
+/// d'acces personnel, ou `x-access-token` sert de nom d'utilisateur
+/// generique.
+struct GitCredentials {
+    username: String,
+    password: String,
+}
+
+async fn resolve_git_credentials(workshop_name: &str) -> Option<GitCredentials> {
+    let addr = std::env::var("OPENBAO_ADDR").ok()?;
+    let client = OpenBaoClient::from_env(addr, workshop_name.to_string());
+    let token = client
+        .login()
+        .await
+        .inspect_err(|err| tracing::debug!(%err, "login OpenBao echoue (pas de secret git provisionne ?)"))
+        .ok()?;
+    let password = client.read_field(&token, "git", "password").await.ok()?;
+    let username = client
+        .read_field(&token, "git", "username")
+        .await
+        .unwrap_or_else(|_| "x-access-token".to_string());
+    tracing::info!("identifiants git lus depuis OpenBao (workshops/<name>/git)");
+    Some(GitCredentials { username, password })
+}
+
 /// Construit et pousse l'image devcontainer en demarrant la microVM
 /// "builder" (`crates/builder-vm-init`), qui execute `envbuilder` dans son
 /// propre noyau plutot que dans ce conteneur (voir commentaire de module).
@@ -113,11 +146,25 @@ async fn main() -> Result<()> {
 /// ensuite pour `crane export`) ; le guest recoit une reference construite a
 /// partir de l'IP hote du lien point-a-point si `image_ref` pointe sur
 /// `localhost`/loopback (voir [`image_ref_for_guest`]).
+///
+/// `git_credentials`, s'ils sont fournis, transitent par les `boot_args` du
+/// kernel (`atelier.git_username`/`atelier.git_password`, meme mecanisme que
+/// le reste des parametres de `builder-vm-init`) — **limite assumee** :
+/// Firecracker journalise les `boot_args` tels quels dans la console du
+/// guest au demarrage (`The API server received a Put request on
+/// "/boot-source" with body ...`), que `Vm::boot_with_network` draine vers
+/// `tracing::debug!` (jamais `info!`/`warn!`, donc invisible avec le niveau
+/// de log par defaut en production). Alternative ecartee pour cette
+/// iteration : faire lire le secret directement par `builder-vm-init` via un
+/// nouvel alias `net-proxy`/OpenBao depuis l'interieur du guest, plus sur
+/// mais plus complexe — a reconsiderer si ce niveau d'exposition (debug logs
+/// uniquement) s'avere insuffisant.
 async fn build_via_microvm(
     source: &DevcontainerSource,
     image_ref: &str,
     registry_insecure: bool,
     work_dir: &Path,
+    git_credentials: Option<&GitCredentials>,
 ) -> Result<()> {
     // `WorkshopSpec.devcontainer.config_path` est le chemin complet relatif
     // au depot (convention utilisateur, ex: ".devcontainer/devcontainer.json"),
@@ -195,6 +242,7 @@ async fn build_via_microvm(
         mem_mib,
         boot_timeout_secs,
         network: &network,
+        git_credentials,
     })
     .await;
 
@@ -275,6 +323,7 @@ struct RunBuilderVmArgs<'a> {
     vcpu_count: u8,
     mem_mib: usize,
     boot_timeout_secs: u64,
+    git_credentials: Option<&'a GitCredentials>,
     network: &'a atelier_firecracker::network::NetworkSetup,
 }
 
@@ -303,6 +352,14 @@ async fn run_builder_vm(args: RunBuilderVmArgs<'_>) -> Result<()> {
     );
     if let Some(devcontainer_dir) = args.devcontainer_dir {
         boot_args.push_str(&format!(" atelier.devcontainer_dir={devcontainer_dir}"));
+    }
+    if let Some(creds) = args.git_credentials {
+        // Voir le commentaire de `build_via_microvm` pour la limite assumee
+        // (visible en clair dans les logs debug de la console guest).
+        boot_args.push_str(&format!(
+            " atelier.git_username={} atelier.git_password={}",
+            creds.username, creds.password
+        ));
     }
 
     let config = VmConfig {
