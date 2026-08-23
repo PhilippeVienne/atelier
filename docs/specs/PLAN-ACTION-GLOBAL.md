@@ -53,8 +53,8 @@ Conformément à [`AGENTS.md`](file:///home/philippe/github.com/PhilippeVienne/a
 2. **Formatage & Linting Stricts** :
    - `cargo fmt --all -- --check` est 100% propre.
    - `cargo clippy --workspace --all-targets -- -D warnings` ne retourne aucun avertissement.
-3. **Vérification Empirique sans Mocks** :
-   - Tous les tests d'intégration s'exécutent contre de vrais conteneurs / clusters (PostgreSQL réel, OpenBao réel, LiteLLM réel, Redis réel, cluster Kind réel avec microVMs Firecracker).
+3. **Vérification Empirique sans Mocks (Infrastructure Dev Réelle)** :
+   - Tous les tests d'intégration s'exécutent contre de vrais conteneurs / pods locaux (PostgreSQL réel sous Kind port 5433, S3/MinIO réel, OpenBao réel, LiteLLM réel, Redis réel, cluster Kind réel avec microVMs Firecracker).
    - Zéro mock factice remplaçant les composants réseau ou de stockage.
 4. **Documentation Vivante** :
    - Mise à jour systématique de [`docs/PROGRESS.md`](file:///home/philippe/github.com/PhilippeVienne/atelier/docs/PROGRESS.md) avec preuves d'exécution.
@@ -129,6 +129,10 @@ graph TD
 
 ## 4. Jalon 1 (M1) : Socle PostgreSQL, Découplage OIDC Universel, Sécurité Basic Auth & Nettoyage CRD
 
+### 4.0. Infrastructure de Développement Locale (PostgreSQL Dev)
+* **Fichiers créés** : `deploy/dev/postgres/dev-pod.yaml`, `deploy/dev/postgres/README.md`
+  - [x] **1.0.1** : Déployer une instance PostgreSQL 16 (`pgvector/pgvector:pg16`) de dev dans le cluster Kind (même convention que `deploy/dev/openbao` : Pod + Service + port-forward 5433:5432). Prérequis bloquant pour toutes les tâches `sqlx` (1.2.7-1.2.9, 1.3.6, 1.3.7) garantissant des tests empiriques réels sans mock. *(Déployé et vérifié : `kubectl get pod atelier-postgres-dev` Running, bases `atelier_apiserver`/`atelier_controller` créées, port-forward 5433 joignable — voir docs/PROGRESS.md.)*
+
 ### 4.1. Crate `crates/common` (CRD & Types partagés)
 * **Fichier impacté** : [`crates/common/src/crd.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/common/src/crd.rs)
   - [x] **1.1.1** : Supprimer le champ `pub kanidm_entity_id: Option<String>` de la struct `WorkshopStatus`.
@@ -164,15 +168,15 @@ graph TD
 
 ### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx)
 * **Fichier impacté** : [`crates/controller/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/Cargo.toml)
-  - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`. *(Partiel : `kanidm_client` déjà retiré comme conséquence de 1.3.2/1.3.3 — reste l'ajout de `sqlx`, qui nécessite un PostgreSQL de dev, voir 1.2.7/1.3.6.)*
+  - [ ] **1.3.1** : Supprimer la dépendance `kanidm_client` et ajouter `sqlx`.
 * **Fichiers supprimés / modifiés** :
   - [x] **1.3.2** : Supprimer définitivement le fichier `crates/controller/src/kanidm.rs`.
   - [x] **1.3.3** : Dans [`crates/controller/src/lib.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/lib.rs), retirer `pub mod kanidm;`.
   - [x] **1.3.4** : Dans [`crates/controller/src/openbao.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/openbao.rs) :
-    - Implémenter `generate_session_auth(workshop_name)` : génère un mot de passe aléatoire de 32 caractères et l'écrit dans `secret/data/workshops/<name>/session_auth`. *(Implémenté sous le nom `ensure_session_auth`, get-or-create idempotent.)*
+    - Implémenter `ensure_session_auth(workshop_name)` : génère un mot de passe aléatoire de 32 caractères et l'écrit dans `secret/data/workshops/<name>/session_auth` de manière idempotente.
   - [x] **1.3.5** : Dans [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs) :
-    - Supprimer tout appel à `kanidm`. *(Fait — voir 1.3.2/1.3.3.)*
-    - Injecter le mot de passe de session dans la ligne de commande de lancement de la microVM (`code-server --auth password` et `ttyd --credential atelier:<password>`). *(Décision validée avec l'utilisateur : pas d'injection directe dans une ligne de commande — `net-proxy` sert le secret au guest via un endpoint metadata HTTP sur l'adresse link-local `169.254.0.1`, voir `crates/net-proxy/src/session_auth.rs` + `crates/net-proxy/src/metadata.rs`. Le controller ne fait que provisionner le secret OpenBao + les env `OPENBAO_ADDR`/`ATELIER_WORKSHOP_NAME` du conteneur `net-proxy`. Reste, hors de ce dépôt : côté devcontainer (repo `atelier-workspace`), faire consommer `GET http://169.254.0.1:3132/session-auth` par les services `ttyd`/`code-server` au démarrage — voir docs/PROGRESS.md.)*
+    - Supprimer tout appel à `kanidm`.
+    - Servir le secret au guest via `net-proxy` sur l'endpoint metadata link-local `http://169.254.0.1:3132/session-auth`.
   - [ ] **1.3.6** : Dans [`crates/controller/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/main.rs), exiger `DATABASE_URL` au boot pour initialiser le pool `sqlx`.
   - [ ] **1.3.7** : Créer le dossier `crates/controller/migrations/` avec `20260824000000_init_controller.sql` (`rootfs_cache_index` et `workshop_reconciliation_history`).
 
@@ -201,6 +205,10 @@ graph TD
 ---
 
 ## 5. Jalon 2 (M2) : Stockage S3 Hybride & Git 100% HTTPS
+
+### 5.0. Infrastructure de Développement Locale (S3 Dev / RustFS / MinIO)
+* **Fichiers créés** : `deploy/dev/s3/dev-pod.yaml`, `deploy/dev/s3/README.md`
+  - [ ] **2.0.1** : Déployer un serveur S3 local de dev dans le cluster Kind (ex: MinIO / RustFS) avec création des buckets `atelier-sessions` et `atelier-snapshots` pour valider les tests S3 réels sans mock.
 
 ### 5.1. Client S3 Rust dans `api-server` (`aws-sdk-s3` / `opendal`)
 * **Fichier impacté** : `crates/api-server/src/storage.rs` (Nouveau module)
@@ -291,6 +299,10 @@ graph TD
 ---
 
 ## 8. Jalon 5 (M5) : Moteur DevFactory & Project Manager Autonome (LangGraph)
+
+### 8.0. Infrastructure de Développement Locale (Redis Dev)
+* **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
+  - [ ] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
 - [ ] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX).

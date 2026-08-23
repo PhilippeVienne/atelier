@@ -1743,3 +1743,18 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
 - **Reste, hors de ce dépôt** : le devcontainer (repo séparé `PhilippeVienne/atelier-workspace`) doit faire consommer `GET http://169.254.0.1:3132/session-auth` par ses services `ttyd`/`code-server` au démarrage (`--credential atelier:<password>` / `--auth password`) — ce dépôt se limite à rendre le secret disponible, pas à le pousser dans ces services.
 - **Reste sur M1** : 1.2.6 (injection du header `Authorization: Basic` côté `api-server` pour `/vscode/*`/`/terminal/*`) nécessite de trancher comment `api-server` (composant cluster-wide, pas un pod par Workshop) obtient un accès OpenBao scopé en lecture à `secret/data/workshops/*/session_auth` — question à poser avant implémentation. 1.3.1/1.2.1/1.2.7-1.2.9/1.3.6/1.3.7 (sqlx/PostgreSQL) restent bloqués sur l'absence de PostgreSQL de dev.
 - **Statut** : ✅ Validé pour 1.3.4 et 1.3.5.
+
+### [2026-08-23 22:00] Jalon M1 - Tâche 1.0.1 : instance PostgreSQL de développement
+- **Composant impacté** : `deploy/dev/postgres/dev-pod.yaml` (nouveau), `deploy/dev/postgres/README.md` (nouveau).
+- **Contexte** : le Jalon M1 rend `DATABASE_URL` obligatoire pour `api-server`/`controller` (tâches 1.2.1, 1.2.7-1.2.9, 1.3.1, 1.3.6, 1.3.7), mais aucune tâche n'existait pour provisionner un PostgreSQL de dev — la seule instance prévue dans le plan est celle du Jalon M6 (Helm de production). Signalé par l'utilisateur, corrigé en ajoutant cette tâche 1.0.1.
+- **Modifications réalisées** : pod PostgreSQL 16 (image `pgvector/pgvector:pg16`, même image que prévue pour le Jalon M6 afin d'éviter un changement d'image plus tard) déployé dans le cluster kind, sans persistance (`emptyDir`, même convention que `deploy/dev/kanidm`/`deploy/dev/openbao`). Deux bases : `atelier_apiserver` (créée automatiquement via `POSTGRES_DB`) et `atelier_controller` (créée à la main, voir README).
+- **Preuve empirique / Test exécuté** :
+  ```
+  kubectl apply -f deploy/dev/postgres/dev-pod.yaml
+  kubectl wait --for=condition=Ready pod/atelier-postgres-dev --timeout=90s   # pod/atelier-postgres-dev condition met
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d postgres -c 'CREATE DATABASE atelier_controller;'   # CREATE DATABASE
+  kubectl port-forward svc/atelier-postgres-dev 5433:5432 &
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d atelier_apiserver -c '\l'   # liste bien atelier_apiserver + atelier_controller
+  bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/5433" && echo "port 5433 joignable"   # port 5433 joignable
+  ```
+- **Statut** : ✅ Validé. Débloque le démarrage des tâches `sqlx`/PostgreSQL de M1, non encore attaquées.
