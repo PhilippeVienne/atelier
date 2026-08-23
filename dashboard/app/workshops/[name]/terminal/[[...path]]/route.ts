@@ -3,7 +3,7 @@ import { guestProxy } from "@/lib/guest-proxy";
 
 async function proxy(req: Request, { params }: { params: Promise<{ name: string; path?: string[] }> }) {
   const { name, path } = await params;
-  return guestProxy(req, name, path, "vscode");
+  return guestProxy(req, name, path, "terminal");
 }
 
 export const GET = proxy;
