@@ -217,6 +217,16 @@ async fn build_via_microvm(
     let chroot_base_dir = env_path("ATELIER_BUILDER_VM_CHROOT_BASE_DIR", "/srv/builder-jailer");
     let net_proxy_port =
         std::env::var("ATELIER_BUILDER_NET_PROXY_PORT").unwrap_or_else(|_| "3128".to_string());
+    let net_proxy_transparent_http_port: u16 =
+        std::env::var("ATELIER_BUILDER_NET_PROXY_TRANSPARENT_HTTP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3180);
+    let net_proxy_transparent_tls_port: u16 =
+        std::env::var("ATELIER_BUILDER_NET_PROXY_TRANSPARENT_TLS_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3181);
     let vcpu_count: u8 = std::env::var("ATELIER_BUILDER_VM_VCPU_COUNT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -233,6 +243,23 @@ async fn build_via_microvm(
     let network = setup_link_local_tap(&tap_name, 1)
         .await
         .context("creation du TAP pour la microVM builder (CAP_NET_ADMIN requis)")?;
+    // Jusqu'ici cette VM n'avait aucune regle iptables (protegee seulement
+    // par l'absence de route par defaut, cf. `builder-vm-init::configure_network`) :
+    // meme mecanisme de passerelle transparente que la VM agent
+    // (`vm-supervisor`), pour que les etapes `RUN` d'un Dockerfile execute
+    // par `envbuilder` (apt, etc.) fonctionnent sans jamais avoir besoin de
+    // connaitre `HTTP_PROXY`/`HTTPS_PROXY` — voir
+    // docs/architecture/network-security.md.
+    network
+        .enable_transparent_gateway(
+            net_proxy_port
+                .parse()
+                .context("ATELIER_BUILDER_NET_PROXY_PORT invalide")?,
+            net_proxy_transparent_http_port,
+            net_proxy_transparent_tls_port,
+        )
+        .await
+        .context("pose des regles iptables de la passerelle transparente (VM builder)")?;
 
     let builder_rootfs_path_cleanup = builder_rootfs_path.clone();
     let result = run_builder_vm(RunBuilderVmArgs {

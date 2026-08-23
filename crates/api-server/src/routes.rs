@@ -12,10 +12,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
-use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, DeleteParams, Patch, PatchParams};
+use k8s_openapi::api::core::v1::{Event as K8sEvent, Pod};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const FIELD_MANAGER: &str = "atelier-api-server";
@@ -35,6 +35,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         )
         .route("/v1/workshops/{name}/suspend", post(suspend_workshop))
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
+        .route("/v1/workshops/{name}/events", get(list_workshop_events))
         .route(
             "/v1/workshops/{name}/portforward",
             get(crate::portforward::portforward),
@@ -159,6 +160,79 @@ async fn get_workshop(
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
     Ok(Json(workshop))
+}
+
+#[derive(Debug, Serialize)]
+struct WorkshopEvent {
+    #[serde(rename = "type")]
+    type_: String,
+    reason: String,
+    message: String,
+    #[serde(rename = "involvedObject")]
+    involved_object: String,
+    /// RFC 3339, le plus recent des deux horodatages k8s disponibles
+    /// (`lastTimestamp` pour les Event legacy, `eventTime` pour les
+    /// Event "v1" plus recents emis par certains controllers).
+    timestamp: Option<String>,
+    count: i32,
+}
+
+/// Journal de creation/progression d'un Workshop : plutot que d'ajouter un
+/// mecanisme de log applicatif dedie, on relaie les Event Kubernetes deja
+/// emis nativement par le control plane (scheduler, kubelet, job
+/// controller) pour les objets impliques — le pod parent (`{name}-parent`)
+/// et le Job de build d'image (`{name}-image-build`, cf.
+/// `crates/controller/src/reconcile.rs`), en plus du Workshop lui-meme.
+/// Aucun nouvel etat a maintenir : c'est ce que `kubectl describe` montre
+/// deja, seulement filtre et mis en forme pour le dashboard.
+async fn list_workshop_events(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<WorkshopEvent>>, ApiError> {
+    let workshop = workshops_api(&state).get(&name).await?;
+    ensure_owner(&workshop, &user)?;
+
+    let pod_name = format!("{name}-parent");
+    let job_name = format!("{name}-image-build");
+    // Le Job cree lui-meme un pod par tentative, nomme `<job_name>-<suffix
+    // aleatoire>` (convention standard du controller Job Kubernetes) : les
+    // events utiles (Pulling/Pulled/Started/BackOff) sont attaches a ce pod,
+    // pas au Job. D'ou le prefixe en plus de l'egalite stricte.
+    let job_pod_prefix = format!("{job_name}-");
+
+    let events_api: Api<K8sEvent> = Api::namespaced(state.client.clone(), &state.namespace);
+    let all = events_api.list(&ListParams::default()).await?;
+
+    let mut events: Vec<WorkshopEvent> = all
+        .items
+        .into_iter()
+        .filter(|ev| {
+            let involved = ev.involved_object.name.as_deref().unwrap_or_default();
+            involved == name
+                || involved == pod_name
+                || involved == job_name
+                || involved.starts_with(&job_pod_prefix)
+        })
+        .map(|ev| WorkshopEvent {
+            type_: ev.type_.unwrap_or_else(|| "Normal".to_string()),
+            reason: ev.reason.unwrap_or_default(),
+            message: ev.message.unwrap_or_default(),
+            involved_object: format!(
+                "{}/{}",
+                ev.involved_object.kind.unwrap_or_default(),
+                ev.involved_object.name.unwrap_or_default()
+            ),
+            timestamp: ev
+                .last_timestamp
+                .map(|t| t.0.to_rfc3339())
+                .or_else(|| ev.event_time.map(|t| t.0.to_rfc3339())),
+            count: ev.count.unwrap_or(1),
+        })
+        .collect();
+
+    events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    Ok(Json(events))
 }
 
 async fn delete_workshop(

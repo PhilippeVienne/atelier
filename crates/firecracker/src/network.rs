@@ -105,9 +105,9 @@ impl NetworkSetup {
     /// la VM eteinte, en compagnon de [`crate::vm::Vm::shutdown`].
     pub async fn teardown(&self) {
         let _ = run(&ip_bin(), &["tuntap", "del", &self.tap_name, "mode", "tap"]).await;
-        // Chaine dediee (voir `restrict_to_net_proxy`) : supprimee ici pour
-        // ne rien laisser trainer, meme si `restrict_to_net_proxy` n'a
-        // jamais ete appelee (no-op dans ce cas, la chaine n'existe pas).
+        // Chaine dediee (voir `restrict_to_net_proxy`/`enable_transparent_gateway`) :
+        // supprimee ici pour ne rien laisser trainer, meme si aucune des
+        // deux n'a jamais ete appelee (no-op dans ce cas, rien n'existe).
         let chain = self.iptables_chain_name();
         let _ = run(
             "iptables",
@@ -121,10 +121,39 @@ impl NetworkSetup {
         .await;
         let _ = run("iptables", &["-F", &chain]).await;
         let _ = run("iptables", &["-X", &chain]).await;
+
+        // Chaine `nat` dediee (voir `enable_transparent_gateway`) : meme
+        // schema que la chaine `filter` ci-dessus (une seule regle
+        // d'accroche a specification fixe a supprimer, quels que soient
+        // les ports transparents reellement configures a la pose — on
+        // evite ainsi d'avoir a reconstruire les regles `REDIRECT`
+        // exactes, dont `iptables -D` exigerait la specification complete,
+        // `--to-port` inclus).
+        let nat_chain = self.iptables_nat_chain_name();
+        let _ = run(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-D",
+                "PREROUTING",
+                "-i",
+                &self.tap_name,
+                "-j",
+                &nat_chain,
+            ],
+        )
+        .await;
+        let _ = run("iptables", &["-t", "nat", "-F", &nat_chain]).await;
+        let _ = run("iptables", &["-t", "nat", "-X", &nat_chain]).await;
     }
 
     fn iptables_chain_name(&self) -> String {
         format!("atelier-vm-{}", self.tap_name)
+    }
+
+    fn iptables_nat_chain_name(&self) -> String {
+        format!("atelier-vm-nat-{}", self.tap_name)
     }
 
     /// Defense en profondeur au niveau paquet, en complement de l'allowlist
@@ -138,27 +167,147 @@ impl NetworkSetup {
     /// jette tout le reste — voir docs/architecture/network-security.md
     /// pour le detail. A appeler apres [`setup_link_local_tap`], avant de
     /// booter la VM.
+    ///
+    /// Alternative a [`enable_transparent_gateway`] (pas les deux a la fois
+    /// sur le meme TAP : les deux methodes creent la meme chaine dediee) —
+    /// a garder uniquement pour un usage qui exige explicitement
+    /// `HTTP_PROXY`/`CONNECT`, sans redirection transparente.
     pub async fn restrict_to_net_proxy(&self, net_proxy_port: u16) -> Result<()> {
+        self.setup_dedicated_chain(&[net_proxy_port]).await
+    }
+
+    /// Comme [`restrict_to_net_proxy`], mais ouvre aussi le chemin
+    /// transparent : la microVM n'a besoin d'aucune configuration interne
+    /// (ni `HTTP_PROXY`, ni resolveur DNS particulier) pour que son trafic
+    /// sortant soit intercepte par `net-proxy` — voir
+    /// docs/architecture/network-security.md pour le detail complet du
+    /// raisonnement.
+    ///
+    /// Toujours pas de `MASQUERADE`/`FORWARD ACCEPT`/`ip_forward` : `REDIRECT`
+    /// reecrit l'IP de destination vers celle de l'interface d'entree
+    /// **avant** la decision de routage, donc le paquet devient une
+    /// livraison locale (chemin `INPUT`), jamais un transit `FORWARD` — la
+    /// chaine `FORWARD -j DROP` existante suffit toujours a bloquer tout
+    /// le reste.
+    ///
+    /// `net_proxy_port` reste accepte explicitement (usage volontaire,
+    /// ex. `mcp-gateway`) ; `transparent_http_port`/`transparent_tls_port`
+    /// sont les ports d'ecoute locaux de `net-proxy` cibles par les
+    /// redirections 80/443 ; le port 53 (DNS) est toujours redirige vers
+    /// le port DNS de `net-proxy` (meme port que celui deja accepte en
+    /// `INPUT`, puisque `net-proxy` sert deja de resolveur).
+    pub async fn enable_transparent_gateway(
+        &self,
+        net_proxy_port: u16,
+        transparent_http_port: u16,
+        transparent_tls_port: u16,
+    ) -> Result<()> {
+        self.setup_dedicated_chain(&[net_proxy_port, transparent_http_port, transparent_tls_port])
+            .await?;
+
+        let nat_chain = self.iptables_nat_chain_name();
+        run("iptables", &["-t", "nat", "-N", &nat_chain]).await?;
+        run(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                &nat_chain,
+                "-p",
+                "tcp",
+                "--dport",
+                "80",
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                &transparent_http_port.to_string(),
+            ],
+        )
+        .await?;
+        run(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                &nat_chain,
+                "-p",
+                "tcp",
+                "--dport",
+                "443",
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                &transparent_tls_port.to_string(),
+            ],
+        )
+        .await?;
+        for proto in ["udp", "tcp"] {
+            run(
+                "iptables",
+                &[
+                    "-t",
+                    "nat",
+                    "-A",
+                    &nat_chain,
+                    "-p",
+                    proto,
+                    "--dport",
+                    "53",
+                    "-j",
+                    "REDIRECT",
+                    "--to-port",
+                    "53",
+                ],
+            )
+            .await?;
+        }
+        run(
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-i",
+                &self.tap_name,
+                "-j",
+                &nat_chain,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Coeur commun a [`restrict_to_net_proxy`] et [`enable_transparent_gateway`] :
+    /// chaine dediee, `ACCEPT` vers `host_ip` pour chaque port TCP donne
+    /// (typiquement le port egress explicite et/ou les ports transparents)
+    /// plus le port 53 (UDP+TCP), tout le reste `DROP`, hookee sur `INPUT`,
+    /// `FORWARD` bloque entierement pour ce TAP.
+    async fn setup_dedicated_chain(&self, tcp_ports: &[u16]) -> Result<()> {
         let chain = self.iptables_chain_name();
         let host_ip = self.host_ip.to_string();
 
         run("iptables", &["-N", &chain]).await?;
-        run(
-            "iptables",
-            &[
-                "-A",
-                &chain,
-                "-p",
-                "tcp",
-                "-d",
-                &host_ip,
-                "--dport",
-                &net_proxy_port.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )
-        .await?;
+        for port in tcp_ports {
+            run(
+                "iptables",
+                &[
+                    "-A",
+                    &chain,
+                    "-p",
+                    "tcp",
+                    "-d",
+                    &host_ip,
+                    "--dport",
+                    &port.to_string(),
+                    "-j",
+                    "ACCEPT",
+                ],
+            )
+            .await?;
+        }
         run(
             "iptables",
             &[

@@ -1,12 +1,17 @@
 import { requireAccessToken } from "@/lib/session";
+import { TopNav } from "@/app/components/top-nav";
+import { DEV_EGRESS_ALLOWLIST } from "@/lib/dev-allowlist";
 import { NewWorkshopForm } from "./form";
 
 // Depot public dedie (plus un sous-dossier du depot atelier principal) :
-// image-builder peut le cloner sans identifiants git.
+// image-builder peut le cloner sans identifiants git. La devcontainer
+// (base mcr.microsoft.com + features ghcr.io + apt) a besoin de la
+// allowlist "dev" complete pour construire, pas seulement de github.com.
 const MINISTACK_PRESET = {
   repo: "https://github.com/PhilippeVienne/atelier-workspace.git",
   revision: "main",
   configPath: ".devcontainer/devcontainer.json",
+  egressAllowlist: DEV_EGRESS_ALLOWLIST.join(", "),
 };
 
 export default async function NewWorkshopPage({
@@ -22,15 +27,20 @@ export default async function NewWorkshopPage({
   const defaults = preset === "ministack" ? MINISTACK_PRESET : undefined;
 
   return (
-    <main className="flex-1 max-w-lg w-full mx-auto p-8 flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">Nouveau Workshop</h1>
-      {defaults && (
-        <p className="text-sm text-neutral-600 bg-neutral-50 border border-neutral-200 rounded px-3 py-2">
-          Depot public (github.com/PhilippeVienne/atelier-workspace) : aucun
-          identifiant git a provisionner.
-        </p>
-      )}
-      <NewWorkshopForm defaults={defaults} />
-    </main>
+    <>
+      <TopNav />
+      <main className="flex-1 max-w-lg w-full mx-auto p-6 sm:p-8 flex flex-col gap-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Nouveau Workshop</h1>
+        {defaults && (
+          <p className="text-sm text-muted bg-accent/10 border border-accent/20 rounded-lg px-3 py-2">
+            Depot public (github.com/PhilippeVienne/atelier-workspace) : aucun
+            identifiant git a provisionner.
+          </p>
+        )}
+        <div className="rounded-xl border border-border bg-surface p-6 shadow-sm">
+          <NewWorkshopForm defaults={defaults} />
+        </div>
+      </main>
+    </>
   );
 }

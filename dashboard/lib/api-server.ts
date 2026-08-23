@@ -120,3 +120,17 @@ export async function resumeWorkshop(name: string): Promise<Workshop> {
 export async function deleteWorkshop(name: string): Promise<void> {
   await call(`/v1/workshops/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
+
+export interface WorkshopEvent {
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  message: string;
+  involvedObject: string;
+  timestamp: string | null;
+  count: number;
+}
+
+export async function listWorkshopEvents(name: string): Promise<WorkshopEvent[]> {
+  const res = await call(`/v1/workshops/${encodeURIComponent(name)}/events`);
+  return res.json();
+}

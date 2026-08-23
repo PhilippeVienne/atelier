@@ -60,19 +60,38 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3128);
+    let net_proxy_transparent_http_port: u16 =
+        std::env::var("ATELIER_NET_PROXY_TRANSPARENT_HTTP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3180);
+    let net_proxy_transparent_tls_port: u16 =
+        std::env::var("ATELIER_NET_PROXY_TRANSPARENT_TLS_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3181);
 
-    // TAP link-local, pas de NAT/route de sortie directe — net-proxy (dans
-    // le meme pod, meme netns) est le seul voisin joignable, verrouille
-    // ensuite au niveau paquet par `restrict_to_net_proxy` en defense en
-    // profondeur de l'allowlist applicative. Voir
+    // TAP link-local, net-proxy (dans le meme pod, meme netns) comme seule
+    // passerelle joignable — verrouille au niveau paquet par
+    // `enable_transparent_gateway` : la microVM a deja une route par defaut
+    // vers net-proxy via l'autoconfiguration IP du kernel (`ip=` plus bas),
+    // donc son trafic HTTP/HTTPS/DNS y arrive naturellement, redirige de
+    // maniere transparente sans qu'aucune configuration ne soit necessaire
+    // a l'interieur du guest (pas de HTTP_PROXY, pas de resolveur DNS
+    // particulier a connaitre — le devcontainer de l'agent est arbitraire,
+    // fourni par l'utilisateur du Workshop). Voir
     // docs/architecture/network-security.md pour le detail complet.
     let network = setup_link_local_tap("atelier-vm", 0)
         .await
         .context("creation du TAP pour la microVM de l'agent (CAP_NET_ADMIN requis)")?;
     network
-        .restrict_to_net_proxy(net_proxy_port)
+        .enable_transparent_gateway(
+            net_proxy_port,
+            net_proxy_transparent_http_port,
+            net_proxy_transparent_tls_port,
+        )
         .await
-        .context("pose des regles iptables de restriction du TAP")?;
+        .context("pose des regles iptables de la passerelle transparente")?;
 
     let base_boot_args = std::env::var("ATELIER_VM_BOOT_ARGS")
         .unwrap_or_else(|_| "console=ttyS0 reboot=k panic=1 pci=off".to_string());

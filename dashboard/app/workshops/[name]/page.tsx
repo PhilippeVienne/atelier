@@ -1,24 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ApiServerError, getWorkshop, type WorkshopPhase } from "@/lib/api-server";
+import { ApiServerError, getWorkshop, listWorkshopEvents } from "@/lib/api-server";
 import { remove, resume, suspend } from "@/app/actions";
+import { PhaseBadge } from "@/app/components/phase-badge";
+import { TopNav } from "@/app/components/top-nav";
+import { EventsLog } from "./events-log";
+import { LiveRefresh } from "./live-refresh";
 
-const PHASE_STYLES: Record<WorkshopPhase, string> = {
-  Pending: "bg-neutral-100 text-neutral-700",
-  BuildingImage: "bg-amber-100 text-amber-800",
-  Provisioning: "bg-amber-100 text-amber-800",
-  Running: "bg-green-100 text-green-800",
-  Suspending: "bg-amber-100 text-amber-800",
-  Suspended: "bg-neutral-200 text-neutral-700",
-  Resuming: "bg-amber-100 text-amber-800",
-  Terminating: "bg-red-100 text-red-800",
-  Failed: "bg-red-100 text-red-800",
-};
+const BUSY_PHASES = ["BuildingImage", "Provisioning", "Suspending", "Resuming", "Terminating"];
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs uppercase tracking-wide text-neutral-500">{label}</span>
+    <div className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-wide text-muted">{label}</span>
       <span className="text-sm font-mono break-all">{value}</span>
     </div>
   );
@@ -41,77 +35,86 @@ export default async function WorkshopDetailPage({
     throw err;
   }
 
+  const events = await listWorkshopEvents(name).catch(() => []);
+
   const status = workshop.status;
   const phase = status?.phase ?? "Pending";
   const canSuspend = phase === "Running";
   const canResume = phase === "Suspended";
   const canConnect = phase === "Running";
-  const busy = ["BuildingImage", "Provisioning", "Suspending", "Resuming", "Terminating"].includes(
-    phase,
-  );
+  const busy = BUSY_PHASES.includes(phase);
 
   return (
-    <main className="flex-1 max-w-2xl w-full mx-auto p-8 flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col gap-1">
-          <Link href="/" className="text-sm text-neutral-500 hover:underline">
-            ← Workshops
-          </Link>
-          <h1 className="text-2xl font-semibold">{name}</h1>
+    <>
+      <LiveRefresh active={busy} />
+      <TopNav />
+      <main className="flex-1 max-w-2xl w-full mx-auto p-6 sm:p-8 flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <Link href="/" className="text-sm text-muted hover:text-accent transition-colors">
+              ← Workshops
+            </Link>
+            <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
+          </div>
+          <PhaseBadge phase={phase} size="md" />
         </div>
-        <span className={`inline-block rounded-full px-3 py-1 text-sm font-medium ${PHASE_STYLES[phase]}`}>
-          {phase}
-        </span>
-      </div>
 
-      <div className="grid grid-cols-2 gap-4 rounded border border-neutral-200 p-4">
-        <Field label="Depot" value={workshop.spec.devcontainer.repo} />
-        <Field label="Revision" value={workshop.spec.devcontainer.revision} />
-        <Field label="Pod parent" value={status?.podName ?? "—"} />
-        <Field label="Image" value={status?.imageDigest ?? "—"} />
-        <Field label="Snapshot" value={status?.snapshotDigest ?? "—"} />
-      </div>
+        <div className="grid grid-cols-2 gap-5 rounded-xl border border-border bg-surface p-5 shadow-sm">
+          <Field label="Depot" value={workshop.spec.devcontainer.repo} />
+          <Field label="Revision" value={workshop.spec.devcontainer.revision} />
+          <Field label="Pod parent" value={status?.podName ?? "—"} />
+          <Field label="Image" value={status?.imageDigest ?? "—"} />
+          <Field label="Snapshot" value={status?.snapshotDigest ?? "—"} />
+        </div>
 
-      <div className="flex flex-wrap gap-2">
-        {canConnect && (
-          <a
-            href={`/workshops/${encodeURIComponent(name)}/vscode/`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
-          >
-            Ouvrir VS Code ↗
-          </a>
-        )}
-        {canSuspend && (
-          <form action={suspend.bind(null, name)}>
+        <div className="flex flex-wrap gap-2">
+          {canConnect && (
+            <a
+              href={`/workshops/${encodeURIComponent(name)}/vscode/`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full bg-accent text-accent-foreground px-4 py-2 text-sm font-medium hover:bg-accent-hover transition-colors"
+            >
+              Ouvrir VS Code ↗
+            </a>
+          )}
+          {canSuspend && (
+            <form action={suspend.bind(null, name)}>
+              <button
+                className="text-sm rounded-full border border-border px-4 py-2 hover:bg-surface-hover transition-colors"
+                disabled={busy}
+              >
+                Suspendre
+              </button>
+            </form>
+          )}
+          {canResume && (
+            <form action={resume.bind(null, name)}>
+              <button
+                className="text-sm rounded-full border border-border px-4 py-2 hover:bg-surface-hover transition-colors"
+                disabled={busy}
+              >
+                Reprendre
+              </button>
+            </form>
+          )}
+          <form action={remove.bind(null, name)}>
             <button
-              className="text-sm rounded border border-neutral-300 px-4 py-2 hover:bg-neutral-100"
+              className="text-sm rounded-full border border-red-500/30 text-red-600 dark:text-red-400 px-4 py-2 hover:bg-red-500/10 transition-colors"
               disabled={busy}
             >
-              Suspendre
+              Supprimer
             </button>
           </form>
-        )}
-        {canResume && (
-          <form action={resume.bind(null, name)}>
-            <button
-              className="text-sm rounded border border-neutral-300 px-4 py-2 hover:bg-neutral-100"
-              disabled={busy}
-            >
-              Reprendre
-            </button>
-          </form>
-        )}
-        <form action={remove.bind(null, name)}>
-          <button
-            className="text-sm rounded border border-red-300 text-red-700 px-4 py-2 hover:bg-red-50"
-            disabled={busy}
-          >
-            Supprimer
-          </button>
-        </form>
-      </div>
-    </main>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium text-muted uppercase tracking-wide">
+            Journal de creation / progression
+          </h2>
+          <EventsLog name={name} initialEvents={events} live={busy} />
+        </div>
+      </main>
+    </>
   );
 }

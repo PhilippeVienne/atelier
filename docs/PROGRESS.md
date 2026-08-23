@@ -25,12 +25,12 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `kvm-device-plugin` | Fonctionnel | Device plugin Kubernetes (API kubelet v1beta1) pour `/dev/kvm`+`/dev/net/tun` : DaemonSet qui annonce la ressource allouable `atelier.dev/kvm`, permettant a `vm-supervisor`/`image-builder` de tourner sans `securityContext.privileged: true`. Verifie reellement contre kind : `kubectl describe node` liste `atelier.dev/kvm: 32`, un pod non privilegie qui la demande ouvre reellement `/dev/kvm` (`exec 3<>/dev/kvm` reussit), et un vrai boot Firecracker aboutit (`microVM running`) dans un pod portant uniquement `NET_ADMIN`+`SYS_ADMIN`+`SYS_RESOURCE`, sans `privileged` |
 | `vm-supervisor` — snapshot/restore | Fonctionnel (cross-process) | `Vm::restore_persisted` (nouveau) restaure une microVM depuis un snapshot **sans** avoir besoin de l'objet `Vm` d'origine vivant — contrairement a `Vm::restore` (fctools), qui a besoin d'une VM source dans le meme process. Teste reellement : VM source completement eteinte et son jail detruit avant la restauration dans un tout nouveau `Vm` (`crates/firecracker/tests/vm.rs`), puis en conditions reelles via le canal de controle HTTP (nouveau process, nouveau pod, cf. ci-dessous) |
 | `crates/firecracker` (lib partagee, extrait de `vm-supervisor`) | Fonctionnel | Meme test boot/snapshot/restore reel qu'avant le refactor, toujours vert |
-| `crates/firecracker::network` (TAP link-local) | Fonctionnel | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root), plus `restrict_to_net_proxy` (regles iptables de defense en profondeur, voir `docs/architecture/network-security.md`) — testees reellement (contenu exact des regles verifie via `iptables -S`). Desormais utilise par `vm-supervisor` (VM de l'agent), pas seulement la microVM "builder" |
+| `crates/firecracker::network` (TAP link-local + passerelle transparente) | Fonctionnel | Creation/config/suppression d'un vrai device TAP testee reellement (`unshare --net --map-root-user`, sans besoin de root), plus `restrict_to_net_proxy`/`enable_transparent_gateway` (regles iptables `filter`+`nat`, voir `docs/architecture/network-security.md`) — testees reellement (contenu exact des regles verifie via `iptables -S`/`iptables -t nat -S`). Utilise par `vm-supervisor` (VM de l'agent) et `image-builder` (VM "builder") |
 | `crates/builder-vm-init` (guest init de la microVM "builder") | Fonctionnel | Cycle complet valide reellement : boot jaile + reseau + `envbuilder` (clone, build, push registre via `net-proxy`) + extinction propre de la VM detectee par l'hote, `crane manifest` confirme l'image poussee (`cargo test -p atelier-firecracker --test builder_vm`, 35s). Cinq causes racines trouvees et corrigees en cours de route, voir "Builder microVM" ci-dessous |
 | Boucle complete Workshop → pod → microVM `Running` | Fonctionnel (automatique) | Pour la premiere fois de bout en bout **sans peuplage manuel du cache** : `kubectl apply` d'un Workshop reel declenche le Job `image-builder` (microVM "builder" reelle), qui construit et pousse l'image, l'exporte en `rootfs.ext4`, la publie dans le cache, patche `status.imageDigest` — puis le controller enchaine automatiquement sur le pod parent, `vm-supervisor` boote la microVM avec ce rootfs. Verifie reellement contre kind (`Job` `Complete`, `Workshop.status.phase=Running`) |
 | Observabilite (OpenTelemetry) | Fonctionnel (base) | `atelier_common::telemetry::init()` cable sur tous les binaires, spans sur la boucle de reconciliation |
 | `api-server` | Fonctionnel | JWT valide contre un vrai flux OAuth2 Kanidm (PKCE S256, `/oauth2/token` reel — deux bugs reels trouves et corriges au passage, voir "Lecons retenues" : `InvalidAudience` faute d'`aud` configure, CA auto-signee non fiee par `reqwest`/rustls) ; endpoints CRUD + suspend/resume sur `Workshop` via `kube::Api`, testes reellement contre kind (creation, isolation par `owner_subject`, suspend/resume, suppression) ; coordinateur de port-forward (`/v1/workshops/{name}/portforward`, authentifie puis relaie vers `net-proxy`), teste reellement de bout en bout (client websocket -> api-server -> net-proxy -> serveur TCP cible) ; pont HTTP+WebSocket vers `code-server` (`/v1/workshops/{name}/vscode/*`, voir section dediee "UI dashboard") |
-| `net-proxy` — egress (allowlist + proxy parent) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, et chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`) avec bypass `ATELIER_NO_PROXY`. Premiere conteneurisation le mois dernier (`crates/net-proxy/Dockerfile`), deploye a la fois comme sidecar du Job `image-builder` et desormais comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (3/3 conteneurs `Running`, alias `identity-proxy` actif, chainage obligatoire confirme) |
+| `net-proxy` — egress (allowlist + proxy parent + passerelle transparente) | Fonctionnel | Proxy HTTP explicite (relai en clair + tunnel `CONNECT`) avec allowlist par domaine/wildcard, chainage optionnel vers un proxy parent (`ATELIER_UPSTREAM_PROXY`), **et deux ports d'ecoute transparents** (redirection iptables, Host header/SNI, zero configuration guest necessaire — voir section dediee ci-dessous). Deploye comme sidecar du Job `image-builder` et comme conteneur du **pod parent** de l'agent, allowlist alimentee depuis `Workshop.spec.egress_allowlist`. Verifie contre un vrai pod en cluster (4/4 conteneurs `Running`, build complet d'un devcontainer reel reussi entierement via le chemin transparent) |
 | `net-proxy` — port-forward (microVM → exterieur) | Fonctionnel | Endpoint websocket `/portforward`, multiplexage de canaux dans le style `kubectl port-forward` (net-proxy = kubelet, `api-server` = coordinateur qui authentifie et relaie). TCP et UDP. Teste via un vrai client websocket (`tokio-tungstenite`) : relai de donnees bout en bout et remontee d'erreur de connexion sur le canal dedie, et de bout en bout via `api-server` (`crates/api-server/tests/routes.rs`) |
 | `net-proxy` — DNS (UDP+TCP) | Fonctionnel (composant seul) | Resolveur DNS pour la VM, meme allowlist que l'egress (nom refuse → `REFUSED` local, jamais transmis a l'upstream). Teste reellement avec `dig` (UDP et TCP) contre un vrai upstream (resolveur systemd-resolved local), plus tests unitaires (parsing QNAME, upstream jamais contacte pour un nom refuse) |
 | `identity-proxy` | Fonctionnel | Proxy HTTP explicite : injecte un en-tete (`Authorization` ou autre) construit depuis un secret OpenBao (cache rafraichi periodiquement, login Kubernetes reel) dans les requetes HTTP en clair dont l'hote correspond a une regle (`Workshop.spec.identityInjectionRules`, type partage avec `atelier-common`), puis relaie vers `net-proxy` (`ATELIER_NET_PROXY_ADDR`) via un tunnel `CONNECT`. `CONNECT`/HTTPS reste un tunnel opaque, non injectable sans MITM (limite documentee). Premier `Dockerfile`, deploye comme conteneur du pod parent, regles alimentees depuis `Workshop.spec` par le controller — verifie contre un vrai pod en cluster ("regles d'injection chargees count=1") |
@@ -1027,10 +1027,105 @@ l'utilisateur — contrairement au sidecar `simulator` de `mcp-gateway`).
   LiteLLM par Workshop dans ce lot) ; pas de prompt caching explicitement
   configure (important pour tenir un budget bas, a activer separement).
 - **Reste a faire** : verification de bout en bout avec une vraie cle
-  DeepSeek (non disponible dans cet environnement de developpement) et
-  depuis l'interieur d'une vraie microVM agent (meme limite que les autres
-  sections de ce document tant qu'aucun `Workshop` complet n'a ete boote
-  avec `ministack-workshop`/`atelier-workspace`).
+  DeepSeek (non disponible dans cet environnement de developpement). Le
+  blocage "aucun `Workshop` complet n'a ete boote avec
+  `ministack-workshop`/`atelier-workspace`" est desormais leve — voir
+  section suivante.
+
+## `net-proxy` en passerelle transparente : plus besoin de `HTTP_PROXY` cote guest
+
+En bootant pour la premiere fois un `Workshop` complet avec le devcontainer
+de demo public (`ministack-workshop`/`atelier-workspace` : base
+`mcr.microsoft.com`, features `docker-in-docker`+`claude-code` via
+`ghcr.io`, `systemd`/`code-server` installes par `apt-get`), un vrai bug
+racine a ete trouve, plus profond qu'un simple oubli de domaine dans
+`Workshop.spec.egress_allowlist` :
+
+- **Symptome initial** : `archive.ubuntu.com` refuse d'etre resolu
+  (`Temporary failure resolving 'archive.ubuntu.com'`) alors qu'il figure
+  bien dans l'allowlist, et **aucune trace** (ni autorisee ni refusee) de
+  cette requete dans les logs `net-proxy` — la requete n'atteint jamais
+  `net-proxy` du tout.
+- **Cause racine, confirmee en rejouant le build avec `RUST_LOG=debug`
+  (console guest complete, drainee via `tracing::debug!`)** : l'etape `RUN
+  apt-get` d'un `Dockerfile`, executee par `envbuilder` dans la microVM
+  "builder", n'herite jamais de `HTTP_PROXY`/`HTTPS_PROXY` — contrairement
+  au clone git et au push registre (`crates/builder-vm-init`), qui eux
+  passent bien par ces variables et fonctionnent. Rustiner au cas par cas
+  (`ARG HTTP_PROXY` dans chaque `Dockerfile`) aurait ete fragile et jamais
+  garanti pour un devcontainer arbitraire fourni par l'utilisateur d'un
+  Workshop.
+- **Decision (discutee en session)** : plutot que de continuer a exiger
+  qu'un outil a l'interieur du guest sache configurer un proxy explicite,
+  `net-proxy` devient une **passerelle reseau transparente** — interception
+  au niveau paquet (`iptables REDIRECT`), lecture du `Host:` (HTTP) ou du
+  SNI du `ClientHello` (HTTPS, **sans jamais dechiffrer** — pas de MITM,
+  refuse explicitement en session, la validation TLS de bout en bout reste
+  intacte cote guest). Voir `docs/architecture/network-security.md` pour le
+  design complet (deja mis a jour, section correspondante).
+- **Composants touches** : `crates/firecracker/src/network.rs`
+  (`NetworkSetup::enable_transparent_gateway`, nouvelle chaine `nat`
+  dediee, `restrict_to_net_proxy` conserve pour compatibilite) ;
+  `crates/net-proxy` (deux nouveaux listeners — port HTTP transparent qui
+  reutilise `handle_connection` tel quel, port TLS transparent avec le
+  nouveau module `tls_sni.rs`, aucune dependance TLS ajoutee) ;
+  `crates/vm-supervisor`/`crates/image-builder` (appellent desormais
+  `enable_transparent_gateway` au lieu de `restrict_to_net_proxy`/rien du
+  tout) ; `crates/builder-vm-init` (une ligne `ip route add default via
+  <host_ip>` — la VM de l'agent avait deja cette route gratuitement via le
+  parametre kernel `ip=`, seule la VM "builder", notre propre bootstrap,
+  ne l'avait pas) ; `crates/controller/src/reconcile.rs` (cablage des deux
+  nouveaux ports, memes valeurs cote `net-proxy` et cote
+  `vm-supervisor`/`image-builder`) ; Dockerfiles `image-builder`
+  (`iptables` ajoute, manquant jusqu'ici — seul `iproute2` y etait).
+- **Aucune nouvelle capacite Kubernetes accordee** : la pose des regles
+  reste faite par le composant deja `NET_ADMIN` (`vm-supervisor`/
+  `image-builder`, `firecracker_security_context()`), `net-proxy` continue
+  de tourner sans capacite elevee — meme decoupage qu'avant, juste etendu.
+- **`sysctl net.ipv4.ip_forward` toujours a 0** : `REDIRECT` reecrit la
+  destination du paquet vers l'interface d'entree **avant** la decision de
+  routage, donc le paquet devient une livraison locale (chemin `INPUT`),
+  jamais un transit `FORWARD` — la preoccupation documentee dans
+  `network-security.md` (sysctl global au netns, partage entre VMs
+  concurrentes du meme pod) reste donc valide et n'est pas contournee.
+- **Verifie reellement, sans mock, Dockerfile `atelier-workspace` non
+  modifie** :
+  - `cargo test -p atelier-net-proxy` (49 tests, dont 5 nouveaux pour
+    `tls_sni::parse_sni` et 3 nouveaux tests d'integration transparents
+    dans `proxy.rs`, sockets loopback reelles).
+  - `cargo test -p atelier-firecracker --test network` sous
+    `unshare --net --map-root-user` (vrai `CAP_NET_ADMIN`, sans `sudo`) :
+    nouveau test `enables_transparent_redirect_without_touching_forward`,
+    contenu exact des regles `nat` verifie via `iptables -t nat -S`, et
+    confirmation explicite que `FORWARD` ne gagne jamais de regle `ACCEPT`.
+  - Bout en bout contre kind, en reconstruisant `atelier-net-proxy:dev`/
+    `atelier-image-builder:dev`/`atelier-vm-supervisor:dev` : rejouer le
+    meme Workshop qui echouait avant (allowlist "dev" complete, voir
+    `dashboard/lib/dev-allowlist.ts`) reussit desormais integralement —
+    `apt-get install systemd` (HTTP transparent, `archive.ubuntu.com`/
+    `security.ubuntu.com`), la feature Node.js (`deb.nodesource.com`, HTTPS
+    transparent/SNI), `docker-in-docker` (`packages.microsoft.com`), le
+    tout sans une seule variable `HTTP_PROXY` necessaire cote guest.
+    `status.imageDigest` publie, pod parent `4/4 Running`, microVM agent
+    demarree avec l'image construite (`vm-supervisor`: "microVM running").
+- **Allowlist "dev" enrichie au passage** (`dashboard/lib/dev-allowlist.ts`,
+  prerempli dans le formulaire de creation de Workshop) : au-dela de
+  `github.com`, un devcontainer standard a aussi besoin de
+  `mcr.microsoft.com`/`*.data.mcr.microsoft.com` (image de base), `ghcr.io`/
+  `pkg-containers.githubusercontent.com` (features), `archive.ubuntu.com`/
+  `security.ubuntu.com`/`ports.ubuntu.com`/`deb.debian.org` (apt),
+  `download.docker.com`/`get.docker.com`/`registry-1.docker.io`/
+  `auth.docker.io`/`production.cloudflare.docker.com` (Docker Hub/Engine),
+  `registry.npmjs.org`/`pypi.org`/`files.pythonhosted.org` (gestionnaires
+  de paquets de langage), `deb.nodesource.com` (Node.js) et
+  `packages.microsoft.com` (docker-in-docker) — chacun trouve un par un en
+  rejouant le build reel et en lisant les refus dans les logs `net-proxy`.
+- **Limite assumee** : le sniffing SNI ne fonctionne que pour du TLS
+  classique avec SNI en clair (immense majorite du trafic reel) — ESNI/ECH
+  (SNI chiffre) ne serait pas filtrable par nom, non bloquant pour ce lot.
+  `HTTP_PROXY`/`HTTPS_PROXY` restent injectes pour la VM builder en filet
+  de securite dans un premier temps (double mecanisme), a retirer dans un
+  lot ulterieur une fois confirme inutile.
 
 ## Lecons retenues (a ne pas re-decouvrir)
 

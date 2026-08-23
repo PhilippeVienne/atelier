@@ -4,6 +4,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -13,7 +14,15 @@ use tokio::sync::RwLock;
 use crate::allowlist;
 use crate::http;
 use crate::internal::InternalRoutes;
+use crate::tls_sni;
 use crate::upstream::UpstreamProxy;
+
+/// Nombre de tentatives de `peek` avant d'abandonner un `ClientHello` qui ne
+/// tient decidement pas dans un seul paquet — largement suffisant en
+/// pratique (un `ClientHello` reel fait quelques centaines d'octets, un
+/// seul segment TCP), voir `handle_transparent_tls_connection`.
+const SNI_PEEK_ATTEMPTS: u32 = 20;
+const SNI_PEEK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 const FORBIDDEN_RESPONSE: &[u8] =
     b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -185,6 +194,87 @@ pub async fn handle_connection(
     }
 }
 
+/// Point d'entree pour le port TLS transparent (redirection iptables sur le
+/// port 443, voir `crates/firecracker::network::NetworkSetup::enable_transparent_gateway`) :
+/// contrairement au port egress classique, la connexion n'est jamais un
+/// `CONNECT` — le guest croit parler directement au vrai serveur, il n'y a
+/// donc aucune ligne de requete a lire pour connaitre la destination.
+/// `TcpStream::peek` (`MSG_PEEK`) permet de lire les premiers octets du
+/// `ClientHello` sans les consommer, pour en extraire le SNI (voir
+/// `crate::tls_sni`) puis rejouer exactement ces memes octets vers la vraie
+/// destination via [`tunnel_transparent`].
+pub async fn handle_transparent_tls_connection(
+    client: TcpStream,
+    peer: SocketAddr,
+    config: EgressConfig,
+) -> anyhow::Result<()> {
+    handle_transparent_tls_connection_on_port(client, peer, config, 443).await
+}
+
+/// Meme logique que [`handle_transparent_tls_connection`], port de
+/// destination parametrable — separee uniquement pour permettre aux tests
+/// de dialoguer avec un `TcpListener` de test (port choisi par l'OS)
+/// plutot que le 443 fixe de la vraie redirection iptables.
+async fn handle_transparent_tls_connection_on_port(
+    client: TcpStream,
+    peer: SocketAddr,
+    config: EgressConfig,
+    port: u16,
+) -> anyhow::Result<()> {
+    let mut buf = vec![0u8; 4096];
+    let Some(host) = peek_sni(&client, &mut buf).await else {
+        tracing::warn!(%peer, "TLS transparent : SNI illisible, connexion fermee");
+        return Ok(());
+    };
+
+    let allowed = {
+        let list = config.allowlist.read().await;
+        allowlist::is_allowed(&host, &list)
+    };
+    if !allowed {
+        tracing::warn!(%peer, host, port, allowed = false, "egress refuse (hors allowlist, TLS transparent)");
+        return Ok(());
+    }
+    tracing::info!(%peer, host, port, allowed = true, "egress autorise (TLS transparent)");
+
+    let (next_hop, no_proxy): (Option<&UpstreamProxy>, &[String]) =
+        match config.identity_proxy.as_deref() {
+            Some(identity_proxy) => (Some(identity_proxy), &[]),
+            None => (config.upstream.as_deref(), config.no_proxy.as_slice()),
+        };
+    tunnel_transparent(
+        BufReader::new(client),
+        &host,
+        port,
+        peer,
+        next_hop,
+        no_proxy,
+    )
+    .await
+}
+
+/// Relit le debut de connexion via `peek` jusqu'a ce qu'un `ClientHello`
+/// complet soit disponible ou qu'un delai raisonnable soit depasse. Ne
+/// consomme jamais les octets (contrairement a `read`) : ils restent
+/// disponibles pour le relai qui suit.
+async fn peek_sni(client: &TcpStream, buf: &mut [u8]) -> Option<String> {
+    for _ in 0..SNI_PEEK_ATTEMPTS {
+        let n = client.peek(buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(sni) = tls_sni::parse_sni(&buf[..n]) {
+            return Some(sni);
+        }
+        if tls_sni::is_incomplete(&buf[..n]) {
+            tokio::time::sleep(SNI_PEEK_RETRY_DELAY).await;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
 /// `CONNECT` : etablit un tunnel TCP opaque (le contenu est TLS, net-proxy
 /// ne le dechiffre pas — seule la destination est controlee).
 ///
@@ -192,31 +282,62 @@ pub async fn handle_connection(
 /// (identity-proxy, mcp-gateway) : ces destinations sont toujours jointes
 /// en direct, jamais chainees via le proxy parent.
 async fn tunnel(
-    mut client: BufReader<TcpStream>,
+    client: BufReader<TcpStream>,
     host: &str,
     port: u16,
     peer: SocketAddr,
     upstream_proxy: Option<&UpstreamProxy>,
     no_proxy: &[String],
 ) -> anyhow::Result<()> {
+    tunnel_inner(client, host, port, peer, upstream_proxy, no_proxy, true).await
+}
+
+/// Meme relai que [`tunnel`], mais sans repondre "200 Connection
+/// Established" au client : ce dernier n'a jamais envoye de `CONNECT` (voir
+/// [`handle_transparent_tls_connection`]) et attend directement les octets
+/// du serveur TLS reel.
+async fn tunnel_transparent(
+    client: BufReader<TcpStream>,
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+    upstream_proxy: Option<&UpstreamProxy>,
+    no_proxy: &[String],
+) -> anyhow::Result<()> {
+    tunnel_inner(client, host, port, peer, upstream_proxy, no_proxy, false).await
+}
+
+async fn tunnel_inner(
+    mut client: BufReader<TcpStream>,
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+    upstream_proxy: Option<&UpstreamProxy>,
+    no_proxy: &[String],
+    send_connect_ack: bool,
+) -> anyhow::Result<()> {
     let mut upstream = match crate::upstream::connect(host, port, upstream_proxy, no_proxy).await {
         Ok(stream) => stream,
         Err(err) => {
             tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");
-            let _ = client.write_all(BAD_GATEWAY_RESPONSE).await;
+            if send_connect_ack {
+                let _ = client.write_all(BAD_GATEWAY_RESPONSE).await;
+            }
             return Ok(());
         }
     };
 
-    client
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await
-        .context("envoi de la reponse CONNECT")?;
+    if send_connect_ack {
+        client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .context("envoi de la reponse CONNECT")?;
+    }
 
     let (sent, received) = tokio::io::copy_bidirectional(&mut client, &mut upstream)
         .await
         .unwrap_or((0, 0));
-    tracing::debug!(%peer, host, port, sent, received, "tunnel CONNECT ferme");
+    tracing::debug!(%peer, host, port, sent, received, "tunnel ferme");
     Ok(())
 }
 
@@ -355,5 +476,156 @@ mod tests {
             received.starts_with("CONNECT 127.0.0.1:9"),
             "identity-proxy doit recevoir un CONNECT vers la vraie destination : {received:?}"
         );
+    }
+
+    /// Le port HTTP transparent reutilise `handle_connection` tel quel :
+    /// une requete origin-form avec `Host:` (jamais de `CONNECT`, jamais de
+    /// cible en forme absolue) doit deja etre relayee correctement, exactement
+    /// comme si elle etait arrivee sur le port egress classique.
+    #[tokio::test]
+    async fn transparent_http_relays_an_origin_form_request_without_connect() {
+        let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let destination_addr = destination.local_addr().unwrap();
+
+        let captured = tokio::spawn(async move {
+            let (mut socket, _) = destination.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+
+        let config = EgressConfig {
+            allowlist: Arc::new(RwLock::new(vec!["127.0.0.1".to_string()])),
+            upstream: None,
+            no_proxy: Arc::new(Vec::new()),
+            internal: Arc::new(InternalRoutes::default()),
+            identity_proxy: None,
+            simulator: Arc::new(RwLock::new(None)),
+        };
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, peer) = client_listener.accept().await.unwrap();
+            let _ = handle_connection(socket, peer, config).await;
+        });
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        // Forme origine (chemin seul, pas d'URI absolue) + `Host:` : c'est
+        // exactement ce qu'un client redirige par iptables envoie, puisqu'il
+        // croit parler directement au serveur — jamais de `CONNECT`.
+        client
+            .write_all(
+                format!("GET /probe HTTP/1.1\r\nHost: {destination_addr}\r\n\r\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), captured)
+            .await
+            .expect("la destination doit recevoir quelque chose avant timeout")
+            .unwrap();
+
+        assert!(
+            received.starts_with("GET /probe"),
+            "la requete origin-form doit etre relayee telle quelle : {received:?}"
+        );
+    }
+
+    /// Le port TLS transparent doit lire le SNI d'un vrai `ClientHello`
+    /// (sans jamais dechiffrer) et relayer les octets (deja peekes, donc
+    /// rejoues) vers la destination si elle est autorisee.
+    #[tokio::test]
+    async fn transparent_tls_relays_when_sni_is_allowed() {
+        let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let destination_addr = destination.local_addr().unwrap();
+
+        let captured = tokio::spawn(async move {
+            let (mut socket, _) = destination.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            buf.truncate(n);
+            buf
+        });
+
+        let config = EgressConfig {
+            allowlist: Arc::new(RwLock::new(vec!["127.0.0.1".to_string()])),
+            upstream: None,
+            no_proxy: Arc::new(Vec::new()),
+            internal: Arc::new(InternalRoutes::default()),
+            identity_proxy: None,
+            simulator: Arc::new(RwLock::new(None)),
+        };
+
+        // Le SNI ("127.0.0.1") sert a l'allowlist ; la connexion sortante
+        // reelle utilise le port de la destination de test (au lieu du 443
+        // fixe de la redirection iptables reelle) via la variante
+        // parametree, pour pouvoir dialoguer avec un `TcpListener` de test.
+        let hello = tls_sni::build_client_hello("127.0.0.1");
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, peer) = client_listener.accept().await.unwrap();
+            let _ = handle_transparent_tls_connection_on_port(
+                socket,
+                peer,
+                config,
+                destination_addr.port(),
+            )
+            .await;
+        });
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        client.write_all(&hello).await.unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), captured)
+            .await
+            .expect("la destination doit recevoir le ClientHello rejoue avant timeout")
+            .unwrap();
+
+        assert_eq!(
+            received, hello,
+            "le ClientHello doit etre rejoue octet pour octet vers la vraie destination"
+        );
+    }
+
+    /// La decision d'autoriser/refuser se prend bien sur le SNI extrait, pas
+    /// sur autre chose : un hote hors allowlist ne doit jamais atteindre la
+    /// destination, meme si la connexion TCP elle-meme reussirait.
+    #[tokio::test]
+    async fn transparent_tls_is_refused_when_sni_is_not_allowed() {
+        let destination = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let destination_addr = destination.local_addr().unwrap();
+        let never_reached = tokio::spawn(async move {
+            let _ = destination.accept().await;
+        });
+
+        let config = EgressConfig {
+            allowlist: Arc::new(RwLock::new(vec!["allowed.example".to_string()])),
+            upstream: None,
+            no_proxy: Arc::new(Vec::new()),
+            internal: Arc::new(InternalRoutes::default()),
+            identity_proxy: None,
+            simulator: Arc::new(RwLock::new(None)),
+        };
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, peer) = client_listener.accept().await.unwrap();
+            let _ = handle_transparent_tls_connection(socket, peer, config).await;
+        });
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        client
+            .write_all(&tls_sni::build_client_hello("blocked.example"))
+            .await
+            .unwrap();
+        // La connexion doit se fermer (refus) sans jamais que la
+        // destination ne recoive quoi que ce soit.
+        let mut buf = [0u8; 1];
+        let n = client.read(&mut buf).await.unwrap_or(0);
+        assert_eq!(n, 0, "la connexion doit etre fermee, pas relayee");
+
+        never_reached.abort();
+        let _ = destination_addr; // uniquement pour que le port soit reserve pendant le test
     }
 }

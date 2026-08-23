@@ -13,6 +13,9 @@ dashboard/.env*.local
 # donnees/certs generes par l'instance Kanidm de dev
 deploy/dev/kanidm/data/
 
+# jeton API Kanidm + env genere par deploy/dev/local-stack.sh (secrets locaux)
+deploy/dev/local-stack/env.sh
+
 # binaires/images Firecracker de dev (gros fichiers, recuperes via
 # deploy/dev/firecracker/fetch-test-assets.sh)
 deploy/dev/firecracker/assets/

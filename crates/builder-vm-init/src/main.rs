@@ -115,17 +115,23 @@ fn require<'a>(params: &'a HashMap<String, String>, key: &str) -> Result<&'a str
 
 /// Configure `lo` et `eth0` avec l'IP link-local attribuee par l'hote
 /// (`atelier.guest_ip`/`atelier.host_ip`/`atelier.prefix`, cf.
-/// `firecracker::network::NetworkSetup`). Pas de route par defaut ni de
-/// resolveur DNS : le seul voisin joignable est `net-proxy`
-/// (`atelier.host_ip:atelier.net_proxy_port`, directement sur le lien
-/// point-a-point, donc sans route necessaire), configure ci-dessous comme
-/// `HTTP_PROXY`/`HTTPS_PROXY` pour `envbuilder` — c'est lui, pas ce guest,
-/// qui resout les noms et applique l'allowlist d'egress (voir
-/// `crates/net-proxy`, "seul chemin de sortie reseau autorise pour la
-/// microVM", docs/ARCHITECTURE.md).
+/// `firecracker::network::NetworkSetup`), plus une route par defaut vers
+/// `net-proxy` (`atelier.host_ip`) : necessaire pour que le trafic vers une
+/// IP externe arbitraire (pas seulement `net-proxy` lui-meme) traverse le
+/// TAP et atteigne les regles de redirection transparente posees cote hote
+/// (`NetworkSetup::enable_transparent_gateway`) — c'est ce mecanisme, pas
+/// `HTTP_PROXY`/`HTTPS_PROXY` (garde plus bas en filet de securite), qui
+/// permet a `envbuilder` de resoudre des noms et d'appliquer l'allowlist
+/// d'egress sans qu'aucun outil execute pendant le build (`RUN` d'un
+/// Dockerfile, `apt-get`, etc.) n'ait besoin de connaitre ces variables —
+/// voir docs/architecture/network-security.md. Cette route ne concerne que
+/// ce petit init de plateforme (jamais le contenu du devcontainer cible),
+/// contrairement a la VM agent qui l'obtient deja gratuitement via
+/// l'autoconfiguration IP du kernel (`ip=`, voir `crates/vm-supervisor`).
 fn configure_network(params: &HashMap<String, String>) -> Result<()> {
     let guest_ip = require(params, "guest_ip")?;
     let prefix = require(params, "prefix")?;
+    let host_ip = require(params, "host_ip")?;
 
     step("lancement de: ip link set lo up");
     run_cmd("ip", &["link", "set", "lo", "up"])?;
@@ -142,6 +148,8 @@ fn configure_network(params: &HashMap<String, String>) -> Result<()> {
     )?;
     step("lancement de: ip link set eth0 up");
     run_cmd("ip", &["link", "set", "eth0", "up"])?;
+    step("lancement de: ip route add default via <host_ip>");
+    run_cmd("ip", &["route", "add", "default", "via", host_ip])?;
     Ok(())
 }
 

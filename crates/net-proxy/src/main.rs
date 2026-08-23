@@ -43,6 +43,7 @@ mod http;
 mod internal;
 mod portforward;
 mod proxy;
+mod tls_sni;
 mod upstream;
 
 use std::net::SocketAddr;
@@ -61,6 +62,13 @@ const DEFAULT_DNS_LISTEN_ADDR: &str = "0.0.0.0:53";
 const DEFAULT_VM_ADDR: &str = "127.0.0.1";
 /// Lie a `127.0.0.1` uniquement (voir `crate::admin`) : jamais `0.0.0.0`.
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:9001";
+/// Cibles des regles `iptables -t nat ... REDIRECT` posees par
+/// `crates/firecracker::network::NetworkSetup::enable_transparent_gateway` :
+/// la VM n'a jamais besoin de connaitre ces ports (ni meme l'existence de
+/// net-proxy), le trafic y arrive deja reecrit par le noyau avant meme
+/// d'atteindre l'application. Voir `docs/architecture/network-security.md`.
+const DEFAULT_TRANSPARENT_HTTP_ADDR: &str = "0.0.0.0:3180";
+const DEFAULT_TRANSPARENT_TLS_ADDR: &str = "0.0.0.0:3181";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -186,6 +194,65 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!(%err, "proxy DNS arrete en erreur");
         }
     });
+
+    // Ports d'ecoute "transparents", cibles des redirections iptables
+    // posees cote hote (voir `enable_transparent_gateway`) : contrairement
+    // au port egress classique ci-dessous, ni `HTTP_PROXY` ni `CONNECT` ne
+    // sont necessaires cote guest — c'est le seul chemin qui satisfait la
+    // contrainte "aucune configuration interne a la microVM".
+    let transparent_http_addr = std::env::var("ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR")
+        .unwrap_or_else(|_| DEFAULT_TRANSPARENT_HTTP_ADDR.to_string());
+    let transparent_http_listener = TcpListener::bind(&transparent_http_addr).await?;
+    tracing::info!(%transparent_http_addr, "proxy egress HTTP transparent en ecoute");
+    {
+        let config = egress_config.clone();
+        tokio::spawn(async move {
+            loop {
+                let (socket, peer): (_, SocketAddr) = match transparent_http_listener.accept().await
+                {
+                    Ok(accepted) => accepted,
+                    Err(err) => {
+                        tracing::error!(%err, "accept() HTTP transparent a echoue");
+                        continue;
+                    }
+                };
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = proxy::handle_connection(socket, peer, config).await {
+                        tracing::warn!(%peer, %err, "connexion HTTP transparente terminee en erreur");
+                    }
+                });
+            }
+        });
+    }
+
+    let transparent_tls_addr = std::env::var("ATELIER_NET_PROXY_TRANSPARENT_TLS_ADDR")
+        .unwrap_or_else(|_| DEFAULT_TRANSPARENT_TLS_ADDR.to_string());
+    let transparent_tls_listener = TcpListener::bind(&transparent_tls_addr).await?;
+    tracing::info!(%transparent_tls_addr, "proxy egress TLS transparent (SNI) en ecoute");
+    {
+        let config = egress_config.clone();
+        tokio::spawn(async move {
+            loop {
+                let (socket, peer): (_, SocketAddr) = match transparent_tls_listener.accept().await
+                {
+                    Ok(accepted) => accepted,
+                    Err(err) => {
+                        tracing::error!(%err, "accept() TLS transparent a echoue");
+                        continue;
+                    }
+                };
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        proxy::handle_transparent_tls_connection(socket, peer, config).await
+                    {
+                        tracing::warn!(%peer, %err, "connexion TLS transparente terminee en erreur");
+                    }
+                });
+            }
+        });
+    }
 
     let egress_listener = TcpListener::bind(&listen_addr).await?;
     tracing::info!(%listen_addr, "proxy egress en ecoute");

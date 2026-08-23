@@ -121,12 +121,72 @@ ipaddr=169.254.0.2, mask=255.255.255.252, gw=169.254.0.1`), de meme que les
 regles iptables (`iptables -S atelier-vm-<tap>` confirme les `ACCEPT`
 port net-proxy/DNS puis le `DROP` final).
 
-**Reste ouvert** : ce mecanisme donne au guest un chemin reseau *possible*
-vers `net-proxy` (couche paquet), mais ne configure encore aucun outil a
-l'interieur du guest pour s'en servir (`HTTP_PROXY`/`HTTPS_PROXY`, resolveur
-DNS) — un devcontainer construit sans le savoir n'a aujourd'hui aucune
-raison d'utiliser ce chemin plutot que d'essayer une connexion directe
-(qui echoue silencieusement, bloquee par les regles iptables ci-dessus).
-Injecter ces variables dans l'image construite par `image-builder` (ex:
-`/etc/environment`) reste a faire — voir `docs/PROGRESS.md`, "Prochaines
-etapes".
+**Ferme : passerelle transparente, zero configuration interne au guest.**
+L'idee initialement envisagee ici (injecter `HTTP_PROXY`/`HTTPS_PROXY`/un
+resolveur DNS dans l'image construite par `image-builder`) a ete
+abandonnee : un vrai bug trouve en testant `ministack-workshop` en a
+montre la limite avant meme d'etre construite — l'etape `RUN apt-get`
+d'un `Dockerfile`, executee par `envbuilder` dans la microVM "builder",
+n'herite jamais de `HTTP_PROXY` (contrairement au clone git et au push
+registre, qui eux passent bien par cette variable), ce qui aurait rendu
+la meme approche fragile une fois appliquee a la VM de l'agent, pour
+n'importe quel devcontainer arbitraire fourni par l'utilisateur d'un
+Workshop — jamais garanti de respecter ces variables.
+
+Solution retenue a la place : `net-proxy` devient une **passerelle
+transparente** — le guest n'a besoin d'absolument aucune configuration
+reseau particuliere (ni `HTTP_PROXY`, ni resolveur DNS specifique), il n'a
+meme pas besoin de savoir que `net-proxy` existe.
+
+- `NetworkSetup::enable_transparent_gateway` (`crates/firecracker/src/network.rs`)
+  pose, en plus de la chaine `filter` existante (inchangee), une chaine
+  `nat` dediee sur le TAP :
+  ```
+  iptables -t nat -N atelier-vm-nat-<tap>
+  iptables -t nat -A atelier-vm-nat-<tap> -p tcp --dport 80  -j REDIRECT --to-port <port HTTP transparent>
+  iptables -t nat -A atelier-vm-nat-<tap> -p tcp --dport 443 -j REDIRECT --to-port <port TLS transparent>
+  iptables -t nat -A atelier-vm-nat-<tap> -p udp --dport 53  -j REDIRECT --to-port 53
+  iptables -t nat -A atelier-vm-nat-<tap> -p tcp --dport 53  -j REDIRECT --to-port 53
+  iptables -t nat -A PREROUTING -i <tap> -j atelier-vm-nat-<tap>
+  ```
+  `REDIRECT` reecrit l'IP de destination vers celle de l'interface
+  d'entree **avant** la decision de routage : le paquet devient une
+  livraison locale (chemin `INPUT`), jamais un transit `FORWARD` — `sysctl
+  net.ipv4.ip_forward` reste a 0 comme avant, `FORWARD -j DROP` reste
+  inchange pour tout ce qui n'est pas explicitement 80/443/53. Le
+  raisonnement de la section precedente ("ne pas activer `ip_forward`,
+  risque partage entre VMs du meme netns") reste donc valide et n'est
+  **pas** contourne par ce mecanisme.
+- `net-proxy` ecoute deux ports supplementaires
+  (`ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR`/`_TLS_ADDR`, defaut
+  `0.0.0.0:3180`/`:3181`) : le port HTTP transparent reutilise tel quel
+  `handle_connection` (une requete origin-form + `Host:` y arrive deja
+  dans le format attendu) ; le port TLS transparent lit le SNI du
+  `ClientHello` **en clair, sans jamais dechiffrer** (`crates/net-proxy/src/tls_sni.rs`,
+  meme principe que `ssl_preread` nginx/`req.ssl_sni` HAProxy), verifie
+  l'allowlist, puis relaie les octets tels quels — aucun certificat, aucune
+  confiance CA a gerer, la validation TLS de bout en bout reste intacte
+  cote guest.
+- Le port 53 (DNS) est redirige selon le meme principe **quel que soit**
+  le serveur DNS que le guest croit utiliser (`REDIRECT` matche sur le
+  port de destination, pas sur l'IP) — ferme le trou DNS mentionne
+  ci-dessus sans configuration guest non plus.
+- La VM de l'agent avait deja une route par defaut vers `net-proxy` sans
+  aucune configuration interne (`ip=` kernel, voir plus haut) : rien a
+  changer cote `vm-supervisor` au-dela d'appeler
+  `enable_transparent_gateway` a la place de `restrict_to_net_proxy`. La
+  VM "builder" (`atelier-builder-vm-init`, notre propre bootstrap, jamais
+  le contenu du Workshop), elle, n'avait pas de route par defaut — une
+  ligne `ip route add default via <host_ip>` a ete ajoutee, seule
+  "configuration interne" necessaire, et seulement a un composant de
+  plateforme, jamais au devcontainer de l'utilisateur.
+- **Verifie reellement** contre le Workshop de demo `ministack-workshop`
+  (Dockerfile **non modifie**) : `apt-get install systemd` (via
+  `archive.ubuntu.com`/`security.ubuntu.com`, HTTP transparent),
+  `deb.nodesource.com` (HTTPS transparent, feature Node.js), et
+  l'integralite du build (docker-in-docker, claude-code, code-server)
+  aboutissent avec succes, `imageDigest` publie et Workshop `Running`
+  (`crates/firecracker/tests/network.rs`, nouveau test
+  `enables_transparent_redirect_without_touching_forward`, verifie en
+  plus le contenu exact des regles via `iptables -t nat -S` sous
+  `CAP_NET_ADMIN` reel).

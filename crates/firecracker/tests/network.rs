@@ -118,3 +118,84 @@ async fn restricts_tap_to_net_proxy_only() {
         "la chaine dediee doit avoir disparu apres teardown()"
     );
 }
+
+/// Verifie le chemin transparent (voir docs/architecture/network-security.md,
+/// section sur `net-proxy` en passerelle gatekeeper) : redirection `nat`
+/// des ports 80/443/53 vers les ports locaux de `net-proxy`, sans jamais
+/// toucher a `FORWARD`/`ip_forward` (deja verifie inchange par
+/// `restricts_tap_to_net_proxy_only` sur la chaine `filter` — ce test se
+/// concentre sur la table `nat`, nouvelle ici).
+#[tokio::test]
+async fn enables_transparent_redirect_without_touching_forward() {
+    let tap_name = format!("fc-x{}", std::process::id() % 10000);
+    let network = match setup_link_local_tap(&tap_name, 3).await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("creation du TAP impossible ({e:?}), test ignore (requiert CAP_NET_ADMIN)");
+            return;
+        }
+    };
+
+    network
+        .enable_transparent_gateway(3128, 3180, 3181)
+        .await
+        .expect("la pose des regles de redirection doit reussir sous CAP_NET_ADMIN");
+
+    let nat_chain = format!("atelier-vm-nat-{tap_name}");
+    let nat_output = Command::new("iptables")
+        .args(["-t", "nat", "-S", &nat_chain])
+        .output()
+        .expect("lancement de `iptables -t nat -S`");
+    let nat_rules = String::from_utf8_lossy(&nat_output.stdout);
+    assert!(
+        nat_rules.contains("--dport 80") && nat_rules.contains("--to-ports 3180"),
+        "redirection HTTP manquante: {nat_rules}"
+    );
+    assert!(
+        nat_rules.contains("--dport 443") && nat_rules.contains("--to-ports 3181"),
+        "redirection TLS manquante: {nat_rules}"
+    );
+    assert!(
+        nat_rules.contains("--dport 53") && nat_rules.contains("--to-ports 53"),
+        "redirection DNS manquante: {nat_rules}"
+    );
+
+    let prerouting_output = Command::new("iptables")
+        .args(["-t", "nat", "-S", "PREROUTING"])
+        .output()
+        .expect("lancement de `iptables -t nat -S PREROUTING`");
+    let prerouting_rules = String::from_utf8_lossy(&prerouting_output.stdout);
+    assert!(
+        prerouting_rules.contains(&format!("-i {tap_name} -j {nat_chain}")),
+        "le TAP doit etre route vers la chaine nat dediee: {prerouting_rules}"
+    );
+
+    // Le comportement le plus important a re-verifier explicitement : ce
+    // mecanisme ne doit JAMAIS activer `FORWARD -j ACCEPT` ni retirer le
+    // `DROP` par defaut du TAP — `REDIRECT` rend le paquet local avant
+    // toute decision de routage, donc `FORWARD` reste hors-jeu.
+    let forward_output = Command::new("iptables")
+        .args(["-S", "FORWARD"])
+        .output()
+        .expect("lancement de `iptables -S FORWARD`");
+    let forward_rules = String::from_utf8_lossy(&forward_output.stdout);
+    assert!(
+        forward_rules.contains(&format!("-i {tap_name} -j DROP")),
+        "FORWARD doit rester bloque pour ce TAP: {forward_rules}"
+    );
+    assert!(
+        !forward_rules.contains("-j ACCEPT"),
+        "aucune regle FORWARD ACCEPT ne doit apparaitre: {forward_rules}"
+    );
+
+    network.teardown().await;
+
+    let nat_chain_after = Command::new("iptables")
+        .args(["-t", "nat", "-S", &nat_chain])
+        .output()
+        .expect("lancement de `iptables -t nat -S`");
+    assert!(
+        !nat_chain_after.status.success(),
+        "la chaine nat dediee doit avoir disparu apres teardown()"
+    );
+}

@@ -534,6 +534,14 @@ async fn ensure_image_build_job(
     }
 
     let net_proxy_port: u16 = 3128;
+    // Memes valeurs que `ensure_parent_pod` (`NET_PROXY_TRANSPARENT_HTTP_PORT`/
+    // `_TLS_PORT`) : la VM builder utilise desormais elle aussi la
+    // passerelle transparente (`enable_transparent_gateway`, appele
+    // directement par `image-builder`, qui a `CAP_NET_ADMIN` comme
+    // `vm-supervisor`), plus seulement `HTTP_PROXY` — voir
+    // docs/architecture/network-security.md.
+    let net_proxy_transparent_http_port: u16 = 3180;
+    let net_proxy_transparent_tls_port: u16 = 3181;
     let registry_port = ctx
         .registry_addr
         .rsplit_once(':')
@@ -582,6 +590,14 @@ async fn ensure_image_build_job(
         env_var(
             "ATELIER_BUILDER_NET_PROXY_PORT",
             &net_proxy_port.to_string(),
+        ),
+        env_var(
+            "ATELIER_BUILDER_NET_PROXY_TRANSPARENT_HTTP_PORT",
+            &net_proxy_transparent_http_port.to_string(),
+        ),
+        env_var(
+            "ATELIER_BUILDER_NET_PROXY_TRANSPARENT_TLS_PORT",
+            &net_proxy_transparent_tls_port.to_string(),
         ),
     ]
     .into_iter()
@@ -674,6 +690,14 @@ async fn ensure_image_build_job(
                                 env_var(
                                     "ATELIER_NET_PROXY_LISTEN_ADDR",
                                     &format!("0.0.0.0:{net_proxy_port}"),
+                                ),
+                                env_var(
+                                    "ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR",
+                                    &format!("0.0.0.0:{net_proxy_transparent_http_port}"),
+                                ),
+                                env_var(
+                                    "ATELIER_NET_PROXY_TRANSPARENT_TLS_ADDR",
+                                    &format!("0.0.0.0:{net_proxy_transparent_tls_port}"),
                                 ),
                                 // Alias interne hors allowlist : voir
                                 // `crates/net-proxy::internal` et le
@@ -842,6 +866,14 @@ async fn ensure_parent_pod(
     // `crates/firecracker/src/network.rs`).
     const VM_GUEST_IP: &str = "169.254.0.2";
     const NET_PROXY_PORT: u16 = 3128;
+    // Ports d'ecoute "transparents" de net-proxy (voir
+    // `crates/firecracker::network::NetworkSetup::enable_transparent_gateway`),
+    // cibles des redirections iptables posees par `vm-supervisor` : la VM
+    // n'a besoin de connaitre ni ces ports ni meme l'existence de
+    // net-proxy — communs aux deux conteneurs (net-proxy les ecoute,
+    // vm-supervisor y redirige), d'ou une seule paire de constantes.
+    const NET_PROXY_TRANSPARENT_HTTP_PORT: u16 = 3180;
+    const NET_PROXY_TRANSPARENT_TLS_PORT: u16 = 3181;
     // `identity-proxy`, `mcp-gateway` et `net-proxy` partagent le netns du
     // pod (tous les conteneurs d'un meme Pod) : joignables en `127.0.0.1`,
     // sans service Kubernetes ni DNS.
@@ -923,6 +955,14 @@ async fn ensure_parent_pod(
                         env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
                         env_var("ATELIER_VM_SNAPSHOT_DIR", &snapshot_dir),
                         env_var("ATELIER_NET_PROXY_PORT", &NET_PROXY_PORT.to_string()),
+                        env_var(
+                            "ATELIER_NET_PROXY_TRANSPARENT_HTTP_PORT",
+                            &NET_PROXY_TRANSPARENT_HTTP_PORT.to_string(),
+                        ),
+                        env_var(
+                            "ATELIER_NET_PROXY_TRANSPARENT_TLS_PORT",
+                            &NET_PROXY_TRANSPARENT_TLS_PORT.to_string(),
+                        ),
                         env_var("ATELIER_VM_CHROOT_BASE_DIR", JAILER_CHROOT_BASE_DIR),
                         env_var("ATELIER_VM_JAIL_ID", VM_JAIL_ID),
                         env_var("ATELIER_VM_VSOCK_UDS_FILENAME", VM_VSOCK_UDS_FILENAME),
@@ -946,6 +986,14 @@ async fn ensure_parent_pod(
                             env_var(
                                 "ATELIER_NET_PROXY_LISTEN_ADDR",
                                 &format!("0.0.0.0:{NET_PROXY_PORT}"),
+                            ),
+                            env_var(
+                                "ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR",
+                                &format!("0.0.0.0:{NET_PROXY_TRANSPARENT_HTTP_PORT}"),
+                            ),
+                            env_var(
+                                "ATELIER_NET_PROXY_TRANSPARENT_TLS_ADDR",
+                                &format!("0.0.0.0:{NET_PROXY_TRANSPARENT_TLS_PORT}"),
                             ),
                             env_var("ATELIER_VM_ADDR", VM_GUEST_IP),
                             // Tout l'egress autorise par net-proxy est chaine
