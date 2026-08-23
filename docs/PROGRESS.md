@@ -1943,3 +1943,34 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   ```
 - **Statut** : ✅ Validé pour les 4 tâches listées (2.1.1 à 2.1.4).
 
+### [2026-08-24] Jalon M6 - Tâches 6.0.1, 6.0.2 : `local-stack.sh` réécrit (retrait de Kanidm, orchestration complète), `teardown-stack.sh`
+- **Composant impacté** : `deploy/dev/local-stack.sh` (réécrit), `deploy/dev/teardown-stack.sh` (nouveau).
+- **Contexte** : le script `local-stack.sh` datait d'avant la migration Kanidm → Keycloak et d'avant l'ajout de PostgreSQL, S3, Forgejo, la PKI locale et l'ingress Traefik — tous déployés manuellement au fil de sessions précédentes (voir entrées ci-dessus) mais jamais intégrés à l'orchestration.
+- **`local-stack.sh`** : retire toute référence à Kanidm (conteneur Docker, service account, token API) ; orchestre désormais dans l'ordre de dépendance CRD Workshop → PKI locale (`deploy/dev/pki/init-pki.sh`, idempotent) → OpenBao (inchangé) → PostgreSQL (pod + création idempotente des bases `atelier_controller`/`keycloak`/`forgejo`, la base `atelier_apiserver` étant déjà créée automatiquement) → Keycloak (realm importé via ConfigMap) → S3 (RustFS) → Forgejo (admin + token API générés une seule fois, réutilisés ensuite via `env.sh`) → Traefik (ingress + Ingress applicatifs, après Keycloak/Forgejo dont il référence les Service) → registre OCI + build/`kind load` des images `:dev` (inchangé) → LLM Proxy optionnel (inchangé) → Redis (non disponible, message explicite renvoyant au Jalon M5 plutôt qu'un échec silencieux ou une infra inventée). Port-forwards host démarrés/réutilisés pour OpenBao (8200), PostgreSQL (5433) et S3 (9000). `env.sh` régénéré avec `ATELIER_DATABASE_URL_{API_SERVER,CONTROLLER}` (une base par composant), `ATELIER_OIDC_ISSUER_URL`/`ATELIER_JWT_{ISSUER,JWKS_URL,AUDIENCE}` pointant sur Keycloak via l'ingress Traefik (`auth.atelier.local`, cohérent avec `dashboard/lib/config.ts` et `crates/api-server/src/auth.rs`), variables S3 et Forgejo. Message final listant les étapes manuelles non automatisables : `sudo deploy/dev/traefik/update-hosts.sh` (nécessite un mot de passe, ne peut pas tourner dans le script) et confiance optionnelle à la CA locale (`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`).
+- **Bug réel trouvé et corrigé en testant** : le pod Forgejo du cluster tournait depuis des heures avec une base `forgejo` inexistante (jamais créée manuellement, cf. tâche originale) — confirmé par `kubectl logs` (`pq: database "forgejo" does not exist` en boucle sur les tâches cron). Le script détecte ce cas (grep du message d'erreur dans les logs juste après le `kubectl wait`) et redémarre le pod pour qu'il exécute ses migrations une fois la base créée. Deuxième bug trouvé en testant : `forgejo admin user create` échouait silencieusement juste après ce redémarrage (pod au statut `Ready` k8s alors qu'aucune readiness probe applicative n'est définie — le serveur web met encore quelques secondes à finir ses migrations) — corrigé par une boucle de nouvelle tentative (jusqu'à 30 x 1s) au lieu d'un `|| true` masquant l'échec ; la condition de réutilisation du token dans `env.sh` a aussi été corrigée pour ne jamais considérer une valeur vide comme "déjà généré".
+- **`teardown-stack.sh`** (nouveau) : symétrique de `local-stack.sh`, `kubectl delete -f` sur exactement les mêmes fichiers manifest (jamais un sélecteur de label large ni `--all`) pour Traefik, LLM Proxy, Forgejo, S3, Keycloak, PostgreSQL, OpenBao, plus les secrets TLS/CA de la PKI et les port-forwards locaux. Ne touche jamais `crds/workshop.yaml` (supprimerait tous les Workshops du cluster) ni les images Docker/kind `atelier-*:dev` (encore utilisées par les pods Workshop réels en cours d'exécution). Le registre OCI est arrêté (`docker stop`) mais pas supprimé, pour conserver les images déjà poussées. Garde-fou explicite : n'exécute aucune suppression sans `CONFIRM=yes`, avec un message d'avertissement sur l'impact (casse la session dev active en cours, sans toucher aux pods Workshop eux-mêmes).
+- **Preuve empirique / Test exécuté** (contre le vrai cluster `kind-atelier-dev`, cluster partagé avec de vrais Workshops actifs — `my-new-demo-parent` notamment, jamais touché) :
+  ```
+  ./deploy/dev/local-stack.sh   # run complet, tous les composants déjà déployés détectés et réutilisés sans effet de bord
+  # → a révélé et corrigé le bug Forgejo/base manquante en conditions réelles (voir ci-dessus)
+  ./deploy/dev/local-stack.sh   # deuxième run : "administrateur + token déjà générés, réutilisé" — idempotence confirmée
+
+  cat deploy/dev/local-stack/env.sh   # aucune référence à Kanidm, DATABASE_URL/ATELIER_OIDC_ISSUER_URL/ATELIER_JWT_*/S3_*/ATELIER_FORGEJO_* présents
+
+  curl -H "Host: auth.atelier.local" http://172.19.0.2:80/realms/atelier/.well-known/openid-configuration
+  # → 200, issuer "http://auth.atelier.local/realms/atelier" (cohérent avec ATELIER_JWT_ISSUER généré)
+
+  curl -H "Host: git.atelier.local" http://172.19.0.2:80/   # 200
+  curl -H "Host: git.atelier.local" -H "Authorization: token $ATELIER_FORGEJO_ADMIN_TOKEN" http://172.19.0.2:80/api/v1/user
+  # → 200, {"login":"atelier_admin","is_admin":true,...} : le token généré par le script authentifie réellement
+
+  # my-new-demo-parent (vrai Workshop) et les process locaux déjà lancés
+  # (npm run dev, atelier-controller, atelier-api-server) vérifiés intacts
+  # avant/après chaque run.
+
+  kubectl delete -f <chaque manifest cible> --dry-run=client -o name   # confirme que teardown-stack.sh ne resout que les ressources dev attendues (aucune CRD, aucun Workshop)
+  ./deploy/dev/teardown-stack.sh   # sans CONFIRM=yes : refuse et affiche l'avertissement, exit 1 — comportement voulu, PAS exécuté avec CONFIRM=yes sur ce cluster partagé (aurait cassé la session dev active d'OpenBao/PostgreSQL/Keycloak)
+  ```
+- **Point non testé en exécution réelle, par prudence** : `CONFIRM=yes ./deploy/dev/teardown-stack.sh` n'a pas été exécuté pour de vrai contre `kind-atelier-dev` (cluster partagé avec une session dev active et de vrais Workshops) — la suppression d'OpenBao/PostgreSQL/Keycloak aurait immédiatement cassé les process locaux déjà en cours (`atelier-controller`/`atelier-api-server`) et potentiellement la chaîne d'authentification de Workshops réels actifs. Le script a été relu très attentivement et chaque résolution de ressource vérifiée via `kubectl delete --dry-run=client` (voir ci-dessus) ; l'exécution réelle du chemin de suppression reste à faire sur un cluster kind jetable dédié.
+- **Statut** : ✅ Validé pour 6.0.1 (testé réellement, bug Forgejo trouvé et corrigé en conditions réelles). ⚠️ 6.0.2 : script écrit et relu attentivement, résolution des ressources vérifiée, mais suppression réelle non exécutée par prudence (cluster partagé).
+
