@@ -1,9 +1,11 @@
 # Atelier
 
-Environnement securise et controle pour agents de code (Claude Code, Gemini
-CLI, etc.) : chaque agent tourne dans une microVM Firecracker orchestree par
-un pod Kubernetes, avec un tooling dedie (proxy reseau, injection d'identite,
-passerelle MCP) qui mediatise tous ses acces au monde exterieur.
+[![Documentation Site](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://philippevienne.github.io/atelier/)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
+Environnement sécurisé et contrôlé pour agents de code (Claude Code, Gemini CLI, etc.) : chaque agent tourne dans une microVM Firecracker orchestrée par un pod Kubernetes, avec un tooling dédié (proxy réseau, injection d'identité, passerelle MCP) qui médiatise tous ses accès au monde extérieur.
+
+🌐 **Site officiel & Documentation** : [https://philippevienne.github.io/atelier/](https://philippevienne.github.io/atelier/)
 
 Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le détail des composants et du modèle de sécurité, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) pour le guide de déploiement et CI/CD (GHCR), et [docs/PROGRESS.md](docs/PROGRESS.md) pour l'état d'avancement courant.
 
