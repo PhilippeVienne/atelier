@@ -283,17 +283,17 @@ graph TD
 
 ### 7.1. Route `/v1/mcp` (SSE & WebSocket), Sécurité OIDC & Fast-Fail
 * **Fichier impacté** : `crates/api-server/src/mcp_server.rs` (Nouveau module)
-  - [ ] **4.1.1** : Implémenter le protocole JSON-RPC MCP (Model Context Protocol 2024-11-05).
-  - [ ] **4.1.2** : Vérification Fast-Fail : Rejeter immédiatement avec 503 si LiteLLM ou OpenBao est inaccessible.
-  - [ ] **4.1.3** : Brancher les handlers Axum :
+  - [-/claude-code/sess-c7a1e9-m4] **4.1.1** : Implémenter le protocole JSON-RPC MCP (Model Context Protocol 2024-11-05).
+  - [-/claude-code/sess-c7a1e9-m4] **4.1.2** : Vérification Fast-Fail : Rejeter immédiatement avec 503 si LiteLLM ou OpenBao est inaccessible.
+  - [-/claude-code/sess-c7a1e9-m4] **4.1.3** : Brancher les handlers Axum :
     - `GET /v1/mcp/sse` : Transport Server-Sent Events.
     - `POST /v1/mcp/messages` : Réception des appels d'outils.
     - `GET /v1/mcp/ws` : Transport WebSocket bidirectionnel complet.
-  - [ ] **4.1.4** : Protéger ces routes avec le middleware OIDC JWT.
+  - [-/claude-code/sess-c7a1e9-m4] **4.1.4** : Protéger ces routes avec le middleware OIDC JWT.
 
 ### 7.2. Implémentation des Tools MCP, Exécution Asynchrone Bufferisée & Migrations
 * **Fichier impacté** : `crates/api-server/src/mcp_tools.rs` (Nouveau module)
-  - [ ] **4.2.1** : `tools/list` annonce les outils :
+  - [-/claude-code/sess-c7a1e9-m4] **4.2.1** : `tools/list` annonce les outils :
     - `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop`, `exec_in_workshop`.
   - [ ] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
     ```sql
