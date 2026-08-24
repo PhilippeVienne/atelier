@@ -43,19 +43,19 @@ flowchart TD
         end
     end
 
-    UI -->|REST / WS Tunnels| API
-    PM -->|REST / MCP WS| API
-    EXT_MCP -->|MCP Streamable /v1/mcp| API
+    UI -->|"REST / WS Tunnels"| API
+    PM -->|"REST / MCP WS"| API
+    EXT_MCP -->|"MCP Streamable /v1/mcp"| API
 
-    API -->|Reconciliation CRD| CTRL
-    API -->|Logs / Audit / MCP Buffer| DB
-    API -->|Archivage zstd| S3
+    API -->|"Reconciliation CRD"| CTRL
+    API -->|"Logs / Audit / MCP Buffer"| DB
+    API -->|"Archivage zstd"| S3
 
-    CTRL -->|Orchestre Pods & KVM| ParentPod
+    CTRL -->|"Orchestre Pods & KVM"| ParentPod
 
-    VM <-->|HTTP Egress & DNS| NET
-    VM <-->|Git HTTPS & Secrets| ID
-    VM <-->|Outils in-VM (TAP/VSOCK)| MCP
+    VM <-->|"HTTP Egress & DNS"| NET
+    VM <-->|"Git HTTPS & Secrets"| ID
+    VM <-->|"Outils in-VM (TAP/VSOCK)"| MCP
 ```
 
 
