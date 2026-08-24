@@ -31,8 +31,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # crates/api-server/src/storage.rs). "rt-tokio" fournit l'implementation
 # par defaut du sleep/retry async requise par le client (sinon panique a
 # l'execution) et `ByteStream::into_async_read` pour le rejeu en streaming.
-aws-sdk-s3 = { version = "1.71", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-config = { version = "1.5", default-features = false, features = ["rustls"] }
+aws-sdk-s3 = { version = "1.71", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { version = "1.5", default-features = false, features = ["default-https-client"] }
 base64 = "0.22"
 # Compression/decompression zstd en streaming (tache 2.1.3/2.1.4) : API
 # async-native (AsyncRead -> AsyncRead), pas besoin de charger le flux en
