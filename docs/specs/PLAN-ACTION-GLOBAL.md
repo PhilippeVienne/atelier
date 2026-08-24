@@ -313,7 +313,7 @@ graph TD
 ### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
   - [x] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock. *(`deploy/dev/redis/dev-pod.yaml` déployé sur `kind-atelier-dev`, cycle `XADD`/`XGROUP CREATE`/`XREADGROUP`/`XPENDING`/`XACK` vérifié à la main, voir `docs/PROGRESS.md` 2026-08-24.)*
-  - [ ] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Bloqué le 2026-08-24 : `deploy/dev/llm-proxy/` en cours de déploiement concurrent par l'agent M3 au moment du passage — patch proposé mais non appliqué, voir `docs/PROGRESS.md`.)*
+  - [-/claude-code/sess-c7a1e9-m5] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Bloqué le 2026-08-24 : `deploy/dev/llm-proxy/` en cours de déploiement concurrent par l'agent M3 au moment du passage — patch proposé mais non appliqué, voir `docs/PROGRESS.md`.)*
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
 - [x] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX). *(`uv pip install -e ".[dev]"` réussit réellement, voir `docs/PROGRESS.md` 2026-08-24.)*
@@ -343,9 +343,9 @@ graph TD
 
 ### 8.4. Adaptateurs Multi-Forges Git & Pipeline Redis Streams (At-Least-Once)
 * **Fichiers** : `services/pm-engine/git_providers/`
-  - [ ] **5.4.1** : Interface générique `BaseGitProvider` (`get_issue`, `post_comment`, `create_branch`, `create_pr`, `merge_pr`).
-  - [ ] **5.4.2** : Implémentations concrètes : `ForgejoProvider`, `GitHubProvider`, `GitLabProvider`.
-  - [ ] **5.4.3** : Consommateur Redis Streams `services/pm-engine/redis_consumer.py` avec accusé de réception explicite (`XACK`) et reprise sur incident (`XAUTOCLAIM`).
+  - [-/claude-code/sess-c7a1e9-m5] **5.4.1** : Interface générique `BaseGitProvider` (`get_issue`, `post_comment`, `create_branch`, `create_pr`, `merge_pr`).
+  - [-/claude-code/sess-c7a1e9-m5] **5.4.2** : Implémentations concrètes : `ForgejoProvider`, `GitHubProvider`, `GitLabProvider`.
+  - [-/claude-code/sess-c7a1e9-m5] **5.4.3** : Consommateur Redis Streams `services/pm-engine/redis_consumer.py` avec accusé de réception explicite (`XACK`) et reprise sur incident (`XAUTOCLAIM`).
 
 ### 8.5. Interface Dashboard Next.js "Ask Project Manager" & Validation HITL
 * **Fichiers** : `dashboard/app/projects/[id]/pm/page.tsx` & `components/pm-chat.tsx`
