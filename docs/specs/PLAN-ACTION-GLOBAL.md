@@ -329,12 +329,12 @@ graph TD
 
 ### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
-  - [-/claude-code/sess-6f3eef77-g] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
-  - [-/claude-code/sess-6f3eef77-g] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante.
+  - [x] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock. *(`deploy/dev/redis/dev-pod.yaml` déployé sur `kind-atelier-dev`, cycle `XADD`/`XGROUP CREATE`/`XREADGROUP`/`XPENDING`/`XACK` vérifié à la main, voir `docs/PROGRESS.md` 2026-08-24.)*
+  - [ ] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Bloqué le 2026-08-24 : `deploy/dev/llm-proxy/` en cours de déploiement concurrent par l'agent M3 au moment du passage — patch proposé mais non appliqué, voir `docs/PROGRESS.md`.)*
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
-- [ ] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX).
-- [ ] **5.1.2** : Créer le `Dockerfile` optimisé pour la production.
+- [x] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX). *(`uv pip install -e ".[dev]"` réussit réellement, voir `docs/PROGRESS.md` 2026-08-24.)*
+- [x] **5.1.2** : Créer le `Dockerfile` optimisé pour la production. *(Multi-stage, image finale `python:3.12-slim` non-root ~205MB, `/health` répond 200 depuis le conteneur, voir `docs/PROGRESS.md` 2026-08-24.)*
 
 ### 8.2. Machine d'États LangGraph complète & Auto-correction continue bornée
 * **Fichier** : `services/pm-engine/pm_graph.py`
@@ -354,9 +354,9 @@ graph TD
 
 ### 8.3. Base `atelier_pm` : Checkpointer PostgreSQL & Mémoire RAG `pgvector` avec RLS
 * **Script de migration SQL** : `20260824000000_init_pm_engine.sql`
-  - [-/claude-code/sess-6f3eef77-g] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`.
-  - [-/claude-code/sess-6f3eef77-g] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active.
-  - [-/claude-code/sess-6f3eef77-g] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph.
+  - [x] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`. *(Exécuté contre l'instance réelle `atelier-postgres-dev`, voir `docs/PROGRESS.md` 2026-08-24.)*
+  - [x] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active. *(RLS vérifiée avec deux tenants via le rôle non-superutilisateur dédié `atelier_pm_app` — jamais `atelier_admin`, voir `docs/PROGRESS.md` 2026-08-24.)*
+  - [x] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph. *(`pm_engine/checkpointer.py`, `.setup()` crée réellement `checkpoints`/`checkpoint_writes`/`checkpoint_blobs`, roundtrip `aput`/`aget` vérifié contre la base réelle, voir `docs/PROGRESS.md` 2026-08-24.)*
 
 ### 8.4. Adaptateurs Multi-Forges Git & Pipeline Redis Streams (At-Least-Once)
 * **Fichiers** : `services/pm-engine/git_providers/`

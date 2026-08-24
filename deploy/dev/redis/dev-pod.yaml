@@ -1,0 +1,66 @@
+# Redis de developpement (meme convention que deploy/dev/postgres et
+# deploy/dev/s3) : un seul Pod, pas de persistance (emptyDir), donnees
+# jetables a la suppression du pod.
+#
+# Usage prevu (Jalon M5, voir docs/specs/05-devfactory-pm-engine.md) :
+# ingestion des webhooks Forgejo/GitHub/GitLab dans un Redis Stream
+# (`XADD`), consomme par `services/pm-engine` via un consumer group
+# (`XREADGROUP` + `XACK`, reprise sur incident via `XAUTOCLAIM`, voir
+# section 8.4 du plan). Les Streams sont une structure de donnees native de
+# Redis (disponible depuis Redis 5, pas un module a activer separement) :
+# aucune configuration serveur specifique n'est necessaire au-dela d'un
+# Redis standard pour les utiliser.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: atelier-redis-dev
+  namespace: default
+  labels:
+    app: atelier-redis-dev
+spec:
+  containers:
+    - name: redis
+      # Tag epingle (pas `:latest`) pour un deploiement deterministe.
+      image: redis:7.4-alpine
+      args:
+        - "redis-server"
+        - "--appendonly"
+        - "no"
+      ports:
+        - name: redis
+          containerPort: 6379
+      readinessProbe:
+        exec:
+          command: ["redis-cli", "ping"]
+        initialDelaySeconds: 2
+        periodSeconds: 5
+      livenessProbe:
+        exec:
+          command: ["redis-cli", "ping"]
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    # emptyDir : donnees perdues a la suppression du pod, comme
+    # deploy/dev/postgres et deploy/dev/s3. Pas de mode dev pertinent pour
+    # ce composant (contrairement a openbao `-dev`) : Redis standard sans
+    # AOF ni RDB suffit, la durabilite n'est pas requise pour ce cas
+    # d'usage (queue de webhooks + checkpoints, deja persistes cote
+    # PostgreSQL).
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-redis-dev
+  namespace: default
+spec:
+  selector:
+    app: atelier-redis-dev
+  ports:
+    - port: 6379
+      targetPort: 6379
+  type: ClusterIP

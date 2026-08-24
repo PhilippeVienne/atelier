@@ -32,3 +32,10 @@ deploy/dev/pki/certs/
 public/
 site/
 
+# Python (services/pm-engine, Jalon M5)
+services/*/.venv/
+services/*/__pycache__/
+services/*/**/__pycache__/
+services/*/*.egg-info/
+services/*/.pytest_cache/
+

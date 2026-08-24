@@ -2020,3 +2020,62 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
 - **Vérification de non-régression sur le cluster partagé** : `atelier-controller` réel arrêté le temps de la vérification (élimine la course connue avec `vscode_proxy_injects_real_session_auth_basic_header`, confirmée en isolant le test — échoue avec le controller actif, passe sans), puis recompilé et relancé : logs de réconciliation de tous les Workshops réels examinés sans erreur, `my-new-demo` (Workshop réel actif, pod `my-new-demo-parent` 4/4) toujours `Running` après redémarrage.
 - **Statut** : ✅ DoD du Jalon M2 entièrement clos (3/3 lignes `[x]`).
 
+### [2026-08-24 01:30] Jalon M5 - Tâches 5.0.1, 5.1.1, 5.1.2, 5.3.1, 5.3.2, 5.3.3 : Redis dev, scaffolding `services/pm-engine`, base `atelier_pm` + RLS + checkpointer LangGraph
+- **Composant impacté** : `deploy/dev/redis/dev-pod.yaml` (nouveau), `deploy/dev/redis/README.md` (nouveau), `services/pm-engine/` (nouveau : `pyproject.toml`, `Dockerfile`, `README.md`, `pm_engine/main.py`, `pm_engine/checkpointer.py`, `tests/`, `migrations/20260824000000_init_pm_engine.sql`).
+- **5.0.1 — Redis dev (Streams)** : Pod `atelier-redis-dev` (`redis:7.4-alpine`, `emptyDir`, meme convention que `deploy/dev/postgres`/`deploy/dev/s3`) deploye reellement sur `kind-atelier-dev`. Les Streams sont une structure native de Redis (pas de module a activer) : cycle at-least-once complet verifie a la main (`XADD` -> `XLEN`=1 -> `XGROUP CREATE pm-engine-workers` -> `XREADGROUP` -> `XPENDING`=1 message en attente -> `XACK` -> `XPENDING`=0). Detail dans `deploy/dev/redis/README.md`.
+- **5.0.2 — LiteLLM dev + modele d'embedding leger : BLOQUE, non traité, documenté ci-dessous plutôt que forcé.**
+  - Au moment d'aborder cette tâche, `deploy/dev/llm-proxy/` était en cours de déploiement/redéploiement **en temps réel** par l'agent parallèle dédié à M3 (`kubectl get pods` montrait `atelier-llm-proxy-<hash>` en `Terminating` à côté d'un nouveau pod de 24 secondes, plus un nouveau service `atelier-llm-proxy-db` inédit) — collision quasi certaine si ce fichier avait été édité au même instant.
+  - Conformément à la consigne de cette session en cas de conflit probable : **aucune modification appliquée** à `deploy/dev/llm-proxy/config.yaml` ni `dev-deployment.yaml`. Patch proposé ci-dessous, à appliquer par la prochaine session une fois M3 stabilisé (vérifier `git log -- deploy/dev/llm-proxy/` avant d'appliquer, la structure du fichier a pu évoluer depuis) :
+    ```diff
+    --- a/deploy/dev/llm-proxy/config.yaml
+    +++ b/deploy/dev/llm-proxy/config.yaml
+    @@
+       - model_name: sonnet-premium
+         litellm_params:
+           model: anthropic/claude-3-5-sonnet-20241022
+           api_key: os.environ/ANTHROPIC_API_KEY
+    +
+    +  # Modele d'embedding local, sans cle payante (Jalon M5, tache 5.0.2) :
+    +  # valide services/pm-engine (project_memories/pgvector) en dev sans
+    +  # dependre d'une cle OpenAI facturee. LiteLLM route ce nom vers un
+    +  # backend HuggingFace local (le conteneur telecharge le modele au
+    +  # premier appel ; prevoir un volume/cache persistant si le pod est
+    +  # recree souvent). Dimension native 384 != VECTOR(1536) de
+    +  # `project_memories` (calibree sur text-embedding-3-small) : n'ecrit
+    +  # PAS directement dans cette colonne sans adaptation (re-projection ou
+    +  # migration de colonne dediee aux tests dev) -- limite assumee, a
+    +  # trancher avant d'utiliser ce modele pour peupler la table reelle.
+    +  - model_name: embedding-dev-local
+    +    litellm_params:
+    +      model: huggingface/sentence-transformers/all-MiniLM-L6-v2
+    ```
+  - Non vérifié empiriquement (LiteLLM pas stable au moment du passage) : à revalider avec `curl -X POST .../v1/embeddings -d '{"model":"embedding-dev-local","input":"test"}'` une fois appliqué.
+- **5.1.1/5.1.2 — Scaffolding `services/pm-engine`** : `pyproject.toml` (Python ≥3.12, FastAPI/LangGraph/`langgraph-checkpoint-postgres`/`psycopg[binary]`/Redis/AsyncPG/Pydantic/HTTPX), `pm_engine/main.py` avec un unique endpoint `/health` (aucune machine d'états LangGraph — tâches 5.2.x hors périmètre, dépendantes du serveur MCP M4 pas encore construit). `Dockerfile` multi-stage (`builder` avec `uv`, image finale `python:3.12-slim` non-root, ~205 Mo).
+- **5.3.1/5.3.2 — Base `atelier_pm` + RLS** : `CREATE DATABASE atelier_pm` + `CREATE EXTENSION vector` sur l'instance PostgreSQL de dev réelle. Table `project_memories` (`VECTOR(1536)`, alignée sur `text-embedding-3-small`) avec index `ivfflat`/`vector_cosine_ops` et RLS (`ENABLE`+`FORCE ROW LEVEL SECURITY`, policy sur `current_setting('app.current_tenant')`). Nouveau rôle non-superutilisateur `atelier_pm_app` (`NOBYPASSRLS`), même convention que `atelier_app` documentée dans `deploy/dev/postgres/README.md` — **piège rencontré et documenté dans la migration** : `ALTER DEFAULT PRIVILEGES ... GRANT ... ON TABLES` ne couvre pas la séquence implicite de `BIGSERIAL` (`nextval()` échoue avec "permission denied for sequence" malgré le GRANT sur la table) ; il faut aussi `GRANT USAGE, SELECT ON SEQUENCES`.
+- **5.3.3 — Checkpointer `AsyncPostgresSaver`** : `pm_engine/checkpointer.py` (context manager `build_checkpointer(database_url)`, appelle `.setup()` puis retourne l'instance). Nécessitait une dépendance non déclarée par `langgraph-checkpoint-postgres` (`psycopg[binary]`, sinon `ImportError: no pq wrapper available`), ajoutée à `pyproject.toml`.
+- **Preuve empirique / Test exécuté** (aucun mock, contre le cluster kind partagé et l'instance PostgreSQL réelle) :
+  ```
+  kubectl exec atelier-redis-dev -- redis-cli XADD/XLEN/XGROUP CREATE/XREADGROUP/XPENDING/XACK   # cycle at-least-once complet, voir deploy/dev/redis/README.md
+
+  cd services/pm-engine && uv venv .venv --python 3.12 && uv pip install -e ".[dev]" --python .venv/bin/python   # installation reelle, 0 erreur
+  .venv/bin/uvicorn pm_engine.main:app --port 8100 &   curl http://127.0.0.1:8100/health   # {"status":"ok"}
+  docker build -t atelier-pm-engine:dev .   # succes, image finale 205MB
+  docker run -d -p 18100:8100 atelier-pm-engine:dev   curl http://127.0.0.1:18100/health   # {"status":"ok"} (via le conteneur, pas juste le venv local)
+  .venv/bin/pytest -q   # 2 passed (test_health.py, test_checkpointer.py contre DATABASE_URL_PM reel via le port-forward 5433 deja actif)
+
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d postgres -c 'CREATE DATABASE atelier_pm;'
+  kubectl exec -i atelier-postgres-dev -- psql -U atelier_admin -d atelier_pm < services/pm-engine/migrations/20260824000000_init_pm_engine.sql   # succes
+
+  # RLS verifiee avec deux tenants et le role non-superutilisateur atelier_pm_app (jamais atelier_admin) :
+  PGPASSWORD=... kubectl exec -i atelier-postgres-dev -- psql -U atelier_pm_app -d atelier_pm -c "SET app.current_tenant='alice'; SELECT ... FROM project_memories;"   # -> 1 ligne (alice uniquement)
+  PGPASSWORD=... kubectl exec -i atelier-postgres-dev -- psql -U atelier_pm_app -d atelier_pm -c "SET app.current_tenant='bob';   SELECT ... FROM project_memories;"   # -> 1 ligne (bob uniquement)
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d atelier_pm -c "SET app.current_tenant='alice'; SELECT ... FROM project_memories;"   # -> 2 lignes (superutilisateur, RLS ignoree - coherent avec la decouverte deja documentee pour atelier_apiserver)
+
+  # AsyncPostgresSaver.setup() cree reellement ses tables, verifie apres le test pytest :
+  kubectl exec atelier-postgres-dev -- psql -U atelier_admin -d atelier_pm -c '\dt'   # checkpoints, checkpoint_writes, checkpoint_blobs, checkpoint_migrations, project_memories
+
+  # Etat du cluster verifie intact apres coup :
+  kubectl get pods | grep -E 'my-new-demo-parent|atelier-redis-dev|atelier-postgres-dev'   # tous Running, my-new-demo-parent non affecte
+  ```
+- **Statut** : ✅ Validé pour 5.0.1, 5.1.1, 5.1.2, 5.3.1, 5.3.2, 5.3.3. ⚠️ 5.0.2 non réalisé (bloqué par un déploiement M3 concurrent en cours au moment du passage) — patch proposé mais non appliqué, à reprendre par la session suivante.
+
