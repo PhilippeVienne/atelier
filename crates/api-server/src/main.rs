@@ -27,6 +27,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("execution des migrations PostgreSQL")?;
     let openbao_addr = std::env::var("OPENBAO_ADDR").ok();
+    // Meme variable que `crates/controller` (`ATELIER_LLM_PROXY_ADDR`, voir
+    // `crates/controller/src/reconcile.rs`) : adresse bare `host:port`
+    // (sans schema), utilisee uniquement par la verification Fast-Fail du
+    // serveur MCP (`crate::mcp_server`, tache 4.1.2).
+    let litellm_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
     let session_auth = openbao_addr
         .clone()
         .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
@@ -39,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
             namespace,
             db_pool,
             openbao_addr,
+            litellm_addr,
             session_auth,
             storage,
         },

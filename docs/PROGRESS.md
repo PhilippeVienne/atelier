@@ -2187,3 +2187,43 @@ helm template atelier charts/atelier -f charts/atelier/values-test.yaml   # rend
 **Fusion** : conflit reel dans `crates/common/src/lib.rs` (liste d'exports `pub use crd::{...}`), `crates/controller/src/reconcile.rs` (imports), `crates/controller/tests/reconcile.rs` (deux tests distincts alignes par erreur par le diff — le test M2 `apply_wires_the_git_identity_injection_rule_when_configured` et le nouveau test M6 `apply_flags_needs_restart_for_upgrade_without_recreating_pod` conserves tous les deux, en entier) et `mkdocs.yml` (section RFC de `main` + entree `admin-guide.md` du worktree, combinees). Worktree `.claude/worktrees/agent-a1b58166d0b22db1f` et branche associee supprimes apres fusion reussie.
 
 **Statut** : ✅ Jalon M6 fusionne dans `main`, tache 6.4.2 completee et testee (code + chart absents lors de l'interruption). `[-/claude-code/sess-6f3eef77-h]` remplace par `[x]` pour 6.2.1-6.5.2 dans `docs/specs/PLAN-ACTION-GLOBAL.md`. ⚠️ DoD partiellement coche : Ingress/TLS reel et scripts `local-stack.sh`/`teardown-stack.sh` restent `[ ]` (jamais valides avec un certificat cert-manager reel ni revises dans cette session) — voir le DoD M6 pour le detail exact.
+
+### [2026-08-24 21:45] Jalon M4 - Serveur MCP externe (`/v1/mcp`) : outils lifecycle livres, `exec_in_workshop` hors perimetre (decision produit)
+
+**Contexte** : reprise du Jalon M4 (aucun travail anterieur, premiere session dessus). Avant d'ecrire du code, verification que `exec_in_workshop` (tache 4.2.3) et le confinement de securite (4.2.4) supposent des mecanismes absents du code actuel :
+- `exec_in_workshop` necessite un canal "envoie cette commande au guest, recois stdout/stderr/exit code" entre `api-server` et la microVM — le seul canal existant vers le guest est le tunnel HTTP/WebSocket interactif vers `ttyd` (`crate::terminal`), pas une RPC d'execution de commande. Aucune trace de ce mecanisme dans `vm-supervisor`/`mcp-gateway`.
+- Le confinement de securite (Egress Lockdown + snapshot d'urgence sur anomalie reseau) suppose une detection d'anomalie dans `net-proxy` qui n'existe pas non plus (`grep -rn "lockdown\|anomal" crates/` : aucun resultat).
+
+**Decision prise avec l'utilisateur** (question posee explicitement) : scoper cette session sur 4.1.1-4.1.4 + 4.2.1 (serveur MCP + outils lifecycle), laisser 4.2.2-4.2.4 non commences plutot que d'improviser une conception non validee pour un canal d'execution guest inexistant.
+
+**Implementation** (`crates/api-server/src/mcp_server.rs`, nouveau module) :
+- SDK officiel `rmcp` 3.1.4 (deja utilise par `crates/mcp-gateway`), reutilise plutot que d'ecrire le JSON-RPC MCP a la main. **Adaptation de transport documentee** : la spec d'origine (2024-11-05, `GET /sse` + `POST /messages` separes) n'est plus implementee par ce SDK — seul le transport **Streamable HTTP** courant (un seul endpoint `/v1/mcp`, GET pour le flux SSE, POST pour les appels) est disponible cote serveur, et c'est ce que parlent les clients MCP actuels (dont Claude Desktop/Cursor). `GET /v1/mcp/ws` (WebSocket brut) n'a pas ete implemente : le bridge JSON-RPC <-> WebSocket est faisable (rmcp expose `sink_stream::SinkStreamTransport` pour ca) mais propager l'identite JWT jusqu'aux handlers d'outils sans le mecanisme `http::request::Parts` qu'utilise Streamable HTTP demandait une exploration plus poussee des internals de `rmcp` (`GetExtensions`/`extensions_mut()` sur les messages JSON-RPC) — juge hors budget de cette session, laisse `[ ]`.
+- **Fast-Fail (4.1.2)** : `ensure_state_creating_dependencies_reachable` sonde LiteLLM (`GET /health/liveliness`) et OpenBao (`GET /v1/sys/health`) avant `create_workshop`, uniquement si CONFIGURES (`AppState.litellm_addr`/`openbao_addr`, meme convention "optionnel si absent" que le reste du projet). Adaptation necessaire : la spec demandait un HTTP 503, structurellement impossible a renvoyer une fois a l'interieur d'un appel d'outil MCP reussi au niveau transport (Streamable HTTP repond toujours 200, le JSON-RPC porte sa propre erreur) — renvoie donc une erreur JSON-RPC explicite a la place.
+- **Auth (4.1.4)** : `/v1/mcp` monte dans le meme `Router` `protected` que le reste de l'API (`crate::routes::router`), derriere `require_auth` — aucune logique d'auth propre a ce module. L'identite JWT (`AuthenticatedUser`) est relue a chaque appel d'outil via `http::request::Parts` (mecanisme documente par `rmcp::transport::streamable_http_server::tower::StreamableHttpService`, section "Accessing HTTP request data from tool handlers").
+- **6 outils lifecycle (4.2.1)** : `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop` — reutilisent directement `crate::routes::{workshops_api, ensure_owner, validate_name, patch_desired_state}` (rendus `pub(crate)`), memes regles de visibilite que la route REST equivalente (404 generique, pas 403, pour ne jamais confirmer l'existence d'un Workshop a un tiers).
+- **Piege rencontre** : `atelier_common::{DevcontainerSource, WorkshopResources}` derivent `JsonSchema` de `schemars 0.8` (via `kube-derive`), incompatible avec `schemars 1.x` qu'exige la macro `#[tool]` de `rmcp` 3.1.4 (deux versions majeures de la meme crate dans le graphe de dependances, erreur de compilation explicite). Les params de `create_workshop` sont donc des champs a plat (`devcontainer_repo`, `cpu`, `memory`...), reconstruits manuellement en types `atelier_common` a l'interieur du handler.
+- **Autre piege** : `StreamableHttpClientTransportConfig.auth_header` ne doit PAS inclure le prefixe `Bearer ` — le SDK l'ajoute lui-meme via `reqwest::RequestBuilder::bearer_auth`. Un double-prefixage (`"Bearer {jwt}"`) produit un en-tete `Authorization: Bearer Bearer <jwt>` que le serveur rejette (`decode_header` echoue) — corrige apres un premier echec de test reel.
+- **Autre piege** : deux versions majeures de `reqwest` coexistent dans le graphe (0.12 pour le reste du workspace, 0.13 vendorise par `rmcp` pour son client Streamable HTTP) — `StreamableHttpClient` n'est implemente QUE pour le `reqwest::Client` de `rmcp`. Resolu par un alias de dependance (`reqwest013 = { package = "reqwest", version = "0.13" }`, dev-dependency uniquement) plutot que de faire converger tout le workspace.
+
+**Tests reels executes** (`crates/api-server/tests/mcp.rs`, nouveau — vrai client MCP `rmcp` en transport Streamable HTTP reqwest, contre un vrai routeur Axum servi sur un port TCP reel, vrai `kube::Client` contre `kind-atelier-dev`, vraie crypto JWT) :
+```
+cargo test -p atelier-api-server --test mcp
+# mcp_lifecycle_tools_drive_a_real_workshop ... ok
+#   (tools/list annonce les 6 outils ; create_workshop -> verifie via l'API
+#    Kubernetes directement, pas seulement la reponse MCP ; list_workshops
+#    -> get_workshop_status -> suspend_workshop (desiredState=Suspended)
+#    -> resume_workshop (desiredState=Running) -> delete_workshop)
+# mcp_tools_enforce_ownership_isolation ... ok
+#   (un second utilisateur JWT ne peut pas lire get_workshop_status du
+#    Workshop d'un autre : erreur JSON-RPC generique "workshop introuvable",
+#    jamais une confirmation d'existence)
+# mcp_create_workshop_fast_fails_when_litellm_unreachable ... ok
+#   (port TCP local reellement ferme, pas un mock : create_workshop refuse
+#    et aucun Workshop n'est cree)
+
+cargo fmt --all -- --check                                    # silencieux
+cargo clippy --workspace --all-targets -- -D warnings         # 0 warning
+cargo test --workspace                                        # 100% vert (controller live arrete, port-forward Postgres actif)
+```
+
+**Statut** : ✅ Taches 4.1.1-4.1.4 et 4.2.1 validees (avec les adaptations de transport documentees ci-dessus et dans `crates/api-server/src/mcp_server.rs`). `[-/claude-code/sess-c7a1e9-m4]` remplace par `[x]` dans `docs/specs/PLAN-ACTION-GLOBAL.md`. ⚠️ **4.2.2 (migration `exec_commands`), 4.2.3 (`exec_in_workshop`) et 4.2.4 (confinement de securite) restent `[ ]`, decision produit deliberee** : necessitent la conception d'un nouveau canal d'execution de commande host->guest et d'une detection d'anomalie reseau, tous deux absents du code actuel — a traiter dans une session dediee avec sa propre conception validee, pas improvises ici. DoD M4 : 2/3 lignes `[x]` (pilotage MCP du cycle de vie verifie ; entree PROGRESS ; resilience `exec_in_workshop` non applicable, fonctionnalite non livree).

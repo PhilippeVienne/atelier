@@ -26,8 +26,17 @@ pub struct AppState {
     pub namespace: String,
     pub db_pool: sqlx::PgPool,
     /// Adresse d'OpenBao (`OPENBAO_ADDR`), utilisee pour la sonde de
-    /// disponibilite `/health/readiness` (voir `health_readiness`).
+    /// disponibilite `/health/readiness` (voir `health_readiness`) et pour
+    /// la verification Fast-Fail du serveur MCP (`crate::mcp_server`,
+    /// tache 4.1.2).
     pub openbao_addr: Option<String>,
+    /// Adresse de la passerelle LiteLLM (`ATELIER_LLM_PROXY_ADDR`), utilisee
+    /// uniquement par la verification Fast-Fail du serveur MCP
+    /// (`crate::mcp_server`, tache 4.1.2) — `api-server` ne parle pas
+    /// directement a LiteLLM en dehors de cette sonde de disponibilite (le
+    /// provisioning des Virtual Keys reste gere par `controller`, voir
+    /// `crates/controller/src/litellm.rs`).
+    pub litellm_addr: Option<String>,
     /// Client de lecture du secret `session_auth` d'un Workshop (mot de
     /// passe Basic Auth injecte dans les tunnels VS Code/Terminal, voir
     /// `crate::session_auth` et `crate::vscode::proxy_to_guest_port`).
@@ -45,6 +54,7 @@ pub struct AppState {
 
 pub fn router(state: AppState, auth: AuthState) -> Router {
     let health_state = state.clone();
+    let mcp_service = crate::mcp_server::streamable_http_service(state.clone());
     let protected = Router::new()
         .route("/v1/workshops", post(create_workshop).get(list_workshops))
         .route(
@@ -82,6 +92,16 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             "/v1/workshops/{name}/terminal/{*path}",
             any(crate::terminal::terminal_proxy),
         )
+        // Serveur MCP externe (Jalon M4, taches 4.1.1-4.1.4) : transport
+        // Streamable HTTP (GET pour le flux SSE, POST pour les appels
+        // JSON-RPC, un seul endpoint — voir le commentaire de tete de
+        // `crate::mcp_server` pour la justification de cette adaptation du
+        // transport legacy 2024-11-05 decrit par
+        // `docs/specs/04-external-mcp-server.md`). Protege par le meme
+        // middleware OIDC que le reste de cette table de routes, via le
+        // `.layer()` ci-dessous (s'applique a toutes les routes/services
+        // ajoutes avant lui).
+        .nest_service("/v1/mcp", mcp_service)
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(auth),
             require_auth,
@@ -351,7 +371,7 @@ async fn resume_workshop(
 /// (snapshot Firecracker + liberation du pod parent pour `Suspended`,
 /// recreation du pod + restauration depuis le snapshot pour `Running` — cf.
 /// `docs/ARCHITECTURE.md`, section "Mise en veille").
-async fn patch_desired_state(
+pub(crate) async fn patch_desired_state(
     state: &AppState,
     user: &AuthenticatedUser,
     name: &str,
@@ -374,7 +394,7 @@ async fn patch_desired_state(
 
 /// Meme convention de nommage que les objets Kubernetes eux-memes (RFC 1123
 /// DNS label) : evite un rejet tardif et moins clair cote API server K8s.
-fn validate_name(name: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_name(name: &str) -> Result<(), ApiError> {
     let valid = !name.is_empty()
         && name.len() <= 63
         && name
@@ -418,6 +438,13 @@ impl ApiError {
             status: StatusCode::BAD_GATEWAY,
             message: message.into(),
         }
+    }
+
+    /// Reutilise par `crate::mcp_server` pour formater une erreur JSON-RPC
+    /// MCP a partir d'une `ApiError` (memes handlers CRUD que la route REST,
+    /// voir tache 4.2.1).
+    pub(crate) fn message(&self) -> &str {
+        &self.message
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod mcp_server;
 pub mod portforward;
 pub mod routes;
 pub mod session_auth;

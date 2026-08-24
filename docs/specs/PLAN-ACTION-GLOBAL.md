@@ -283,18 +283,14 @@ graph TD
 
 ### 7.1. Route `/v1/mcp` (SSE & WebSocket), Sécurité OIDC & Fast-Fail
 * **Fichier impacté** : `crates/api-server/src/mcp_server.rs` (Nouveau module)
-  - [-/claude-code/sess-c7a1e9-m4] **4.1.1** : Implémenter le protocole JSON-RPC MCP (Model Context Protocol 2024-11-05).
-  - [-/claude-code/sess-c7a1e9-m4] **4.1.2** : Vérification Fast-Fail : Rejeter immédiatement avec 503 si LiteLLM ou OpenBao est inaccessible.
-  - [-/claude-code/sess-c7a1e9-m4] **4.1.3** : Brancher les handlers Axum :
-    - `GET /v1/mcp/sse` : Transport Server-Sent Events.
-    - `POST /v1/mcp/messages` : Réception des appels d'outils.
-    - `GET /v1/mcp/ws` : Transport WebSocket bidirectionnel complet.
-  - [-/claude-code/sess-c7a1e9-m4] **4.1.4** : Protéger ces routes avec le middleware OIDC JWT.
+  - [x] **4.1.1** : Implémenter le protocole JSON-RPC MCP (SDK officiel `rmcp` 3.1.4, déjà utilisé par `crates/mcp-gateway` — transport **Streamable HTTP**, la spec MCP courante, plutôt que de réimplémenter à la main le protocole 2024-11-05 que ce SDK n'expose plus, voir le commentaire de tête de `crates/api-server/src/mcp_server.rs`).
+  - [x] **4.1.2** : Vérification Fast-Fail sur `create_workshop` : refuse (erreur JSON-RPC explicite — un vrai HTTP 503 est structurellement impossible une fois dans un appel d'outil MCP réussi au niveau transport, voir `ensure_state_creating_dependencies_reachable`) si LiteLLM ou OpenBao, **configurés**, sont injoignables. Testé contre un vrai port TCP fermé (`tests/mcp.rs::mcp_create_workshop_fast_fails_when_litellm_unreachable`).
+  - [x] **4.1.3** (adapté, WebSocket non livré) : `/v1/mcp` (Streamable HTTP, un seul endpoint GET+POST — remplace `/sse`+`/messages`, voir 4.1.1) monté dans `crate::routes::router`, protégé par `require_auth`. **`GET /v1/mcp/ws` non implémenté** dans cette session (bridge WebSocket <-> JSON-RPC non trivial avec `rmcp`, nécessite de propager `AuthenticatedUser` sans le mécanisme `http::request::Parts` qu'utilise Streamable HTTP — laissé pour une session dédiée).
+  - [x] **4.1.4** : Routes `/v1/mcp*` montées derrière le même middleware `require_auth` que le reste de l'API (même `AuthState`/JWKS) — identité JWT relue à chaque appel d'outil via `http::request::Parts` (mécanisme documenté par `rmcp`).
 
 ### 7.2. Implémentation des Tools MCP, Exécution Asynchrone Bufferisée & Migrations
-* **Fichier impacté** : `crates/api-server/src/mcp_tools.rs` (Nouveau module)
-  - [-/claude-code/sess-c7a1e9-m4] **4.2.1** : `tools/list` annonce les outils :
-    - `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop`, `exec_in_workshop`.
+* **Fichier impacté** : `crates/api-server/src/mcp_server.rs` (les 6 tools lifecycle sont dans le même module que le transport — pas de fichier `mcp_tools.rs` séparé, le tool_router de `rmcp` rend cette séparation peu utile pour ce volume d'outils)
+  - [x] **4.2.1** (partiel, `exec_in_workshop` hors périmètre) : `tools/list` annonce `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop` — mêmes règles de visibilité que la route REST (`ensure_owner`), testé de bout en bout contre un vrai cluster (`tests/mcp.rs`). **`exec_in_workshop` non implémenté** : nécessiterait un nouveau canal d'exécution de commande hôte→guest, qui n'existe nulle part dans le code actuel (le seul canal existant vers le guest est le terminal interactif `ttyd`, pas une RPC exec/stdout/stderr/exit-code) — décision prise avec l'utilisateur de scoper cette session sans cette tâche plutôt que d'improviser un protocole non testé. Voir 4.2.2/4.2.3/4.2.4 ci-dessous, laissées `[ ]`.
   - [ ] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
     ```sql
     CREATE TABLE IF NOT EXISTS exec_commands (
@@ -323,9 +319,9 @@ graph TD
    - Appel de `exec_in_workshop("echo Hello from MCP")` ➔ streaming en temps réel et persistance dans PostgreSQL.
 
 ### 🎯 Definition of Done (DoD) du Jalon M4
-- [ ] Claude Desktop ou Cursor peut piloter Atelier via `/v1/mcp`.
-- [ ] L'outil `exec_in_workshop` est résilient aux coupures réseau grâce au buffer PostgreSQL.
-- [ ] Entrée documentée dans `docs/PROGRESS.md`.
+- [x] Claude Desktop ou Cursor peut piloter Atelier via `/v1/mcp` (transport Streamable HTTP, le SDK MCP officiel que ces clients utilisent — verifie avec un vrai client `rmcp` de bout en bout, `tests/mcp.rs`) — limite au cycle de vie (create/list/status/suspend/resume/delete), pas `exec_in_workshop`.
+- [ ] L'outil `exec_in_workshop` est résilient aux coupures réseau grâce au buffer PostgreSQL (non implémenté, voir 4.2.2-4.2.4).
+- [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
 

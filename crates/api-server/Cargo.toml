@@ -44,7 +44,23 @@ async-trait = "0.1.92"
 # deja present transitivement via aws-runtime, declare explicitement car
 # utilise directement dans notre propre code.
 uuid = { version = "1", features = ["v4"] }
+# Serveur MCP externe (Jalon M4, crate::mcp_server) : memes features que
+# `crates/mcp-gateway` (transport Streamable HTTP officiel du SDK Rust).
+rmcp = { version = "3.1.4", features = ["server", "macros", "transport-streamable-http-server", "server-side-http", "tower"] }
+http = "1"
 
 [dev-dependencies]
 sha2 = "0.10"
 tower = "0.5"
+# Client MCP reel pour les tests d'integration de crate::mcp_server (Jalon
+# M4) : se connecte au vrai transport Streamable HTTP servi par le routeur,
+# plutot que de simuler des requetes JSON-RPC brutes a la main.
+rmcp = { version = "3.1.4", features = ["client", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+# `rmcp` (feature transport-streamable-http-client-reqwest) vendorise sa
+# propre version de `reqwest` (0.13), distincte de celle du reste du
+# workspace (0.12, voir plus haut) : `StreamableHttpClient` n'est implemente
+# QUE pour son propre `reqwest::Client`, jamais pour un autre exemplaire du
+# meme type venant d'une version differente de la crate (constate a la
+# compilation). Alias renomme pour pouvoir construire ce client precis sans
+# faire converger tout le workspace vers reqwest 0.13.
+reqwest013 = { package = "reqwest", version = "0.13" }
