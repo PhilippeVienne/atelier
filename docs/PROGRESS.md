@@ -2307,3 +2307,41 @@ curl -X POST http://localhost:4000/v1/embeddings \
 **Limite assumee documentee** (`deploy/dev/ollama/README.md`) : dimension native 384, differente de `VECTOR(1536)` de `project_memories` (calibree sur `text-embedding-3-small`) — ne pas ecrire directement dans cette colonne avec ce modele sans adaptation (re-projection ou colonne dediee aux tests dev), meme limite deja documentee par la session precedente pour l'option Hugging Face.
 
 **Statut** : ✅ Tache 5.0.2 validee, `[-/claude-code/sess-c7a1e9-m5]` remplace par `[x]`.
+
+### [2026-08-24 23:20] Jalon M5 (suite) - Adaptateurs Git multi-forges + consommateur Redis Streams (taches 5.4.1-5.4.3)
+
+**`services/pm-engine/pm_engine/git_providers/`** (nouveau sous-package) :
+- `base.py` : `BaseGitProvider` (ABC, 5 methodes async : `get_issue`, `post_comment`, `create_branch`, `create_pr`, `merge_pr`) + dataclasses `Issue`/`PullRequest` — contrat identique quelle que soit la forge, conforme au principe de substituabilite (`docs/specs/00-architecture-principles-substitutability.md`).
+- `forgejo.py`/`github.py`/`gitlab.py` : implementations `httpx.AsyncClient` directes (pas de SDK tiers, meme convention que le reste du projet cote Rust — appels REST bruts). Piege reel rencontre et documente : l'API GitHub renvoie `401` sur un en-tete `Authorization: Bearer` VIDE (different de l'absence totale de l'en-tete, qui est autorisee pour les lectures publiques) — corrige en omettant completement l'en-tete quand `token` est une chaine vide plutot que de l'envoyer vide.
+
+**`services/pm-engine/pm_engine/redis_consumer.py`** (nouveau) : `RedisStreamConsumer` — `ensure_group` (idempotent, `mkstream=True`), `read` (`XREADGROUP` sur `>`), `claim_stale_messages` (`XAUTOCLAIM`, delai d'inactivite minimal configurable), `ack` (`XACK`), et `run_forever` (boucle : reprend d'abord les messages abandonnes, puis lit les nouveaux ; un message n'est acquitte qu'apres execution reussie du handler — une exception le laisse dans le PEL pour reprise, jamais acquitte a tort).
+
+**Tests reels executes** (aucun mock — Forgejo/Redis de dev reels, API publiques GitHub/GitLab reelles) :
+```
+# Forgejo : cycle complet contre l'instance de dev reelle (jeton genere
+# pour ce test : `forgejo admin user generate-access-token ... --scopes all`)
+FORGEJO_URL=http://127.0.0.1:3000 FORGEJO_TOKEN=... pytest tests/git_providers/test_forgejo.py
+# test_forgejo_provider_full_issue_to_merged_pr_lifecycle ... PASSED
+#   (depot jetable cree via l'API admin, issue reelle -> get_issue ->
+#    post_comment -> create_branch -> commit reel sur la branche (API
+#    "contents", necessaire pour que Forgejo accepte d'ouvrir une PR :
+#    "no changes between head and base" sinon) -> create_pr -> merge_pr,
+#    depot supprime en fin de test)
+
+# GitHub/GitLab : lecture contre les vraies API publiques (pas de jeton
+# d'ecriture disponible dans cet environnement pour un vrai depot)
+pytest tests/git_providers/test_github.py tests/git_providers/test_gitlab.py
+# get_issue sur octocat/Hello-World#1 et gitlab-org/gitlab-runner#1 ... PASSED
+
+# Redis Streams : instance de dev reelle (deploy/dev/redis)
+REDIS_URL=redis://127.0.0.1:6379/0 pytest tests/test_redis_consumer.py
+# test_consumer_reads_and_acks_a_real_message ... PASSED
+# test_consumer_reclaims_a_message_never_acked_by_a_dead_consumer ... PASSED
+#   (simule un crash : un consommateur lit un message sans jamais
+#    l'acquitter, un second le reprend via XAUTOCLAIM et l'acquitte)
+# test_run_forever_processes_messages_and_stops_on_cancellation ... PASSED
+
+pytest   # 8 passed (aucune regression sur test_checkpointer.py/test_health.py)
+```
+
+**Statut** : ✅ Taches 5.4.1-5.4.3 validees. `[-/claude-code/sess-c7a1e9-m5]` remplace par `[x]`.

@@ -343,9 +343,9 @@ graph TD
 
 ### 8.4. Adaptateurs Multi-Forges Git & Pipeline Redis Streams (At-Least-Once)
 * **Fichiers** : `services/pm-engine/git_providers/`
-  - [-/claude-code/sess-c7a1e9-m5] **5.4.1** : Interface générique `BaseGitProvider` (`get_issue`, `post_comment`, `create_branch`, `create_pr`, `merge_pr`).
-  - [-/claude-code/sess-c7a1e9-m5] **5.4.2** : Implémentations concrètes : `ForgejoProvider`, `GitHubProvider`, `GitLabProvider`.
-  - [-/claude-code/sess-c7a1e9-m5] **5.4.3** : Consommateur Redis Streams `services/pm-engine/redis_consumer.py` avec accusé de réception explicite (`XACK`) et reprise sur incident (`XAUTOCLAIM`).
+  - [x] **5.4.1** : Interface générique `BaseGitProvider` (`get_issue`, `post_comment`, `create_branch`, `create_pr`, `merge_pr`), `services/pm-engine/pm_engine/git_providers/base.py`.
+  - [x] **5.4.2** : Implémentations concrètes : `ForgejoProvider`, `GitHubProvider`, `GitLabProvider`. `ForgejoProvider` testé de bout en bout (cycle complet issue→commentaire→branche→PR→merge) contre l'instance de dev réelle ; `GitHubProvider`/`GitLabProvider` testés en lecture contre les vraies API publiques (pas de jeton d'écriture disponible dans cet environnement pour un dépôt réel).
+  - [x] **5.4.3** : Consommateur Redis Streams `services/pm-engine/pm_engine/redis_consumer.py` avec accusé de réception explicite (`XACK`) et reprise sur incident (`XAUTOCLAIM`), testé contre l'instance Redis de dev réelle (lecture, ack, reprise après un consommateur qui n'acquitte jamais).
 
 ### 8.5. Interface Dashboard Next.js "Ask Project Manager" & Validation HITL
 * **Fichiers** : `dashboard/app/projects/[id]/pm/page.tsx` & `components/pm-chat.tsx`
