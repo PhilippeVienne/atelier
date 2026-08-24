@@ -68,6 +68,12 @@ export default async function DashboardPage() {
   return (
     <>
       <TopNav>
+        <Link
+          href="/pm"
+          className="text-sm text-muted hover:text-foreground transition-colors px-2"
+        >
+          Project Manager
+        </Link>
         <form action={logout}>
           <button className="text-sm text-muted hover:text-foreground transition-colors px-2">
             Se deconnecter

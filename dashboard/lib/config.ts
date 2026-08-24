@@ -12,6 +12,13 @@
 export const API_SERVER_URL =
   process.env.ATELIER_API_SERVER_URL ?? "http://api.atelier.local";
 
+// `services/pm-engine` (Jalon M5, tache 5.5.x) : service Python distinct de
+// `atelier-api-server`, pas encore derriere l'ingress Traefik partage — pas
+// de domaine `.atelier.local` dedie pour l'instant, defaut de dev en
+// port-forward direct (`uvicorn pm_engine.main:app --port 8100`).
+export const PM_ENGINE_URL =
+  process.env.ATELIER_PM_ENGINE_URL ?? "http://127.0.0.1:8100";
+
 // Base OIDC generique — pour Keycloak c'est l'URL du realm (ex:
 // `http://auth.atelier.local/realms/atelier`), PAS la racine du
 // serveur : les endpoints standards

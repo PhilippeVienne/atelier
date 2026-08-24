@@ -9,6 +9,7 @@ import {
   resumeWorkshop,
   suspendWorkshop,
 } from "@/lib/api-server";
+import { decideReview } from "@/lib/pm-engine";
 import { destroySession } from "@/lib/session";
 
 export async function logout() {
@@ -29,6 +30,11 @@ export async function resume(name: string) {
 export async function remove(name: string) {
   await deleteWorkshop(name);
   revalidatePath("/");
+}
+
+export async function decideReviewAction(threadId: string, decision: "approved" | "rejected") {
+  await decideReview(threadId, decision);
+  revalidatePath("/pm");
 }
 
 export interface CreateWorkshopState {
