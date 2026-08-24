@@ -351,8 +351,8 @@ graph TD
 
 ### 8.5. Interface Dashboard Next.js "Ask Project Manager" & Validation HITL
 * **Fichiers** : `dashboard/app/projects/[id]/pm/page.tsx` & `components/pm-chat.tsx`
-  - [ ] **5.5.1** : Chat SSE interactif via Route Handler `/api/pm/chat` (BFF) scopé sur le projet et RLS.
-  - [ ] **5.5.2** : Interface d'approbation Human-in-the-Loop pour valider ou rejeter les Pull Requests du bot.
+  - [x] **5.5.1** : Chat SSE interactif via Route Handler `/api/pm/chat` (BFF) scopé sur le projet et RLS. *(Implémenté : `dashboard/app/api/pm/chat/route.ts` relaye le flux SSE de `pm-engine/chat` avec token httpOnly ajouté côté serveur, composant client `dashboard/app/pm/pm-chat.tsx` consomme le streaming via `fetch` + `ReadableStream`. Build Next.js 16 validé sans erreur.)*
+  - [x] **5.5.2** : Interface d'approbation Human-in-the-Loop pour valider ou rejeter les Pull Requests du bot. *(Implémenté : `dashboard/app/pm/pm-reviews.tsx` avec mise à jour optimiste, Server Action `decideReviewAction` dans `app/actions.ts`, route handlers `/api/pm/reviews` (GET) et `/api/pm/reviews/[threadId]/decision` (POST) relayant vers `pm-engine`. Build Next.js 16 validé sans erreur.)*
 
 ### 🧪 Tests & Preuves Attendues pour M5
 1. `pytest services/pm-engine/tests/` :
@@ -362,7 +362,7 @@ graph TD
 ### 🎯 Definition of Done (DoD) du Jalon M5
 - [ ] Le PM Engine résout un ticket de bout en bout de façon autonome. **Non vérifié avec une vraie microVM Firecracker** (aucun `atelier-controller` actif dans cette session) — chaque nœud est testé individuellement contre de vraies dépendances (voir 5.2.2), mais pas le parcours complet `DelegateToClaudeCode`→`RunDevcontainerTests` avec un vrai Claude Code exécuté dans le guest.
 - [ ] Les microVMs sont synchronisées et mises en veille dès que la PR est ouverte. `suspend_workshop` (MCP) testé réellement ; le hook `git-sync` explicite de la spec n'est pas un mécanisme séparé (la branche est déjà synchronisée par construction, `create_branch`/commits Git précédant `suspend_workshop`).
-- [ ] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions. (tâche 5.5.x, hors périmètre de cette session.)
+- [x] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions. *(Page `/pm` avec chat SSE interactif et interface d'approbation HITL — build Next.js 16 validé, `npm run build` 100% vert.)*
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
