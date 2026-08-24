@@ -6,12 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "SEE LICENSE IN ../../LICENSE" }
 
-# Perimetre de ce lot (Jalon M5, taches 5.1.1/5.1.2 du plan) : uniquement le
-# scaffolding du projet (dependances + `/health`), pas de graphe LangGraph
-# fonctionnel (taches 5.2.x, hors perimetre, dependent du serveur MCP M4
-# pas encore construit). Les dependances ci-dessous sont neanmoins toutes
-# reellement necessaires a terme (voir docs/specs/05-devfactory-pm-engine.md)
-# et sont deja epinglees pour que ce scaffolding s'installe reellement.
 dependencies = [
   "fastapi>=0.115,<1.0",
   "uvicorn[standard]>=0.32,<1.0",
@@ -27,6 +21,16 @@ dependencies = [
   "pydantic>=2.9,<3.0",
   "pydantic-settings>=2.6,<3.0",
   "httpx>=0.27,<1.0",
+  # SDK MCP officiel (Jalon M5, tache 5.2.2, `pm_engine.mcp_client`) : le
+  # PM pilote le cycle de vie des Workshops via le meme serveur MCP externe
+  # (`/v1/mcp`) qu'un client MCP externe (Claude Desktop/Cursor), jamais
+  # par un raccourci interne. Depend en interne de `httpx2` (pas `httpx`),
+  # les deux coexistent sans conflit.
+  "mcp>=2.1,<3.0",
+  # Consomme le flux SSE de reconnexion de exec_in_workshop
+  # (`GET /v1/workshops/{name}/exec/{id}/stream`, tache 4.2.3 cote
+  # atelier) — voir `pm_engine.exec_client`.
+  "httpx-sse>=0.4,<1.0",
 ]
 
 [project.optional-dependencies]

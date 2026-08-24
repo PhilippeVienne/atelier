@@ -47,6 +47,20 @@ model_list:
       input_cost_per_token: 0.5
       output_cost_per_token: 0.5
 
+  # Modele de test pour `pm_engine.nodes.plan_parallel_tasks` (Jalon M5,
+  # tache 5.2.2) : DEEPSEEK_API_KEY/ANTHROPIC_API_KEY ne sont que des
+  # valeurs de bouchon dans cet environnement de dev (jamais de vraie cle
+  # payante provisionnee ici) — `mock_response` reste la seule facon de
+  # tester pour de vrai (vrai aller-retour LiteLLM, juste sans fournisseur
+  # payant reel) le chemin "heureux" de parsing JSON de ce noeud.
+  - model_name: atelier-plan-test
+    litellm_params:
+      model: openai/atelier-plan-test
+      mock_response: '[{"id":"task-1","title":"Backend","scope":["crates/**"]},{"id":"task-2","title":"Frontend","scope":["dashboard/**"]}]'
+    model_info:
+      input_cost_per_token: 0.5
+      output_cost_per_token: 0.5
+
   # Modele d'embedding leger pour valider les tests vectoriels `pgvector` en
   # dev sans cle payante bloquante (Jalon M5, tache 5.0.2 — voir
   # `services/pm-engine`, table `project_memories`). Route vers Ollama

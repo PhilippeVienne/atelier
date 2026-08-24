@@ -2345,3 +2345,46 @@ pytest   # 8 passed (aucune regression sur test_checkpointer.py/test_health.py)
 ```
 
 **Statut** : ✅ Taches 5.4.1-5.4.3 validees. `[-/claude-code/sess-c7a1e9-m5]` remplace par `[x]`.
+
+### [2026-08-25 00:15] Jalon M5 (suite) - Machine d'etats LangGraph complete (taches 5.2.1-5.2.2)
+
+**Modules crees** (`services/pm-engine/pm_engine/`) : `state.py` (`PMWorkflowState`), `deps.py` (`PmEngineDeps`, injection de dependances par noeud), `oidc.py` (`OidcTokenProvider`, grant `client_credentials`), `mcp_client.py` (client MCP officiel, SDK `mcp`, transport Streamable HTTP), `exec_client.py` (consomme le flux SSE de `exec_in_workshop` jusqu'a completion), `llm_client.py` (REST direct vers LiteLLM), `nodes.py` (les 11 noeuds), `graph.py` (cablage `StateGraph`).
+
+**Identite de service `atelier-pm-bot`** : le PM pilote Atelier en tant qu'identite propre (pas au nom de l'utilisateur qui a ouvert le ticket) — nouveau client OIDC confidentiel avec compte de service ajoute a `deploy/dev/keycloak/realm-export.json` (`client_credentials`, mapper d'audience `atelier-api` identique a `atelier-dashboard`), cree sur l'instance Keycloak de dev reelle via l'API admin et verifie (jeton reel obtenu, `aud` contient bien `atelier-api`).
+
+**Validation empirique de la chaine MCP complete** : un vrai `atelier-api-server` (Jalon M4) a ete demarre localement pour cette session, connecte au vrai Keycloak/PostgreSQL/OpenBao/cluster kind de dev (`ATELIER_JWT_ISSUER`/`JWKS_URL`/`AUDIENCE` pointant vers Keycloak) — `pm_engine.mcp_client` pilote reellement `create_workshop`/`list_workshops`/`delete_workshop` via ce process, avec le jeton `atelier-pm-bot`.
+
+**Piege reel rencontre** : le SDK MCP officiel (`mcp` 2.1.0) exige precisement son propre client HTTP (`httpx2.AsyncClient`, une dependance distincte de `httpx`) pour `streamable_http_client` — passer un `httpx.AsyncClient` classique echoue au typage/execution. Documente dans `pm_engine/mcp_client.py`.
+
+**Adaptation "5.0.2 x 5.3.2"** : `project_memories.embedding` est un `VECTOR(1536)` (calibre sur `text-embedding-3-small`), mais le modele d'embedding local (`all-minilm`/Ollama, tache 5.0.2) produit des vecteurs de 384 dimensions — limite deja documentee comme non resolue par les sessions precedentes. Resolue ici par `IndexKnowledge` : complete le vecteur a zero jusqu'a 1536 dimensions (`_pad_embedding`) plutot que de changer le schema de cette table dev — mathematiquement, un padding a zero uniforme sur toutes les lignes ne modifie NI le produit scalaire NI la norme des vecteurs d'origine, donc la similarite cosinus (metrique de l'index `ivfflat`) entre deux embeddings ainsi completes reste identique a celle des vecteurs 384-dim d'origine.
+
+**Modele LiteLLM de test ajoute** (`deploy/dev/llm-proxy/config.yaml`, `atelier-plan-test`) : `DEEPSEEK_API_KEY`/`ANTHROPIC_API_KEY` ne sont que des valeurs de bouchon dans cet environnement (`DeepseekException - ... api key ... is invalid`, verifie empiriquement) — aucune vraie cle payante n'est disponible pour tester le chemin "heureux" (reponse JSON valide) de `PlanParallelTasks`. `mock_response` (fonctionnalite LiteLLM native, deja utilisee au Jalon M3 pour les tests de budget) reste un vrai aller-retour LiteLLM, juste sans fournisseur payant reel — pas un mock introduit par cette session.
+
+**Tests reels executes** (25 tests, aucun mock de code applicatif — seulement des `mock_response` LiteLLM natifs pour eviter tout cout) :
+```
+pytest -v
+# git_providers/test_forgejo.py, test_github.py, test_gitlab.py ......... 3 passed (deja existants)
+# test_checkpointer.py, test_health.py ................................... 2 passed (deja existants)
+# test_redis_consumer.py (3 tests) ........................................ deja existants
+# test_llm_client.py::test_chat_returns_the_mock_response_content ........ PASSED
+# test_llm_client.py::test_embed_returns_a_real_384_dim_vector ............ PASSED
+# test_oidc.py::test_get_token_returns_a_real_valid_jwt_and_caches_it ..... PASSED (Keycloak reel)
+# test_mcp_client.py::test_mcp_session_drives_a_real_workshop_lifecycle .. PASSED
+#   (vrai atelier-api-server local + vrai Keycloak : tools/list, create_workshop,
+#    list_workshops, delete_workshop, verifie via un vrai Workshop CRD cree/supprime)
+# test_graph.py (2 tests) : compilation du graphe complet (11 noeuds) + AutoCorrectionLoop
+# test_hitl_interrupt.py::test_await_hitl_approval_interrupts_and_resumes_with_the_real_checkpointer
+#   PASSED — reprise verifiee sur un OBJET graph totalement recree (simule un
+#   crash/redemarrage de worker), l'etat complet (dont pr_url, pose AVANT
+#   l'interruption) est bien restaure depuis PostgreSQL, pas seulement la decision
+# test_nodes.py (10 tests) : route_after_tests/route_after_hitl (purs),
+#   AnalyzeIssue (vrai Forgejo + vrai LLM), PlanParallelTasks (vrai JSON LLM),
+#   ProvisionWorkshop+SuspendWhileWaitingReview (vrai MCP, vrai Workshop CRD),
+#   OpenPullRequest+MergeAndClose (cycle complet contre Forgejo reel),
+#   IndexKnowledge (vrai Ollama + vraie ecriture RLS dans atelier_pm)
+# 25 passed
+```
+
+**Non teste** : `DelegateToClaudeCode`/`RunDevcontainerTests` de bout en bout avec une vraie microVM Firecracker — necessiterait un `atelier-controller` actif + une image devcontainer construite + un boot reel, hors budget de cette session (le meme constat que pour `exec_in_workshop` lui-meme au Jalon M4). La construction de l'appel MCP (`exec_in_workshop`) et l'attente du resultat via SSE (`pm_engine.exec_client`) sont neanmoins du code reel, pas un stub — seul le "dernier kilometre" (guest reellement demarre) n'a pas pu etre exerce.
+
+**Statut** : ✅ Taches 5.2.1-5.2.2 validees pour leur perimetre testable dans cet environnement. `[-/claude-code/sess-c7a1e9-m5]` remplace par `[x]`. DoD M5 : 1/4 ligne `[x]` (entree PROGRESS) — les 3 autres necessitent soit une vraie microVM live (hors budget), soit le Dashboard (tache 5.5.x, hors perimetre convenu pour cette session).

@@ -320,20 +320,22 @@ graph TD
 - [x] **5.1.2** : Créer le `Dockerfile` optimisé pour la production. *(Multi-stage, image finale `python:3.12-slim` non-root ~205MB, `/health` répond 200 depuis le conteneur, voir `docs/PROGRESS.md` 2026-08-24.)*
 
 ### 8.2. Machine d'États LangGraph complète & Auto-correction continue bornée
-* **Fichier** : `services/pm-engine/pm_graph.py`
-  - [ ] **5.2.1** : Définir le State Typed `PMWorkflowState`.
-  - [ ] **5.2.2** : Implémenter les nœuds du graphe :
-    1. `AnalyzeIssue` : Analyse LLM du ticket.
-    2. `PlanParallelTasks` : Découpage des tâches avec injection de prompt sans chevauchement de fichiers.
-    3. `ProvisionWorkshop` : Appels MCP `create_workshop` sur sous-branches éphémères (`feature/task-<id>`).
-    4. `DelegateToClaudeCode` : Appels MCP `exec_in_workshop` lançant Claude Code dans la microVM.
-    5. `RunDevcontainerTests` : Exécution des suites de tests déclarées dans `.devcontainer/devcontainer.json`.
-    6. `AutoCorrectionLoop` : Ré-injection des traces d'erreurs en continu tant que le budget LLM n'est pas épuisé.
-    7. `OpenPullRequest` : Ouverture de la PR signée par `atelier-pm-bot`.
-    8. `SuspendWhileWaitingReview` : Hook `git-sync` puis appel MCP `suspend_workshop` (décharge S3 multipart).
-    9. `AwaitHitlApproval` : Checkpoint PostgreSQL (attente approbation humaine).
-    10. `MergeAndClose` : Fusion de la PR et fermeture du ticket.
-    11. `IndexKnowledge` : Extraction des patterns de résolution et indexation vectorielle.
+* **Fichiers** : `services/pm-engine/pm_engine/state.py`, `graph.py`, `nodes.py`, `deps.py`, `mcp_client.py`, `oidc.py`, `llm_client.py`, `exec_client.py` (le plan prévoyait un seul `pm_graph.py` ; scindé en modules cohérents avec le reste du service).
+  - [x] **5.2.1** : `PMWorkflowState` (`state.py`, `TypedDict`), avec `SubTask` pour le découpage `PlanParallelTasks`.
+  - [x] **5.2.2** : Les 11 nœuds implémentés (`nodes.py`), pilotant Atelier via le **vrai** serveur MCP externe (`/v1/mcp`, Jalon M4 — jamais un raccourci interne), avec une identité de service OIDC dédiée (`atelier-pm-bot`, voir `deploy/dev/keycloak/realm-export.json`) :
+    1. `AnalyzeIssue` : lecture réelle du ticket (`BaseGitProvider.get_issue`) + appel LLM (LiteLLM).
+    2. `PlanParallelTasks` : appel LLM structuré (JSON), avec repli sur une tâche unique si la réponse n'est pas parsable.
+    3. `ProvisionWorkshop` : `create_workshop` (MCP) par sous-tâche + `create_branch` (Git) — **simplification assumée** : les appels sont émis séquentiellement dans ce nœud (pas de fan-out `Send` natif LangGraph), les Workshops tournent bien en parallèle dans le cluster une fois créés.
+    4. `DelegateToClaudeCode` : `exec_in_workshop` (MCP) avec le périmètre de fichiers de la sous-tâche injecté dans le prompt, attend la fin via le flux SSE de reconnexion (`pm_engine.exec_client`).
+    5. `RunDevcontainerTests` : `exec_in_workshop` sur `bash .devcontainer/test.sh`.
+    6. `AutoCorrectionLoop` : ré-injecte la trace d'erreur dans l'analyse, borné par `max_correction_attempts` (arête conditionnelle `route_after_tests`, jamais de boucle infinie).
+    7. `OpenPullRequest` : `BaseGitProvider.create_pr`.
+    8. `SuspendWhileWaitingReview` : `suspend_workshop` (MCP) par sous-tâche.
+    9. `AwaitHitlApproval` : `interrupt()` LangGraph, checkpoint PostgreSQL réel (tâche 5.3.3) — reprise vérifiée après un redémarrage simulé du worker.
+    10. `MergeAndClose` : `BaseGitProvider.merge_pr` + `post_comment`.
+    11. `IndexKnowledge` : embedding (Ollama, tâche 5.0.2) complété par des zéros jusqu'à `VECTOR(1536)` (préserve exactement la similarité cosinus des vecteurs 384-dim d'origine) + `INSERT` dans `project_memories` avec RLS.
+
+    **Limite assumée** : `DelegateToClaudeCode`/`RunDevcontainerTests` ne sont pas testés de bout en bout avec une vraie microVM Firecracker (aucun `atelier-controller` actif dans l'environnement de développement de cette session) — voir `docs/PROGRESS.md`. Tous les autres nœuds sont testés contre de vraies dépendances (Forgejo, MCP/`api-server`, LiteLLM, PostgreSQL `atelier_pm`).
 
 ### 8.3. Base `atelier_pm` : Checkpointer PostgreSQL & Mémoire RAG `pgvector` avec RLS
 * **Script de migration SQL** : `20260824000000_init_pm_engine.sql`
@@ -358,10 +360,10 @@ graph TD
    - Validation de l'étanchéité RLS multi-tenant sur les embeddings `pgvector`.
 
 ### 🎯 Definition of Done (DoD) du Jalon M5
-- [ ] Le PM Engine résout un ticket de bout en bout de façon autonome.
-- [ ] Les microVMs sont synchronisées et mises en veille dès que la PR est ouverte.
-- [ ] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions.
-- [ ] Entrée documentée dans `docs/PROGRESS.md`.
+- [ ] Le PM Engine résout un ticket de bout en bout de façon autonome. **Non vérifié avec une vraie microVM Firecracker** (aucun `atelier-controller` actif dans cette session) — chaque nœud est testé individuellement contre de vraies dépendances (voir 5.2.2), mais pas le parcours complet `DelegateToClaudeCode`→`RunDevcontainerTests` avec un vrai Claude Code exécuté dans le guest.
+- [ ] Les microVMs sont synchronisées et mises en veille dès que la PR est ouverte. `suspend_workshop` (MCP) testé réellement ; le hook `git-sync` explicite de la spec n'est pas un mécanisme séparé (la branche est déjà synchronisée par construction, `create_branch`/commits Git précédant `suspend_workshop`).
+- [ ] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions. (tâche 5.5.x, hors périmètre de cette session.)
+- [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
 
