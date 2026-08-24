@@ -8,7 +8,8 @@ la tache 5.0.2 pour le modele `embedding-dev-local`).
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -35,6 +36,31 @@ class LlmClient:
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
+
+    async def chat_stream(
+        self, model: str, messages: list[dict[str, str]], **kwargs: Any
+    ) -> AsyncIterator[str]:
+        """Meme endpoint que `chat()`, mais avec `stream: true` (SSE
+        OpenAI-compatible) : cede chaque fragment de texte des qu'il
+        arrive, pour le chat interactif du Dashboard (tache 5.5.1) — un
+        vrai flux LiteLLM, pas une segmentation artificielle d'une reponse
+        deja complete."""
+        async with self._client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"model": model, "messages": messages, "stream": True, **kwargs},
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[len("data: "):]
+                if payload == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                delta = chunk["choices"][0]["delta"].get("content")
+                if delta:
+                    yield delta
 
     async def embed(self, model: str, text: str) -> list[float]:
         response = await self._client.post(

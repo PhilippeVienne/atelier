@@ -31,6 +31,13 @@ dependencies = [
   # (`GET /v1/workshops/{name}/exec/{id}/stream`, tache 4.2.3 cote
   # atelier) — voir `pm_engine.exec_client`.
   "httpx-sse>=0.4,<1.0",
+  # Verification JWT entrants (tache 5.5.1/5.5.2, `pm_engine.auth`) : le
+  # Dashboard transmet le JWT utilisateur (deja verifie une premiere fois
+  # cote `atelier-api-server`, voir `crates/api-server/src/auth.rs`) au PM
+  # Engine, qui doit le revalider lui-meme (jamais faire confiance a un
+  # en-tete non verifie provenant d'un autre service). `[crypto]` fournit
+  # le support RS256/ES256 via `cryptography` (JWK RFC 7517).
+  "pyjwt[crypto]>=2.9,<3.0",
 ]
 
 [project.optional-dependencies]

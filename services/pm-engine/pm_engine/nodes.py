@@ -18,6 +18,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from .deps import PmEngineDeps
+from .embeddings import embedding_literal as embeddings_embedding_literal
+from .embeddings import pad_embedding
 from .exec_client import wait_for_exec_completion
 from .mcp_client import atelier_mcp_session, call_tool_json
 from .state import PMWorkflowState, SubTask
@@ -318,40 +320,20 @@ async def merge_and_close(state: PMWorkflowState, config: RunnableConfig) -> dic
 # --------------------------------------------------------------------------
 # 11. IndexKnowledge
 # --------------------------------------------------------------------------
-PROJECT_MEMORIES_VECTOR_DIM = 1536
-"""`project_memories.embedding` est un `VECTOR(1536)` (calibre sur
-`text-embedding-3-small`, voir la migration) — le modele d'embedding dev
-local (`all-minilm`/tache 5.0.2) produit des vecteurs de 384 dimensions.
-Complete a zero jusqu'a 1536 (`_pad_embedding`) plutot que de changer le
-schema de cette table dev-uniquement : le "padding" par des zeros ne
-modifie ni le produit scalaire ni la norme des vecteurs originaux — la
-similarite cosinus entre deux vecteurs ainsi completes reste
-MATHEMATIQUEMENT IDENTIQUE a celle des vecteurs 384-dimensions d'origine,
-tant que TOUTES les lignes de la table sont completees de la meme facon
-(ce qui est le cas ici, un seul modele d'embedding pour tout ce lot)."""
-
-
-def _pad_embedding(embedding: list[float]) -> list[float]:
-    if len(embedding) > PROJECT_MEMORIES_VECTOR_DIM:
-        raise ValueError(
-            f"embedding de dimension {len(embedding)} > {PROJECT_MEMORIES_VECTOR_DIM}, "
-            "troncature non implementee (perte de similarite non maitrisee)"
-        )
-    return embedding + [0.0] * (PROJECT_MEMORIES_VECTOR_DIM - len(embedding))
-
-
 async def index_knowledge(state: PMWorkflowState, config: RunnableConfig) -> dict:
     """Extrait le pattern de resolution de ce ticket et l'indexe dans
     `project_memories` (pgvector, RLS par `tenant_id` — voir
     `services/pm-engine/migrations/20260824000000_init_pm_engine.sql` et
-    `deploy/dev/ollama`/tache 5.0.2 pour le modele d'embedding local)."""
+    `deploy/dev/ollama`/tache 5.0.2 pour le modele d'embedding local).
+    Complement de dimension (384 -> 1536) : voir `pm_engine.embeddings`,
+    partage avec `pm_engine.rag` (5.5.1) qui interroge cette meme table."""
     deps = _deps(config)
     content = (
         f"# {state.get('issue_title', '')}\n\n{state.get('analysis', '')}\n\n"
         f"PR: {state.get('pr_url', '')}"
     )
-    embedding = _pad_embedding(await deps.llm_client.embed(deps.embedding_model, content))
-    embedding_literal = "[" + ",".join(str(v) for v in embedding) + "]"
+    embedding = pad_embedding(await deps.llm_client.embed(deps.embedding_model, content))
+    embedding_literal = embeddings_embedding_literal(embedding)
 
     async with deps.db_pool.acquire() as conn:
         async with conn.transaction():
