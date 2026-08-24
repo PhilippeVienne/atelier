@@ -1,0 +1,71 @@
+{{- if and .Values.openbao.enabled .Values.initJobs.openbaoInit.enabled (not .Values.openbao.external.enabled) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao-init") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.initJobs.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.initJobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao-init") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "init-jobs") }}
+      containers:
+        - name: openbao-init
+          image: "{{ .Values.initJobs.openbaoInit.image.repository }}:{{ .Values.initJobs.openbaoInit.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              export BAO_ADDR="http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
+              until bao status >/dev/null 2>&1 || [ "$?" = "2" ]; do
+                echo "en attente d'OpenBao...";
+                sleep 3;
+              done
+              {{- if not .Values.openbao.devMode }}
+              if [ -z "${BAO_TOKEN:-}" ]; then
+                echo "ERREUR: openbao.rootTokenSecretName est vide et devMode=false." >&2
+                echo "OpenBao scelle ne peut pas etre configure sans un token valide." >&2
+                echo "Voir docs/admin-guide.md, 'Initialisation et descellement d'OpenBao'." >&2
+                exit 1
+              fi
+              SEALED=$(bao status -format=json | grep -o '"sealed":[a-z]*' | cut -d: -f2)
+              if [ "$SEALED" = "true" ]; then
+                echo "ERREUR: OpenBao est scelle (sealed=true)." >&2
+                echo "'bao operator unseal' est une operation manuelle, hors du cycle Helm." >&2
+                exit 1
+              fi
+              {{- end }}
+              if bao auth list -format=json | grep -q '"kubernetes/"'; then
+                echo "methode d'auth kubernetes deja activee (idempotent)";
+              else
+                bao auth enable kubernetes;
+              fi
+              bao write auth/kubernetes/config \
+                kubernetes_host="https://kubernetes.default.svc" \
+                token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token \
+                kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              echo "methode d'auth kubernetes configuree";
+          env:
+            {{- if .Values.openbao.devMode }}
+            - name: BAO_TOKEN
+              value: "root"
+            {{- else if .Values.openbao.rootTokenSecretName }}
+            - name: BAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openbao.rootTokenSecretName }}
+                  key: token
+            {{- end }}
+{{- end }}

@@ -140,6 +140,12 @@ spec:
                 description: Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.
                 nullable: true
                 type: string
+              upgradeState:
+                description: 'Positionne par le controller (jamais par l''utilisateur) quand le hash du template de pod parent observe differe de celui utilise pour provisionner la microVM en cours d''execution — typiquement apres un `helm upgrade` qui change l''image `atelier-controller`/`atelier-api-server`. Un `helm upgrade` ne redemarre donc jamais une microVM Firecracker active de force : ce champ signale seulement qu''un redemarrage (via un cycle suspend/resume manuel, ou a la prochaine liberation du pod) sera necessaire pour que ce Workshop beneficie de la nouvelle version. Voir `docs/specs/02-helm-deployment-admin-doc.md`, section 1.1.'
+                enum:
+                - NeedsRestartForUpgrade
+                nullable: true
+                type: string
             required:
             - phase
             type: object

@@ -1,0 +1,150 @@
+{{- if and .Values.openbao.enabled (not .Values.openbao.external.enabled) }}
+{{- if not .Values.openbao.devMode }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao-config") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+data:
+  # Stockage Raft (integre, pas de dependance externe) : un seul noeud pour
+  # ce chart monolithique. `openbao-init-job` active ensuite la methode
+  # d'auth Kubernetes une fois le serveur demarre et deverrouille. Voir
+  # docs/admin-guide.md pour la procedure d'unseal manuelle (non automatisee
+  # par ce chart : `bao operator unseal` reste une operation d'exploitation
+  # deliberement hors du cycle de vie Helm).
+  config.hcl: |
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = true
+    }
+    storage "raft" {
+      path    = "/openbao/data"
+      node_id = "atelier-openbao-0"
+    }
+    api_addr     = "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
+    cluster_addr = "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:8201"
+    disable_mlock = true
+---
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao") | nindent 4 }}
+spec:
+  serviceName: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao") | nindent 8 }}
+    spec:
+      # Meme ServiceAccount que les Jobs d'init (openbao-init-job) : c'est
+      # ce ServiceAccount qui doit pouvoir faire un TokenReview contre l'API
+      # Kubernetes une fois la methode d'auth `kubernetes` activee (voir
+      # `system:auth-delegator` dans templates/rbac/clusterrolebinding.yaml
+      # — non, volontairement PAS present la-bas : OpenBao n'a besoin que du
+      # ClusterRoleBinding dedie ci-dessous, distinct du RBAC controller/api-server).
+      serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+      containers:
+        - name: openbao
+          image: "{{ .Values.openbao.image.repository }}:{{ .Values.openbao.image.tag }}"
+          imagePullPolicy: {{ .Values.openbao.image.pullPolicy }}
+          {{- if .Values.openbao.devMode }}
+          args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-root-token-id=root"]
+          {{- else }}
+          args: ["server", "-config=/openbao/config/config.hcl"]
+          {{- end }}
+          securityContext:
+            capabilities:
+              add: ["IPC_LOCK"]
+          ports:
+            - name: http
+              containerPort: 8200
+            - name: cluster
+              containerPort: 8201
+          env:
+            - name: BAO_ADDR
+              value: "http://127.0.0.1:8200"
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            {{- if not .Values.openbao.devMode }}
+            - name: config
+              mountPath: /openbao/config
+            {{- end }}
+            - name: data
+              mountPath: /openbao/data
+          resources:
+            {{- toYaml .Values.openbao.resources | nindent 12 }}
+      {{- if not .Values.openbao.persistence.enabled }}
+      volumes:
+        {{- if not .Values.openbao.devMode }}
+        - name: config
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao-config") }}
+        {{- end }}
+        - name: data
+          emptyDir: {}
+      {{- else }}
+      volumes:
+        {{- if not .Values.openbao.devMode }}
+        - name: config
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao-config") }}
+        {{- end }}
+      {{- end }}
+  {{- if .Values.openbao.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with (.Values.openbao.persistence.storageClassName | default .Values.global.storageClassName) }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.openbao.persistence.size }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+---
+# OpenBao a besoin de pouvoir verifier les tokens de ServiceAccount des
+# clients (Workshops) via l'API `TokenReview` pour sa methode d'auth
+# `kubernetes` — `system:auth-delegator` est le ClusterRole natif
+# Kubernetes concu exactement pour cet usage (meme convention que
+# `deploy/dev/openbao/dev-pod.yaml`).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao-token-review") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

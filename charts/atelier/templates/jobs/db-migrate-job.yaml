@@ -1,0 +1,109 @@
+{{- if and .Values.postgresql.enabled .Values.initJobs.dbMigrate.enabled (not .Values.postgresql.external.enabled) }}
+# Empaquette telles quelles les migrations sqlx de `crates/api-server/migrations/`
+# et `crates/controller/migrations/` (copiees dans `charts/atelier/files/migrations/`
+# a la publication du chart — voir docs/admin-guide.md, section "Mettre a
+# jour les migrations embarquees dans le chart", pour la procedure de
+# resynchronisation en CI). `services/pm-engine` (Jalon M5) n'a pas encore
+# de migrations au moment ou ce chart est ecrit : son repertoire est vide
+# tant que cette base ne l'exige pas.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "db-migrate-apiserver") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  {{- range $path, $content := .Files.Glob "files/migrations/apiserver/*.sql" }}
+  {{ base $path }}: |
+{{ $content | toString | indent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "db-migrate-controller") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  {{- range $path, $content := .Files.Glob "files/migrations/controller/*.sql" }}
+  {{ base $path }}: |
+{{ $content | toString | indent 4 }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "db-migrate") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    # Apres db-init-job (-10) : les 6 bases + le role atelier_migrator
+    # doivent exister avant d'appliquer la moindre migration.
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.initJobs.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.initJobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "db-migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "init-jobs") }}
+      containers:
+        - name: db-migrate
+          image: "{{ .Values.initJobs.dbMigrate.image.repository }}:{{ .Values.initJobs.dbMigrate.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              export PGPASSWORD="$MIGRATOR_PASSWORD"
+              echo "-- migrations atelier_apiserver --"
+              for f in $(ls /migrations/apiserver/*.sql 2>/dev/null | sort); do
+                echo "applying $f";
+                psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U atelier_migrator \
+                  -d "{{ .Values.postgresql.databases.apiServer }}" -f "$f";
+              done
+              echo "-- migrations atelier_controller --"
+              for f in $(ls /migrations/controller/*.sql 2>/dev/null | sort); do
+                echo "applying $f";
+                psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U atelier_migrator \
+                  -d "{{ .Values.postgresql.databases.controller }}" -f "$f";
+              done
+          env:
+            - name: PGHOST
+              value: {{ include "atelier.postgresHost" (dict "root" $) | quote }}
+            - name: PGPORT
+              value: {{ .Values.postgresql.external.port | quote }}
+            - name: MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: migratorPassword
+          volumeMounts:
+            - name: apiserver-migrations
+              mountPath: /migrations/apiserver
+            - name: controller-migrations
+              mountPath: /migrations/controller
+      volumes:
+        - name: apiserver-migrations
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "db-migrate-apiserver") }}
+        - name: controller-migrations
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "db-migrate-controller") }}
+{{- end }}

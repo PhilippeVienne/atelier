@@ -1,0 +1,90 @@
+{{- if .Values.controller.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "controller") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "controller") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "controller") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "controller") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.controller.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "controller")) }}
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          env:
+            - name: RUST_LOG
+              value: "info,atelier_controller=debug"
+            - name: ATELIER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ATELIER_API_SERVER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ATELIER_API_SERVER_SERVICE_ACCOUNT
+              value: {{ .Values.apiServer.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "apiserver")) }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: controllerDatabaseUrl
+            {{- /*
+            Le controller (crates/controller/src/openbao.rs::config_from_env)
+            EXIGE OPENBAO_TOKEN des que OPENBAO_ADDR est present (echec au
+            demarrage sinon — verifie empiriquement). Contrairement a
+            api-server/identity-proxy, il n'a pas encore de flux d'auth
+            Kubernetes propre pour ce provisioning cluster-wide (role
+            OpenBao pour api-server). Ne definir OPENBAO_ADDR que si un
+            token est effectivement disponible (devMode ou secret fourni),
+            sinon laisser le controller tourner sans OpenBao (comportement
+            optionnel documente dans crates/controller/src/main.rs).
+            */}}
+            {{- if and .Values.openbao.enabled .Values.openbao.devMode }}
+            - name: OPENBAO_ADDR
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
+            - name: OPENBAO_TOKEN
+              value: "root"
+            {{- else if and .Values.openbao.enabled .Values.openbao.rootTokenSecretName }}
+            - name: OPENBAO_ADDR
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
+            - name: OPENBAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.openbao.rootTokenSecretName }}
+                  key: token
+            {{- end }}
+            {{- range $k, $v := .Values.controller.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            # Le controller n'expose qu'une seule sonde `/health/ready`
+            # (verifie Kubernetes + PostgreSQL + OpenBao) — pas de notion de
+            # liveness separee, voir crates/controller/src/health.rs.
+            httpGet:
+              path: /health/ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+{{- end }}

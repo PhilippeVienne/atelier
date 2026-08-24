@@ -1,0 +1,68 @@
+{{- if .Values.pmEngine.enabled }}
+# NOTE (Jalon M6, verifie le 2026-08-24) : `services/pm-engine` (Jalon M5,
+# FastAPI + LangGraph) est developpe en parallele par un autre agent et
+# n'existe pas encore dans cette copie de travail au moment ou ce template
+# est ecrit. Le nom de l'image, le port HTTP et le chemin de sonde de sante
+# ci-dessous sont deduits de `docs/specs/02-helm-deployment-admin-doc.md`
+# (port 8000, image `ghcr.io/philippevienne/atelier-pm-engine`) et restent a
+# reconcilier avec l'implementation reelle une fois M5 livre — voir
+# docs/PROGRESS.md pour le statut exact.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "pm-engine") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "pm-engine") | nindent 4 }}
+spec:
+  replicas: {{ .Values.pmEngine.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "pm-engine") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "pm-engine") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.pmEngine.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "pm-engine")) }}
+      containers:
+        - name: pm-engine
+          image: "{{ .Values.pmEngine.image.repository }}:{{ .Values.pmEngine.image.tag }}"
+          imagePullPolicy: {{ .Values.pmEngine.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.pmEngine.service.port }}
+          env:
+            - name: ATELIER_HITL_POLICY
+              value: {{ .Values.pmEngine.hitlPolicy | quote }}
+            - name: ATELIER_EMBEDDING_MODEL
+              value: {{ .Values.pmEngine.embeddingModel | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: pmEngineDatabaseUrl
+            {{- if .Values.redis.enabled }}
+            - name: REDIS_URL
+              value: "redis://{{ include "atelier.componentName" (dict "root" $ "component" "redis") }}:6379"
+            {{- end }}
+            {{- if .Values.litellm.enabled }}
+            - name: LITELLM_BASE_URL
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "litellm") }}:{{ .Values.litellm.service.port }}"
+            {{- end }}
+            {{- if .Values.apiServer.enabled }}
+            - name: ATELIER_API_SERVER_URL
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}:{{ .Values.apiServer.service.port }}"
+            {{- end }}
+            {{- range $k, $v := .Values.pmEngine.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.pmEngine.resources | nindent 12 }}
+{{- end }}

@@ -1,0 +1,97 @@
+{{- if .Values.apiServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiServer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "apiserver") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "apiserver") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.apiServer.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "apiserver")) }}
+      containers:
+        - name: api-server
+          image: "{{ .Values.apiServer.image.repository }}:{{ .Values.apiServer.image.tag }}"
+          imagePullPolicy: {{ .Values.apiServer.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: RUST_LOG
+              value: "info,atelier_api_server=debug"
+            - name: ATELIER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ATELIER_JWT_AUDIENCE
+              value: {{ .Values.apiServer.jwt.audience | quote }}
+            {{- if .Values.keycloak.enabled }}
+            # ATELIER_JWT_ISSUER doit rester le domaine PUBLIC : c'est la
+            # valeur que Keycloak stampe dans la claim `iss` des JWT emis
+            # pour un client arrivant par l'Ingress, et c'est cette meme
+            # valeur que le validateur JWT compare a la lettre. En revanche
+            # ATELIER_JWT_JWKS_URL peut (et doit, voir ci-dessous) pointer
+            # vers le Service interne : contrairement a la validation
+            # d'issuer, le contenu des cles JWKS ne depend pas de l'URL
+            # utilisee pour les recuperer.
+            - name: ATELIER_JWT_ISSUER
+              value: "https://{{ .Values.domains.keycloak }}/realms/{{ .Values.keycloak.realmName }}"
+            # Interne (Service ClusterIP), pas le domaine public : verifie
+            # empiriquement (helm install sur kind-atelier-dev, namespace
+            # atelier-helm-test, 2026-08-24) qu'un `api-server` en cluster
+            # ne peut pas resoudre le domaine public de l'Ingress (pas
+            # d'enregistrement DNS reel pour un domaine .example.com/.local
+            # de test, et meme en production rien ne garantit qu'un pod
+            # puisse faire une boucle sortante vers son propre Ingress).
+            - name: ATELIER_JWT_JWKS_URL
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "keycloak") }}:{{ .Values.keycloak.service.port }}/realms/{{ .Values.keycloak.realmName }}/protocol/openid-connect/certs"
+            {{- else if .Values.keycloak.external.enabled }}
+            - name: ATELIER_JWT_ISSUER
+              value: "{{ .Values.keycloak.external.url }}/realms/{{ .Values.keycloak.realmName }}"
+            - name: ATELIER_JWT_JWKS_URL
+              value: "{{ .Values.keycloak.external.url }}/realms/{{ .Values.keycloak.realmName }}/protocol/openid-connect/certs"
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: apiServerDatabaseUrl
+            {{- if .Values.openbao.enabled }}
+            - name: OPENBAO_ADDR
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
+            {{- else if .Values.openbao.external.enabled }}
+            - name: OPENBAO_ADDR
+              value: {{ .Values.openbao.external.url | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.apiServer.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.apiServer.resources | nindent 12 }}
+{{- end }}

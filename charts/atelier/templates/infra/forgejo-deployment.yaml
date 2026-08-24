@@ -1,0 +1,108 @@
+{{- if and .Values.forgejo.enabled (not .Values.forgejo.external.enabled) }}
+{{- if .Values.forgejo.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo-data") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with (.Values.forgejo.persistence.storageClassName | default .Values.global.storageClassName) }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.forgejo.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "forgejo") | nindent 4 }}
+spec:
+  # Un seul replica : Forgejo n'est pas concu pour de l'actif-actif sans
+  # base de donnees et systeme de fichiers partages en mode cluster
+  # explicite. Le PVC ci-dessus impose de toute facon `ReadWriteOnce`.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "forgejo") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "forgejo") | nindent 8 }}
+    spec:
+      containers:
+        - name: forgejo
+          image: "{{ .Values.forgejo.image.repository }}:{{ .Values.forgejo.image.tag }}"
+          imagePullPolicy: {{ .Values.forgejo.image.pullPolicy }}
+          env:
+            - name: FORGEJO__security__INSTALL_LOCK
+              value: "true"
+            - name: FORGEJO__database__DB_TYPE
+              value: "postgres"
+            {{- if .Values.postgresql.enabled }}
+            - name: FORGEJO__database__HOST
+              value: "{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}"
+            - name: FORGEJO__database__NAME
+              value: {{ .Values.postgresql.databases.forgejo | quote }}
+            - name: FORGEJO__database__USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_USER
+            - name: FORGEJO__database__PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_PASSWORD
+            {{- end }}
+            # 100% HTTPS (voir docs/specs/02-helm-deployment-admin-doc.md) :
+            # aucun port SSH expose, seul le clone/push via HTTPS + PAT
+            # (identity-proxy) est supporte, meme convention que le pod de
+            # dev `deploy/dev/forgejo/dev-pod.yaml`.
+            - name: FORGEJO__server__DISABLE_SSH
+              value: "true"
+            - name: FORGEJO__server__HTTP_PORT
+              value: "3000"
+            - name: FORGEJO__server__ROOT_URL
+              value: "https://{{ .Values.domains.forgejo }}/"
+            - name: FORGEJO__service__DISABLE_REGISTRATION
+              value: "true"
+            - name: FORGEJO__service__REQUIRE_SIGNIN_VIEW
+              value: "true"
+            - name: USER_UID
+              value: "1000"
+            - name: USER_GID
+              value: "1000"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.forgejo.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.forgejo.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo-data") }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

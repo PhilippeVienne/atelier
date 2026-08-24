@@ -1,0 +1,18 @@
+{{- if and .Values.keycloak.enabled (not .Values.keycloak.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.keycloak.service.port }}
+      targetPort: http
+  selector:
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 4 }}
+{{- end }}

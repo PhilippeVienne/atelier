@@ -1,5 +1,7 @@
 use crate::{openbao, storage};
-use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus};
+use atelier_common::{
+    Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus, WorkshopUpgradeState,
+};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
@@ -34,6 +36,17 @@ const SIMULATOR_IMAGE: &str = "localstack/localstack:3";
 /// elles sont recuperees par le garbage collector standard via leurs owner
 /// references.
 const CLEANUP_FINALIZER: &str = "atelier.dev/cleanup";
+/// Annotation posee sur le pod parent au moment de sa creation, contenant le
+/// hash du `PodSpec` genere par CETTE version du controller (voir
+/// [`pod_spec_template_hash`]). Sert uniquement a detecter, aux reconciles
+/// suivants, qu'un `helm upgrade` a change la facon dont le controller
+/// construirait ce pod aujourd'hui (nouvelle image `net-proxy`, nouvelle
+/// variable d'environnement, etc) sans jamais recreer de force un pod parent
+/// existant (contrainte deja documentee au-dessus de `ensure_parent_pod` :
+/// une microVM active ne doit jamais etre perturbee par un upgrade). Voir
+/// `WorkshopStatus.upgrade_state` / `WorkshopUpgradeState::NeedsRestartForUpgrade`
+/// (Jalon M6, tache 6.4.2).
+const TEMPLATE_HASH_ANNOTATION: &str = "atelier.dev/template-hash";
 /// Ressource allouable annoncee par `atelier-kvm-device-plugin`
 /// (`crates/kvm-device-plugin`, DaemonSet `kube-system`) : demander 1 unite
 /// donne acces a `/dev/kvm` ET `/dev/net/tun` (alloues ensemble par ce
@@ -920,7 +933,7 @@ async fn ensure_parent_pod(
     let vsock_uds_path =
         format!("{JAILER_CHROOT_BASE_DIR}/firecracker/{VM_JAIL_ID}/root/{VM_VSOCK_UDS_FILENAME}");
 
-    let pod = Pod {
+    let mut pod = Pod {
         metadata: ObjectMeta {
             name: Some(pod_name.clone()),
             namespace: Some(ns.to_string()),
@@ -1138,6 +1151,19 @@ async fn ensure_parent_pod(
         ..Default::default()
     };
 
+    // Hash du `PodSpec` tel que CE reconcile le construirait aujourd'hui —
+    // calcule avant toute mutation des metadonnees du pod, pour que la
+    // valeur ne depende jamais d'elle-meme. Voir `TEMPLATE_HASH_ANNOTATION`
+    // et la tache 6.4.2 (Jalon M6) pour l'usage qui en est fait ci-dessous.
+    let desired_template_hash = pod_spec_template_hash(pod.spec.as_ref());
+    pod.metadata
+        .annotations
+        .get_or_insert_with(BTreeMap::new)
+        .insert(
+            TEMPLATE_HASH_ANNOTATION.to_string(),
+            desired_template_hash.clone(),
+        );
+
     // La plupart des champs de `spec.containers` (ex: `env`) sont immuables
     // une fois le pod cree — contrainte Kubernetes, pas contournable par
     // Server-Side Apply meme avec `.force()`. Un pod parent deja existant
@@ -1162,6 +1188,26 @@ async fn ensure_parent_pod(
             pods.get_opt(&pod_name).await?
         }
     };
+    // Tache 6.4.2 (Jalon M6) : le pod deja en place (cree lors d'un cycle
+    // anterieur, potentiellement par une version anterieure du controller)
+    // porte le hash du template avec lequel il a ete provisionne. S'il
+    // diverge du hash que CE reconcile construirait aujourd'hui, la microVM
+    // active de ce pod n'est PAS redemarree de force (voir commentaire
+    // ci-dessus) : on se contente de signaler dans le statut qu'un
+    // redemarrage (cycle suspend/resume manuel, ou prochaine liberation du
+    // pod) sera necessaire pour converger vers le nouveau template. Un pod
+    // fraichement cree porte forcement le hash courant (ecrit juste
+    // au-dessus) : jamais `NeedsRestartForUpgrade` a l'issue de sa propre
+    // creation.
+    let upgrade_state = current.as_ref().and_then(|p| {
+        let existing_hash = p
+            .metadata
+            .annotations
+            .as_ref()?
+            .get(TEMPLATE_HASH_ANNOTATION)?;
+        (existing_hash != &desired_template_hash)
+            .then_some(WorkshopUpgradeState::NeedsRestartForUpgrade)
+    });
     let pod_running = current
         .as_ref()
         .and_then(|p| p.status.as_ref())
@@ -1206,7 +1252,26 @@ async fn ensure_parent_pod(
 
     let mut status = carry_forward_status(workshop, phase, Some(image_digest));
     status.pod_name = Some(pod_name);
+    status.upgrade_state = upgrade_state;
     Ok(status)
+}
+
+/// Hash deterministe du `PodSpec` du pod parent, utilise pour detecter un
+/// changement de template entre deux versions du controller (tache 6.4.2,
+/// Jalon M6). Se base sur la serialisation JSON du spec plutot que sur
+/// `Hash`/`derive` (non implemente par les types `k8s-openapi`) : suffisant
+/// ici, ce hash n'a besoin d'aucune propriete cryptographique, seulement
+/// d'etre stable pour un meme spec et de changer quand le spec change.
+fn pod_spec_template_hash(spec: Option<&PodSpec>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // Un `PodSpec` vide (jamais le cas en pratique ici) hash quand meme de
+    // facon stable, plutot que de paniquer sur un `unwrap()`.
+    let json = spec
+        .map(|s| serde_json::to_string(s).unwrap_or_default())
+        .unwrap_or_default();
+    json.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn carry_forward_status(
@@ -1222,6 +1287,17 @@ fn carry_forward_status(
             .status
             .as_ref()
             .and_then(|s| s.snapshot_digest.clone()),
+        // Champ ajoute par le Jalon M6 (charts/atelier, voir crates/common/src/crd.rs) :
+        // simple report de la valeur precedente par defaut. La reconciliation
+        // du pod parent (`ensure_parent_pod`, tache 6.4.2) recalcule et
+        // ecrase ensuite explicitement `status.upgrade_state` avec un
+        // resultat a jour (voir `pod_spec_template_hash`) ; les autres
+        // chemins de reconciliation (build d'image, etc) se contentent de
+        // reporter la derniere valeur connue.
+        upgrade_state: workshop
+            .status
+            .as_ref()
+            .and_then(|s| s.upgrade_state.clone()),
         conditions: BTreeMap::new(),
     }
 }
@@ -1256,6 +1332,47 @@ async fn update_status(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod template_hash_tests {
+    use super::pod_spec_template_hash;
+    use k8s_openapi::api::core::v1::{Container, PodSpec};
+
+    #[test]
+    fn identical_specs_hash_identically() {
+        let spec = PodSpec {
+            containers: vec![Container {
+                name: "vm-supervisor".into(),
+                image: Some("atelier-vm-supervisor:dev".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            pod_spec_template_hash(Some(&spec)),
+            pod_spec_template_hash(Some(&spec))
+        );
+    }
+
+    #[test]
+    fn differing_container_image_changes_the_hash() {
+        let mut spec = PodSpec {
+            containers: vec![Container {
+                name: "vm-supervisor".into(),
+                image: Some("atelier-vm-supervisor:dev".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let before = pod_spec_template_hash(Some(&spec));
+        spec.containers[0].image = Some("atelier-vm-supervisor:v2".into());
+        let after = pod_spec_template_hash(Some(&spec));
+        assert_ne!(
+            before, after,
+            "changer l'image d'un conteneur doit changer le hash du template"
+        );
+    }
 }
 
 #[cfg(test)]

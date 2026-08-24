@@ -1,0 +1,45 @@
+{{- if .Values.apiServer.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    # Support WebSocket (voir docs/admin-guide.md, section "Choix du
+    # controleur d'Ingress") : ingress-nginx laisse deja passer nativement
+    # une requete `Upgrade: websocket` (aucune annotation n'est necessaire
+    # pour l'upgrade lui-meme), mais ses timeouts par defaut (60s de
+    # lecture/ecriture) coupent silencieusement toute connexion
+    # exec_in_workshop/terminal restee inactive plus d'une minute — d'ou les
+    # timeouts etendus ci-dessous. `websocket-services` documente
+    # explicitement l'intention aupres de tout operateur relisant la config,
+    # meme si ingress-nginx recent n'en a plus besoin pour fonctionner.
+    {{- with .Values.apiServer.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/websocket-services: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") | quote }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.domains.apiServer }}
+      secretName: {{ printf "%s-tls" (include "atelier.componentName" (dict "root" $ "component" "apiserver")) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.domains.apiServer }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+                port:
+                  number: {{ .Values.apiServer.service.port }}
+{{- end }}

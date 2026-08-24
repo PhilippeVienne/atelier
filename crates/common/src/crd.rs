@@ -129,8 +129,27 @@ pub struct WorkshopStatus {
     /// jamais ete suspendu.
     #[serde(default)]
     pub snapshot_digest: Option<String>,
+    /// Positionne par le controller (jamais par l'utilisateur) quand le hash
+    /// du template de pod parent observe differe de celui utilise pour
+    /// provisionner la microVM en cours d'execution — typiquement apres un
+    /// `helm upgrade` qui change l'image `atelier-controller`/`atelier-api-server`.
+    /// Un `helm upgrade` ne redemarre donc jamais une microVM Firecracker
+    /// active de force : ce champ signale seulement qu'un redemarrage (via un
+    /// cycle suspend/resume manuel, ou a la prochaine liberation du pod) sera
+    /// necessaire pour que ce Workshop beneficie de la nouvelle version. Voir
+    /// `docs/specs/02-helm-deployment-admin-doc.md`, section 1.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_state: Option<WorkshopUpgradeState>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub enum WorkshopUpgradeState {
+    /// Le pod parent de ce Workshop tourne encore avec un template anterieur
+    /// a la derniere revision Helm appliquee ; sa microVM active n'a pas ete
+    /// perturbee, mais un redemarrage est necessaire pour converger.
+    NeedsRestartForUpgrade,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default, PartialEq, Eq)]

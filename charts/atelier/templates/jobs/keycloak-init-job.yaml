@@ -1,0 +1,141 @@
+{{- if and .Values.keycloak.enabled .Values.initJobs.keycloakInit.enabled (not .Values.keycloak.external.enabled) }}
+# Reproduit en production ce que `deploy/dev/keycloak/realm-export.json`
+# decrit pour le dev : le Realm `atelier`, ses 2 roles (`admin`/`developer`)
+# et ses 2 clients OIDC (`atelier-dashboard` public + PKCE, `atelier-api`
+# bearer-only). Contrairement au dev, aucun utilisateur de demonstration
+# n'est cree ici (voir docs/admin-guide.md, "Provisionner les premiers
+# utilisateurs").
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-init-realm") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  realm.json: |
+    {
+      "realm": "{{ .Values.keycloak.realmName }}",
+      "displayName": "Atelier",
+      "enabled": true,
+      "sslRequired": "external",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "editUsernameAllowed": false,
+      "roles": {
+        "realm": [
+          {"name": "admin", "description": "Administrator role"},
+          {"name": "developer", "description": "Developer role"}
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "atelier-dashboard",
+          "name": "Atelier Dashboard Next.js",
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "redirectUris": ["https://{{ .Values.domains.dashboard }}/*"],
+          "webOrigins": ["https://{{ .Values.domains.dashboard }}"],
+          "attributes": {"pkce.code.challenge.method": "S256"},
+          "protocolMappers": [
+            {
+              "name": "audience-atelier-api",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "{{ .Values.apiServer.jwt.audience }}",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "{{ .Values.apiServer.jwt.audience }}",
+          "name": "Atelier API Server",
+          "enabled": true,
+          "bearerOnly": true,
+          "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": false
+        }
+      ]
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-init") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.initJobs.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.initJobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak-init") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "init-jobs") }}
+      containers:
+        - name: keycloak-init
+          image: "{{ .Values.initJobs.keycloakInit.image.repository }}:{{ .Values.initJobs.keycloakInit.image.tag }}"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -eu
+              KC="http://{{ include "atelier.componentName" (dict "root" $ "component" "keycloak") }}:{{ .Values.keycloak.service.port }}"
+              # L'image officielle `keycloak/keycloak` (base ubi-micro) n'a
+              # pas `curl` (constate empiriquement, Jalon M6) : on attend
+              # plutot que `kcadm.sh config credentials` reussisse
+              # lui-meme — verifie a la fois la disponibilite HTTP ET que
+              # l'authentification admin fonctionne deja, un test plus fort
+              # que la simple attente de `/realms/master`.
+              until /opt/keycloak/bin/kcadm.sh config credentials \
+                --server "$KC" --realm master \
+                --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD" 2>/dev/null; do
+                echo "en attente de Keycloak...";
+                sleep 3;
+              done
+              if /opt/keycloak/bin/kcadm.sh get "realms/{{ .Values.keycloak.realmName }}" >/dev/null 2>&1; then
+                echo "realm {{ .Values.keycloak.realmName }} deja present, rien a faire (idempotent)";
+              else
+                /opt/keycloak/bin/kcadm.sh create realms -f /config/realm.json;
+                echo "realm {{ .Values.keycloak.realmName }} cree";
+              fi
+          env:
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-auth") }}
+                  key: KEYCLOAK_ADMIN
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-auth") }}
+                  key: KEYCLOAK_ADMIN_PASSWORD
+          volumeMounts:
+            - name: realm
+              mountPath: /config
+      volumes:
+        - name: realm
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-init-realm") }}
+{{- end }}

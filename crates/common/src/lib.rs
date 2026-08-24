@@ -5,7 +5,7 @@ pub mod telemetry;
 
 pub use crd::{
     DevcontainerSource, IdentityInjectionRule, Workshop, WorkshopDesiredState, WorkshopPhase,
-    WorkshopResources, WorkshopSpec, WorkshopStatus,
+    WorkshopResources, WorkshopSpec, WorkshopStatus, WorkshopUpgradeState,
 };
 pub use openbao_client::OpenBaoClient;
 pub use status::patch_workshop_status;

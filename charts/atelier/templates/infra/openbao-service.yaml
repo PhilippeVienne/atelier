@@ -1,0 +1,21 @@
+{{- if and .Values.openbao.enabled (not .Values.openbao.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao") | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ .Values.openbao.service.port }}
+      targetPort: http
+    - name: cluster
+      port: 8201
+      targetPort: cluster
+  selector:
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "openbao") | nindent 4 }}
+{{- end }}
