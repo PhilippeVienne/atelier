@@ -27,6 +27,26 @@ model_list:
       model: anthropic/claude-3-5-sonnet-20241022
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # Modele de test (Jalon M3, `crates/controller/tests/litellm.rs`) : ne
+  # contacte jamais de vrai fournisseur (`mock_response`, fonctionnalite
+  # LiteLLM native), aucune cle requise. `model_info.*_cost_per_token` force
+  # un cout non nul par appel (LiteLLM ne connait pas de tarif par defaut
+  # pour un nom de modele arbitraire/mock) : indispensable pour tester
+  # l'enforcement reel d'un budget de Virtual Key (`max_budget`) sans jamais
+  # depenser un centime aupres d'un fournisseur payant.
+  - model_name: atelier-budget-test
+    litellm_params:
+      # Prefixe `openai/` requis par le routeur LiteLLM (choix de provider),
+      # meme si `mock_response` court-circuite tout appel HTTP reel — un nom
+      # sans prefixe echoue au routage ("LLM Provider NOT provided",
+      # constate en pratique). N'importe quel provider convient ici, aucune
+      # cle n'est jamais utilisee.
+      model: openai/atelier-budget-test
+      mock_response: "ok"
+    model_info:
+      input_cost_per_token: 0.5
+      output_cost_per_token: 0.5
+
 litellm_settings:
   # Evite les rejets sur des arguments specifiques a l'API Anthropic que le
   # backend cible (DeepSeek, via une traduction OpenAI-compatible) ne

@@ -3,6 +3,54 @@
 # tous les Workshops, pas un sidecar par pod. Le ConfigMap
 # `atelier-llm-proxy-config` et le Secret `atelier-llm-proxy-dev` sont crees
 # separement (voir README.md) : jamais de cle en clair dans ce fichier.
+#
+# `DATABASE_URL` (Jalon M3, Virtual Keys) : `POST /key/generate`/`/key/delete`
+# exigent une base Postgres cote LiteLLM (sans elle, ces endpoints renvoient
+# 500 "DB not connected", constate en pratique) — instance Postgres DEDIEE
+# ci-dessous, separee de `atelier-postgres-dev` (partagee par `api-server` et
+# un Workshop reel actif sur ce cluster de dev) plutot que d'y ajouter une
+# base : evite tout risque d'interference avec cette instance partagee.
+# `emptyDir`/mot de passe en clair : meme convention dev-only que
+# `deploy/dev/postgres/dev-pod.yaml`, jamais expose hors du cluster kind.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: atelier-llm-proxy-db
+  namespace: default
+  labels:
+    app: atelier-llm-proxy-db
+spec:
+  containers:
+    - name: postgres
+      image: postgres:16
+      env:
+        - name: POSTGRES_USER
+          value: litellm
+        - name: POSTGRES_PASSWORD
+          value: dev-only-not-for-production
+        - name: POSTGRES_DB
+          value: litellm
+      ports:
+        - containerPort: 5432
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-llm-proxy-db
+  namespace: default
+spec:
+  selector:
+    app: atelier-llm-proxy-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +75,9 @@ spec:
           args: ["--config", "/app/config.yaml", "--port", "4000"]
           ports:
             - containerPort: 4000
+          env:
+            - name: DATABASE_URL
+              value: postgresql://litellm:dev-only-not-for-production@atelier-llm-proxy-db:5432/litellm
           envFrom:
             - secretRef:
                 name: atelier-llm-proxy-dev
