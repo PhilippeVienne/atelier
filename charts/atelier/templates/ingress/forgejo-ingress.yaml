@@ -1,0 +1,37 @@
+{{- if and .Values.forgejo.enabled (not .Values.forgejo.external.enabled) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    # Git via HTTPS pur (voir templates/infra/forgejo-deployment.yaml,
+    # FORGEJO__server__DISABLE_SSH=true) : pas de configuration
+    # supplementaire necessaire, un `git clone https://.../repo.git`
+    # transite normalement par cet Ingress comme n'importe quelle requete
+    # HTTPS applicative (Basic Auth / PAT geres par Forgejo lui-meme).
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.domains.forgejo }}
+      secretName: {{ printf "%s-tls" (include "atelier.componentName" (dict "root" $ "component" "forgejo")) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.domains.forgejo }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo") }}
+                port:
+                  number: {{ .Values.forgejo.service.port }}
+{{- end }}

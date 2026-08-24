@@ -1,0 +1,67 @@
+{{- if and .Values.keycloak.enabled (not .Values.keycloak.external.enabled) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-auth") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  KEYCLOAK_ADMIN: {{ .Values.keycloak.auth.adminUser | quote }}
+  KEYCLOAK_ADMIN_PASSWORD: {{ .Values.keycloak.auth.adminPassword | quote }}
+  {{- if .Values.postgresql.enabled }}
+  KC_DB_URL: "jdbc:postgresql://{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.keycloak }}"
+  KC_DB_USERNAME: {{ .Values.postgresql.auth.adminUser | quote }}
+  KC_DB_PASSWORD: {{ .Values.postgresql.auth.adminPassword | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "keycloak") | nindent 8 }}
+      annotations:
+        # Meme raison que `checksum/database-secret` dans
+        # `litellm-deployment.yaml` : ce conteneur recoit ses identifiants
+        # (admin Keycloak + DB) via `envFrom: secretRef`, jamais redemarre
+        # automatiquement par Kubernetes au seul changement du Secret.
+        checksum/auth-secret: {{ printf "%s%s" (toYaml .Values.keycloak.auth) (toYaml .Values.postgresql) | sha256sum }}
+    spec:
+      containers:
+        - name: keycloak
+          image: "{{ .Values.keycloak.image.repository }}:{{ .Values.keycloak.image.tag }}"
+          imagePullPolicy: {{ .Values.keycloak.image.pullPolicy }}
+          # `--http-enabled=true` : TLS est termine par l'Ingress (ou absent
+          # en environnement de test, voir `tls.enabled`), jamais par
+          # Keycloak lui-meme — sans ce flag, `start` (mode production) exige
+          # du materiel de cle HTTPS local et refuse de demarrer ("Key
+          # material not provided to setup HTTPS"), constate empiriquement.
+          args: ["start", "--hostname={{ .Values.domains.keycloak }}", "--proxy-headers=xforwarded", "--http-enabled=true", {{ if .Values.postgresql.enabled }}"--db=postgres"{{ else }}"--db=dev-mem"{{ end }}]
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "keycloak-auth") }}
+          readinessProbe:
+            httpGet:
+              path: /realms/master
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if and .Values.postgresql.enabled (not .Values.postgresql.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "postgresql") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "postgresql") | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+  selector:
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "postgresql") | nindent 4 }}
+{{- end }}

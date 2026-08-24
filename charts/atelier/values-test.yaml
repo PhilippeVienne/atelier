@@ -1,0 +1,75 @@
+# Values de test pour `helm lint`/`helm template`/deploiement kind local —
+# domaines .test, images :dev deja construites localement (voir
+# docs/PROGRESS.md), OpenBao en mode dev (pas d'unseal manuel a orchestrer
+# pour un test de fumee). Ne jamais utiliser tel quel en production (mots
+# de passe triviaux, TLS desactive).
+domains:
+  keycloak: "auth.atelier-helm-test.local"
+  forgejo: "git.atelier-helm-test.local"
+  dashboard: "app.atelier-helm-test.local"
+  apiServer: "api.atelier-helm-test.local"
+
+tls:
+  enabled: false
+  certManager:
+    enabled: false
+
+ingress:
+  className: "traefik"
+
+controller:
+  image:
+    repository: atelier-controller
+    tag: dev
+    pullPolicy: Never
+
+apiServer:
+  replicaCount: 1
+  image:
+    repository: atelier-api-server
+    tag: dev
+    pullPolicy: Never
+
+# Pas d'image `atelier-dashboard:dev` construite localement au moment de ce
+# test (voir docs/PROGRESS.md) : desactive pour ce lissage empirique plutot
+# que de pretendre un deploiement reussi avec une image absente.
+dashboard:
+  enabled: false
+
+pmEngine:
+  replicaCount: 1
+  image:
+    repository: atelier-pm-engine
+    tag: dev
+    pullPolicy: Never
+
+kvmDevicePlugin:
+  enabled: false
+
+postgresql:
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+forgejo:
+  persistence:
+    enabled: false
+
+openbao:
+  devMode: true
+  persistence:
+    enabled: false
+
+s3Storage:
+  rustfs:
+    persistence:
+      enabled: false
+
+redis:
+  persistence:
+    enabled: false

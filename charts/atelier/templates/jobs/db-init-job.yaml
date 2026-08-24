@@ -1,0 +1,179 @@
+{{- if and .Values.postgresql.enabled .Values.initJobs.dbInit.enabled (not .Values.postgresql.external.enabled) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "db-init-script") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    # post-install (pas pre-install) : voir la Note dans le Job db-init
+    # ci-dessous pour la raison (dependance circulaire avec le StatefulSet
+    # postgresql, resource normale du chart).
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-11"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  init.sql: |
+    -- Idempotent : `helm upgrade` rejoue ce hook a chaque fois (voir
+    -- docs/admin-guide.md, "Hooks Helm et helm upgrade"), donc chaque
+    -- instruction doit tolerer d'etre executee plusieurs fois sur la meme
+    -- instance PostgreSQL.
+    -- Pas de bloc DO $$ ... $$ ici expres : psql saute l'interpolation de
+    -- ':variable' a l'interieur d'une chaine dollar-quotee (verifie
+    -- empiriquement : `syntax error at or near ":"`), le mot de passe ne
+    -- serait donc jamais substitue. Le motif `SELECT format(...) \gexec`
+    -- reste au niveau top du script SQL, ou l'interpolation fonctionne.
+    SELECT format('CREATE ROLE atelier_migrator WITH LOGIN PASSWORD %L CREATEDB', :'migrator_password')
+    WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'atelier_migrator')\gexec
+
+    SELECT format('ALTER ROLE atelier_migrator WITH LOGIN PASSWORD %L CREATEDB', :'migrator_password')
+    WHERE EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'atelier_migrator')\gexec
+
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.apiServer }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.apiServer }}')\gexec
+
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.controller }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.controller }}')\gexec
+
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.pmEngine }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.pmEngine }}')\gexec
+
+    {{- if .Values.keycloak.enabled }}
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.keycloak }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.keycloak }}')\gexec
+    {{- end }}
+
+    {{- if .Values.forgejo.enabled }}
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.forgejo }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.forgejo }}')\gexec
+    {{- end }}
+
+    {{- if .Values.litellm.enabled }}
+    SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.litellm }} OWNER atelier_migrator'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.litellm }}')\gexec
+    {{- end }}
+
+    -- Deja proprietaire dans le cas "CREATE DATABASE ... OWNER" ci-dessus,
+    -- mais explicite au cas ou la base preexistait avant l'introduction de
+    -- ce hook (upgrade depuis une installation manuelle, cf. deploy/dev/).
+    ALTER DATABASE {{ .Values.postgresql.databases.apiServer }} OWNER TO atelier_migrator;
+    ALTER DATABASE {{ .Values.postgresql.databases.controller }} OWNER TO atelier_migrator;
+    ALTER DATABASE {{ .Values.postgresql.databases.pmEngine }} OWNER TO atelier_migrator;
+    {{- if .Values.keycloak.enabled }}
+    ALTER DATABASE {{ .Values.postgresql.databases.keycloak }} OWNER TO atelier_migrator;
+    {{- end }}
+    {{- if .Values.forgejo.enabled }}
+    ALTER DATABASE {{ .Values.postgresql.databases.forgejo }} OWNER TO atelier_migrator;
+    {{- end }}
+    {{- if .Values.litellm.enabled }}
+    ALTER DATABASE {{ .Values.postgresql.databases.litellm }} OWNER TO atelier_migrator;
+    {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "db-init") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    # NOTE (verifie empiriquement le 2026-08-24 sur kind-atelier-dev,
+    # namespace de test isole `atelier-helm-test`) : un hook `pre-install`
+    # tourne AVANT que Helm ne cree la moindre ressource normale du chart —
+    # y compris le StatefulSet `postgresql` et le ServiceAccount
+    # `atelier-init-jobs` que ce Job utilise. En pre-install, ce Job reste
+    # donc bloque indefiniment sur son initContainer `wait-for-postgres`
+    # (postgres n'existe pas encore) ou echoue immediatement (ServiceAccount
+    # introuvable). `post-install,post-upgrade` resout les deux : a ce
+    # stade, les ressources normales (StatefulSet postgresql, Secret,
+    # ServiceAccount) sont deja creees. Contrepartie acceptee : sur une
+    # premiere installation, `controller`/`api-server` (resources normales,
+    # demarrees en parallele de postgresql) peuvent traverser un bref
+    # CrashLoopBackOff avant que ce Job cree leurs bases — ils redemarrent
+    # seuls une fois la base disponible (leur propre `sqlx::migrate!` au
+    # boot suffit alors), voir docs/admin-guide.md, "Sequencement au premier
+    # demarrage".
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.initJobs.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.initJobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "db-init") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "init-jobs") }}
+      # Attend que PostgreSQL reponde avant de lancer `psql` : necessaire
+      # car un Job `pre-install` demarre en meme temps que le
+      # StatefulSet postgresql (aucune dependance d'ordonnancement native
+      # entre les deux dans Helm en dehors des hook-weights, qui ne
+      # s'appliquent qu'entre hooks, pas vis-a-vis des ressources normales).
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.initJobs.dbInit.image.repository }}:{{ .Values.initJobs.dbInit.image.tag }}"
+          command:
+            - sh
+            - -c
+            - >-
+              until pg_isready -h {{ include "atelier.postgresHost" (dict "root" $) }} -p {{ .Values.postgresql.external.port }} -U "$POSTGRES_USER"; do
+                echo "en attente de postgresql...";
+                sleep 2;
+              done
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_PASSWORD
+      containers:
+        - name: db-init
+          image: "{{ .Values.initJobs.dbInit.image.repository }}:{{ .Values.initJobs.dbInit.image.tag }}"
+          command:
+            - psql
+            - -v
+            - ON_ERROR_STOP=1
+            - -v
+            - "migrator_password=$(MIGRATOR_PASSWORD)"
+            - -h
+            - {{ include "atelier.postgresHost" (dict "root" $) | quote }}
+            - -p
+            - {{ .Values.postgresql.external.port | quote }}
+            - -U
+            - "$(POSTGRES_USER)"
+            - -d
+            - postgres
+            - -f
+            - /scripts/init.sql
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_PASSWORD
+            - name: MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: migratorPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "db-init-script") }}
+{{- end }}

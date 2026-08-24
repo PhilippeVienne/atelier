@@ -1,0 +1,52 @@
+{{- if .Values.rbac.create }}
+{{- if .Values.controller.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "controller") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "controller")) }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "controller") }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+{{- if .Values.apiServer.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.apiServer.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "apiserver")) }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+{{- if .Values.pmEngine.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "pm-engine") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.pmEngine.serviceAccount.name | default (include "atelier.componentName" (dict "root" $ "component" "pm-engine")) }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "pm-engine") }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

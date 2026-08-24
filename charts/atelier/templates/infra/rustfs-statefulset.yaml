@@ -1,0 +1,92 @@
+{{- if and .Values.s3Storage.rustfs.enabled (not .Values.s3Storage.external.enabled) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs-auth") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  RUSTFS_ACCESS_KEY: {{ .Values.s3Storage.rustfs.auth.accessKey | quote }}
+  RUSTFS_SECRET_KEY: {{ .Values.s3Storage.rustfs.auth.secretKey | quote }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "rustfs") | nindent 4 }}
+spec:
+  serviceName: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs") }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "rustfs") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "rustfs") | nindent 8 }}
+      annotations:
+        # Meme raison que `checksum/database-secret` dans
+        # `litellm-deployment.yaml` : identifiants injectes via `envFrom:
+        # secretRef`, jamais redemarres automatiquement par Kubernetes au
+        # seul changement du Secret.
+        checksum/auth-secret: {{ toYaml .Values.s3Storage.rustfs.auth | sha256sum }}
+    spec:
+      initContainers:
+        # Cree les 3 buckets (repertoires) attendus avant que RustFS ne
+        # demarre, meme convention que `deploy/dev/s3/dev-pod.yaml`.
+        # `s3-init-job` (hook Helm) verifie/recree ces buckets via l'API S3
+        # elle-meme, ce qui la rend aussi valable contre un S3 externe
+        # (AWS/GCS/Azure) — cet initContainer est juste une garantie
+        # supplementaire day-0 propre au backend RustFS embarque.
+        - name: init-buckets
+          image: busybox:latest
+          command:
+            - "sh"
+            - "-c"
+            - >-
+              mkdir -p /data/{{ .Values.s3Storage.buckets.sessions }}
+              /data/{{ .Values.s3Storage.buckets.snapshots }}
+              /data/{{ .Values.s3Storage.buckets.forgejo }} &&
+              chown -R 10001:10001 /data && chmod -R 775 /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: rustfs
+          image: "{{ .Values.s3Storage.rustfs.image.repository }}:{{ .Values.s3Storage.rustfs.image.tag }}"
+          imagePullPolicy: {{ .Values.s3Storage.rustfs.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs-auth") }}
+          ports:
+            - name: s3-api
+              containerPort: 9000
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.s3Storage.rustfs.resources | nindent 12 }}
+      {{- if not .Values.s3Storage.rustfs.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.s3Storage.rustfs.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with (.Values.s3Storage.rustfs.persistence.storageClassName | default .Values.global.storageClassName) }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.s3Storage.rustfs.persistence.size }}
+  {{- end }}
+{{- end }}

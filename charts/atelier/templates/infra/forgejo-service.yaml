@@ -1,0 +1,18 @@
+{{- if and .Values.forgejo.enabled (not .Values.forgejo.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "forgejo") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "forgejo") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.forgejo.service.port }}
+      targetPort: http
+  selector:
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "forgejo") | nindent 4 }}
+{{- end }}

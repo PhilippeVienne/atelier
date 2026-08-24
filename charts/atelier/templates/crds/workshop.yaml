@@ -1,0 +1,178 @@
+# Genere par `cargo run -p atelier-controller --bin crdgen` a partir de
+# crates/common/src/crd.rs (source de verite du CRD `Workshop`). Ne pas
+# editer directement les `properties:` ci-dessous : regenerer et copier ici
+# a chaque evolution de `WorkshopSpec`/`WorkshopStatus`.
+#
+# Place sous `templates/` (plutot que le repertoire special `crds/` de Helm)
+# avec un hook explicite pour rester dans le cycle de vie normal du
+# Release : `crds/` de Helm n'est jamais mis a jour par `helm upgrade` (ce
+# qui empecherait toute evolution du schema Workshop apres la premiere
+# installation), alors qu'un hook `pre-install,pre-upgrade` de faible poids
+# s'applique avant tout le reste a chaque fois.
+{{- if .Values.crds.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workshops.atelier.dev
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  labels:
+    {{- include "atelier.labels" . | nindent 4 }}
+spec:
+  group: atelier.dev
+  names:
+    categories: []
+    kind: Workshop
+    plural: workshops
+    shortNames:
+      - wks
+    singular: workshop
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns: []
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Auto-generated derived type for WorkshopSpec via `CustomResource`
+          properties:
+            spec:
+              description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : source devcontainer, ressources allouees, politique reseau et outillage active.'
+              properties:
+                desiredState:
+                  default: Running
+                  description: 'Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en veille via snapshot Firecracker, pod parent libere). Le controller fait converger `status.phase` vers cet etat.'
+                  enum:
+                    - Running
+                    - Suspended
+                  type: string
+                devcontainer:
+                  description: Definition de l'environnement au format devcontainer.json (spec VS Code Dev Containers). C'est cette source qui est construite en rootfs bootable par le composant `image-builder`.
+                  properties:
+                    configPath:
+                      default: .devcontainer/devcontainer.json
+                      description: Chemin vers le fichier devcontainer.json dans le depot.
+                      type: string
+                    repo:
+                      description: URL du depot git contenant la definition devcontainer.
+                      type: string
+                    revision:
+                      default: HEAD
+                      description: Branche, tag ou commit a utiliser.
+                      type: string
+                  required:
+                    - repo
+                  type: object
+                egressAllowlist:
+                  default: []
+                  description: Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
+                  items:
+                    type: string
+                  type: array
+                identityInjectionRules:
+                  default: []
+                  description: 'Regles d''injection de credentials appliquees par `identity-proxy` aux appels sortants de l''agent (jamais exposees en clair a la VM, voir `docs/architecture/network-security.md`). Vide : identity-proxy relaie sans jamais injecter.'
+                  items:
+                    description: 'Une regle d''injection `identity-proxy` : les requetes sortantes de l''agent dont l''hote correspond a `host` (correspondance exacte ou wildcard `*.domaine`, meme syntaxe que `egress_allowlist`) recoivent l''en-tete `header` construit comme `prefix` + la valeur du champ `field` du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`. Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule` (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).'
+                    properties:
+                      field:
+                        default: value
+                        type: string
+                      header:
+                        type: string
+                      host:
+                        type: string
+                      prefix:
+                        default: ''
+                        type: string
+                      secretPath:
+                        type: string
+                    required:
+                      - header
+                      - host
+                      - secretPath
+                    type: object
+                  type: array
+                ownerSubject:
+                  description: Identite du sujet JWT autorise a piloter ce Workshop.
+                  type: string
+                resources:
+                  description: Ressources allouees au pod parent (qui heberge la microVM + le tooling).
+                  properties:
+                    cpu:
+                      type: string
+                    disk:
+                      nullable: true
+                      type: string
+                    maxLlmBudgetUsd:
+                      description: Budget maximal en dollars US alloue a la Virtual Key LiteLLM de ce Workshop (voir `docs/specs/03-litellm-proxy.md`). Absent = pas de plafond specifique impose par le Workshop (comportement par defaut de LiteLLM/politique globale du cluster).
+                      format: double
+                      nullable: true
+                      type: number
+                    memory:
+                      type: string
+                  required:
+                    - cpu
+                    - memory
+                  type: object
+                tools:
+                  default: []
+                  description: 'Outils/simulateurs a exposer via le mcp-gateway (ex: "aws-sim", "identity").'
+                  items:
+                    type: string
+                  type: array
+              required:
+                - devcontainer
+                - ownerSubject
+                - resources
+              type: object
+            status:
+              nullable: true
+              properties:
+                conditions:
+                  additionalProperties:
+                    type: string
+                  default: {}
+                  type: object
+                imageDigest:
+                  description: Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
+                  nullable: true
+                  type: string
+                phase:
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Running
+                    - Terminating
+                    - Failed
+                    - BuildingImage
+                    - Suspending
+                    - Suspended
+                    - Resuming
+                  type: string
+                podName:
+                  nullable: true
+                  type: string
+                snapshotDigest:
+                  description: Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.
+                  nullable: true
+                  type: string
+                upgradeState:
+                  description: 'Positionne par le controller (jamais par l''utilisateur) quand le hash du template de pod parent observe differe de celui utilise pour provisionner la microVM en cours d''execution — typiquement apres un `helm upgrade` qui change l''image `atelier-controller`/`atelier-api-server`. Un `helm upgrade` ne redemarre donc jamais une microVM Firecracker active de force : ce champ signale seulement qu''un redemarrage (via un cycle suspend/resume manuel, ou a la prochaine liberation du pod) sera necessaire pour que ce Workshop beneficie de la nouvelle version. Voir `docs/specs/02-helm-deployment-admin-doc.md`, section 1.1.'
+                  enum:
+                    - NeedsRestartForUpgrade
+                  nullable: true
+                  type: string
+              required:
+                - phase
+              type: object
+          required:
+            - spec
+          title: Workshop
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+{{- end }}

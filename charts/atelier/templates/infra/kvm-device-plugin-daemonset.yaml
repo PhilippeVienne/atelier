@@ -1,0 +1,38 @@
+{{- if .Values.kvmDevicePlugin.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "kvm-device-plugin") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "kvm-device-plugin") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "kvm-device-plugin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "kvm-device-plugin") | nindent 8 }}
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: kvm-device-plugin
+          image: "{{ .Values.kvmDevicePlugin.image.repository }}:{{ .Values.kvmDevicePlugin.image.tag }}"
+          imagePullPolicy: {{ .Values.kvmDevicePlugin.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+          resources:
+            {{- toYaml .Values.kvmDevicePlugin.resources | nindent 12 }}
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+{{- end }}

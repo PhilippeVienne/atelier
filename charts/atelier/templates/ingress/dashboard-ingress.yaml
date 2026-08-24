@@ -1,0 +1,40 @@
+{{- if .Values.dashboard.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "dashboard") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    # Le dashboard relaie lui-meme des WebSocket longue duree (terminal
+    # navigateur / VS Code embarque, voir dashboard/server.ts) vers
+    # `api-server` — memes timeouts etendus que api-server-ingress pour la
+    # meme raison (une session shell peut rester inactive plus de 60s sans
+    # que ce soit une connexion morte).
+    {{- with .Values.dashboard.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.domains.dashboard }}
+      secretName: {{ printf "%s-tls" (include "atelier.componentName" (dict "root" $ "component" "dashboard")) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.domains.dashboard }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "dashboard") }}
+                port:
+                  number: {{ .Values.dashboard.service.port }}
+{{- end }}

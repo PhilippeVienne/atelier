@@ -1,0 +1,18 @@
+{{- if .Values.litellm.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.litellm.service.port }}
+      targetPort: http
+  selector:
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm") | nindent 4 }}
+{{- end }}

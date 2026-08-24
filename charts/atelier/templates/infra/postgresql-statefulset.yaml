@@ -1,0 +1,102 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "atelier.postgresSecretName" $ }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  POSTGRES_USER: {{ .Values.postgresql.auth.adminUser | quote }}
+  POSTGRES_PASSWORD: {{ .Values.postgresql.auth.adminPassword | quote }}
+  migratorPassword: {{ .Values.postgresql.auth.migratorPassword | quote }}
+  # DSN consommes tels quels par les Deployments core/ (controller,
+  # api-server, pm-engine) via `valueFrom.secretKeyRef` — voir
+  # `db-init-job.yaml` pour la creation reelle des 6 bases + du role
+  # `atelier_migrator`, et `db-migrate-job.yaml` pour l'application des
+  # migrations SQL. Utilisent `atelier_admin` (superutilisateur) comme le
+  # fait `deploy/dev/postgres/` aujourd'hui : voir docs/admin-guide.md pour
+  # la limite connue (RLS inerte face a un role superutilisateur/BYPASSRLS)
+  # et la migration a prevoir vers un role applicatif `atelier_app` scope.
+  controllerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.controller }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  apiServerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.apiServer }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  pmEngineDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.pmEngine }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+---
+{{- if not .Values.postgresql.external.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "postgresql") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "postgresql") | nindent 4 }}
+spec:
+  serviceName: {{ include "atelier.componentName" (dict "root" $ "component" "postgresql") }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "postgresql") | nindent 8 }}
+    spec:
+      containers:
+        - name: postgresql
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.postgresSecretName" $ }}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: postgres
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+      {{- if not .Values.postgresql.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.postgresql.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with (.Values.postgresql.persistence.storageClassName | default .Values.global.storageClassName) }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+  {{- end }}
+{{- end }}
+{{- end }}

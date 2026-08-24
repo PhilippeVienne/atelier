@@ -1,0 +1,466 @@
+# ==============================================================================
+# values.yaml — Chart Helm monolithique `atelier`
+#
+# Voir docs/specs/02-helm-deployment-admin-doc.md pour le detail des decisions
+# d'architecture, et docs/admin-guide.md pour le guide d'exploitation complet
+# (KVM bare-metal / cloud nested virt, identites cloud, backup/restore...).
+# ==============================================================================
+
+# Espace de nommage cible logique (informatif — le namespace reel est celui
+# passe a `helm install -n <namespace>`, ce chart ne cree pas son propre
+# Namespace pour rester compatible avec toute politique de nommage du
+# cluster cible).
+global:
+  imagePullSecrets: []
+  # Ajoute a toutes les ressources templatees (Deployments, StatefulSets,
+  # Jobs, ServiceAccounts) — utile pour des labels de conformite/cout cloud.
+  extraLabels: {}
+  storageClassName: ""
+
+# ==============================================================================
+# Configuration des Domaines Obligatoires (4 Ingress Dédiés avec TLS)
+# ==============================================================================
+domains:
+  keycloak: "auth.example.com"
+  forgejo: "git.example.com"
+  dashboard: "app.example.com"
+  apiServer: "api.example.com"
+
+ingress:
+  # Classe d'Ingress Controller ciblee. Les annotations par defaut de ce
+  # chart (proxy timeouts, websocket-services...) sont ecrites pour
+  # ingress-nginx (voir docs/admin-guide.md, section "Choix du controleur
+  # d'Ingress" pour la justification et les equivalents Traefik/Contour).
+  # Mettre `ingress.className: ""` et fournir ses propres
+  # `<composant>.ingress.annotations` pour un autre controleur.
+  className: "nginx"
+
+tls:
+  enabled: true
+  certManager:
+    enabled: true
+    issuer: "letsencrypt-prod"
+    issuerKind: "ClusterIssuer"
+  # Un secret TLS distinct par Ingress (nomme "<domaine>-tls") est demande a
+  # cert-manager plutot qu'un secret unique partage : chaque Ingress ne
+  # porte qu'un host, ce qui reste le chemin le mieux teste de cert-manager
+  # HTTP-01/DNS-01 et evite un seul secret multi-SAN comme point de
+  # defaillance commun.
+
+# ==============================================================================
+# Identités Cloud & Fallback Secrets Statiques (voir docs/admin-guide.md,
+# section "Identites Cloud Natives")
+# ==============================================================================
+cloudIdentity:
+  provider: "none" # 'none' (on-premise), 'aws' (IRSA/AssumeRole), 'gcp' (Workload Identity), 'azure' (Workload ID)
+  # Fusionnees telles quelles dans les annotations de TOUS les
+  # ServiceAccounts crees par ce chart si non vide. Exemples :
+  #   aws:   eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/atelier-apiserver"
+  #   gcp:   iam.gke.io/gcp-service-account: "atelier-apiserver@my-project.iam.gserviceaccount.com"
+  #   azure: azure.workload.identity/client-id: "11111111-2222-3333-4444-555555555555"
+  annotations: {}
+  # Secret Kubernetes (Opaque) utilise pour les identifiants S3/DB externes
+  # quand `cloudIdentity.provider == 'none'` et qu'un service `external.*`
+  # est active (voir s3Storage.external, postgresql.external).
+  fallbackSecretName: "atelier-external-credentials"
+
+crds:
+  # Applique le CRD `Workshop` (templates/crds/workshop.yaml) en hook
+  # pre-install/pre-upgrade. A desactiver uniquement si ce CRD est deja
+  # gere par une autre installation Helm dans le meme cluster (les CRD sont
+  # cluster-scoped, deux Releases ne peuvent pas se le disputer) — voir
+  # docs/admin-guide.md, "Un seul chart `atelier` par cluster".
+  install: true
+
+rbac:
+  # ClusterRole/ClusterRoleBinding permettant au controller de gerer les CRD
+  # Workshop et les ressources qu'il possede (Pods, Jobs, Secrets...) dans
+  # tous les namespaces surveilles. Desactiver seulement si un RBAC externe
+  # equivalent est deja applique hors de ce chart.
+  create: true
+
+# ------------------------------------------------------------------------
+# Control Plane Atelier
+# ------------------------------------------------------------------------
+controller:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/philippevienne/atelier-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  env: {}
+
+apiServer:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/philippevienne/atelier-api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  service:
+    port: 8080
+  jwt:
+    audience: "atelier-api"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  ingress:
+    # Fusionnees en plus des annotations cert-manager/TLS communes. Valeurs
+    # par defaut pensees pour ingress-nginx (WebSocket = HTTP/1.1 Upgrade
+    # laisse passer nativement, mais les timeouts par defaut de nginx
+    # (60s) coupent des sessions de terminal longues sans ceci).
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+  env: {}
+
+dashboard:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/philippevienne/atelier-dashboard
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    port: 3000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  ingress:
+    # Le dashboard relaie lui-meme des WebSocket (terminal/VS Code
+    # navigateur, voir dashboard/server.ts) : memes annotations que
+    # `apiServer.ingress.annotations` et pour la meme raison.
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  env: {}
+
+# --- Moteur DevFactory & Project Manager (LangGraph, Jalon M5) ---
+pmEngine:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/philippevienne/atelier-pm-engine
+    tag: latest
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  service:
+    port: 8000
+  hitlPolicy: "require_approval_before_merge"
+  embeddingModel: "text-embedding-3-small"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  env: {}
+
+# ------------------------------------------------------------------------
+# Infrastructure KVM (device plugin exposant /dev/kvm aux noeuds)
+# ------------------------------------------------------------------------
+kvmDevicePlugin:
+  enabled: true
+  image:
+    repository: ghcr.io/philippevienne/atelier-kvm-device-plugin
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+# ------------------------------------------------------------------------
+# Files de Messages Asynchrones (Redis Streams, Jalon M5)
+# ------------------------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7.2-alpine"
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# ------------------------------------------------------------------------
+# Passerelle IA LiteLLM
+# ------------------------------------------------------------------------
+litellm:
+  enabled: true
+  image:
+    repository: ghcr.io/berriai/litellm
+    tag: "main-latest"
+    pullPolicy: IfNotPresent
+  service:
+    port: 4000
+  masterKey: "change-me-litellm-master-key"
+  defaultWorkshopBudgetUsd: 5.00
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    # 512Mi de limite (comme les autres composants) provoque un
+    # OOMKilled systematique au demarrage de l'image officielle
+    # `ghcr.io/berriai/litellm` (verifie empiriquement sur kind-atelier-dev,
+    # 2026-08-24) : son serveur Python/Prisma consomme sensiblement plus a
+    # froid que les autres composants de ce chart. 1.5Gi pris par marge :
+    # 1Gi a encore ete OOMKilled une fois sur plusieurs redemarrages.
+    limits:
+      memory: 1536Mi
+
+# ------------------------------------------------------------------------
+# Services d'Infrastructure Déployés ou BYO (Bring Your Own)
+# ------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: "pg16"
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  auth:
+    # Superutilisateur du conteneur officiel `postgres` (POSTGRES_USER),
+    # utilise uniquement par `db-init-job` pour creer les 6 bases + le role
+    # `atelier_migrator`. En production, remplacer via un Secret externe
+    # (voir docs/admin-guide.md, "Ne jamais garder les mots de passe par
+    # defaut").
+    adminUser: atelier_admin
+    adminPassword: "change-me-postgres-admin"
+    # Mot de passe du role `atelier_migrator` cree par db-init-job et utilise
+    # par db-migrate-job pour appliquer les migrations SQL applicatives.
+    migratorPassword: "change-me-postgres-migrator"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  # Les 6 bases applicatives provisionnees par db-init-job. Ne pas renommer
+  # sans mettre a jour db-migrate-job (chemins de migrations) et les
+  # composants externes (Keycloak/Forgejo/LiteLLM) qui pointent vers elles.
+  databases:
+    apiServer: atelier_apiserver
+    controller: atelier_controller
+    pmEngine: atelier_pm
+    keycloak: atelier_keycloak
+    forgejo: atelier_forgejo
+    litellm: atelier_litellm
+  external:
+    enabled: false
+    host: ""
+    port: 5432
+    sslMode: "require"
+    iamAuthEnabled: false
+
+keycloak:
+  enabled: true
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "24.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  auth:
+    adminUser: admin
+    adminPassword: "change-me-keycloak-admin"
+  realmName: atelier
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    # Meme constat empirique que pour LiteLLM (voir litellm.resources), en
+    # pire : Keycloak 24 (JVM Quarkus, mode `start` = reaugmentation de la
+    # configuration a chaque redemarrage puisqu'aucun volume de build
+    # persistant n'est monte ici) est encore OOMKilled a 1536Mi. 2Gi est la
+    # premiere limite qui demarre proprement, verifie sur kind-atelier-dev,
+    # 2026-08-24 (marge prise a 2.5Gi : 2Gi restait instable sur plusieurs
+    # redemarrages consecutifs pendant la phase de "build" Quarkus).
+    limits:
+      memory: 2560Mi
+  external:
+    enabled: false
+    url: ""
+
+forgejo:
+  enabled: true
+  image:
+    repository: codeberg.org/forgejo/forgejo
+    tag: "7.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 3000
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  external:
+    enabled: false
+    url: ""
+
+openbao:
+  enabled: true
+  image:
+    repository: openbao/openbao
+    tag: "2.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8200
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+  devMode: false
+  # Nom d'un Secret (cle "token") PORTANT UN TOKEN OpenBao valide, cree par
+  # l'operateur APRES `bao operator init` + `bao operator unseal` (deux
+  # operations manuelles deliberement hors du cycle de vie Helm, voir
+  # docs/admin-guide.md, "Initialisation et descellement d'OpenBao") quand
+  # `devMode: false`. Sans ce Secret, `openbao-init-job` echoue explicitement
+  # (jamais de succes silencieux) : OpenBao scelle ne peut pas etre configure.
+  # Ignore quand `devMode: true` (le token racine est alors "root").
+  rootTokenSecretName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  external:
+    enabled: false
+    url: ""
+
+# ------------------------------------------------------------------------
+# Stockage d'Objets S3 (RustFS embarque, ou Cloud/BYO avec AssumeRole)
+# ------------------------------------------------------------------------
+s3Storage:
+  rustfs:
+    enabled: true
+    image:
+      repository: rustfs/rustfs
+      tag: "latest"
+      pullPolicy: IfNotPresent
+    service:
+      port: 9000
+    persistence:
+      enabled: true
+      size: 100Gi
+      storageClassName: ""
+    auth:
+      accessKey: "atelier-rustfs-access-key"
+      secretKey: "atelier-rustfs-secret-key"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  external:
+    enabled: false
+    endpoint: ""
+    region: "eu-west-1"
+    assumeRoleArn: ""
+    forcePathStyle: false
+  buckets:
+    sessions: "atelier-sessions"
+    snapshots: "atelier-snapshots"
+    forgejo: "forgejo-lfs-attachments"
+
+# ------------------------------------------------------------------------
+# Jobs d'initialisation Helm (hooks) — images utilitaires, activables
+# individuellement pour rejouer un hook seul (`helm upgrade --force` ne
+# rejoue pas les hooks post-install par defaut ; voir docs/admin-guide.md).
+# ------------------------------------------------------------------------
+initJobs:
+  dbInit:
+    enabled: true
+    image:
+      repository: postgres
+      tag: "16-alpine"
+  dbMigrate:
+    # Desactive par defaut : `crates/api-server/src/main.rs` et
+    # `crates/controller/src/main.rs` appellent DEJA `sqlx::migrate!` a
+    # chaque demarrage, avec le suivi standard `_sqlx_migrations` (une
+    # migration deja appliquee n'est jamais rejouee). Ce Job, lui, executait
+    # le meme contenu SQL brut via `psql -f` SANS aucun suivi — constate
+    # empiriquement lors du test de deploiement reel de ce chart (Jalon M6) :
+    # `helm upgrade` (meme sans aucun changement) le rejouait entierement et
+    # echouait systematiquement sur le deuxieme passage
+    # ("relation ... already exists"), les fichiers `.sql` n'etant pas
+    # ecrits pour etre idempotents (`CREATE TABLE` sans `IF NOT EXISTS`).
+    # Le laisser active en plus de l'auto-migration des binaires est non
+    # seulement redondant mais actively dangereux (double application non
+    # coordonnee du meme schema). A ne reactiver qu'apres avoir remplace la
+    # boucle `psql -f` par un outil qui suit reellement les migrations deja
+    # appliquees (ex: `sqlx-cli migrate run`, qui lit/ecrit la meme table
+    # `_sqlx_migrations` que les binaires — voir docs/admin-guide.md).
+    enabled: false
+    # Image portant `psql` et les fichiers de migrations SQL empaquetes
+    # (voir templates/jobs/db-migrate-job.yaml et docs/admin-guide.md pour
+    # le mecanisme d'empaquetage attendu en CI). A defaut d'une image dediee
+    # buildee par la CI, `postgres:16-alpine` + un ConfigMap contenant les
+    # fichiers `.sql` suffit (c'est ce que ce chart fait par defaut).
+    image:
+      repository: postgres
+      tag: "16-alpine"
+  keycloakInit:
+    enabled: true
+    image:
+      repository: quay.io/keycloak/keycloak
+      tag: "24.0"
+  openbaoInit:
+    enabled: true
+    image:
+      repository: openbao/openbao
+      tag: "2.0.0"
+  s3Init:
+    enabled: true
+    image:
+      repository: minio/mc
+      tag: "latest"
+  # Delai de tentative pour chaque hook (backoffLimit) et TTL de nettoyage
+  # automatique des Jobs completes.
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600

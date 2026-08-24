@@ -1,0 +1,17 @@
+apiVersion: v2
+name: atelier
+description: >-
+  Chart Helm monolithique du control plane Atelier (environnements de
+  developpement isoles en microVMs Firecracker) : controller, api-server,
+  dashboard, pm-engine, et l'infrastructure embarquee (PostgreSQL, Keycloak,
+  Forgejo, OpenBao, LiteLLM, Redis, RustFS).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - firecracker
+  - devcontainer
+  - kubernetes-operator
+home: https://github.com/PhilippeVienne/atelier
+maintainers:
+  - name: Equipe Atelier

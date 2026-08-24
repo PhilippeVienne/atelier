@@ -449,6 +449,117 @@ async fn apply_wires_the_git_identity_injection_rule_when_configured() {
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
 
+/// Jalon M6, tache 6.4.2 : un pod parent deja en place, cree avec un
+/// template different de celui que le controller construirait aujourd'hui
+/// (simule ici un `helm upgrade` qui a change l'image d'un des conteneurs
+/// entre deux reconciles), doit faire passer `status.upgradeState` a
+/// `NeedsRestartForUpgrade` SANS que le pod (donc la microVM active qu'il
+/// heberge) ne soit jamais supprime ni recree. Un pod fraichement cree, lui,
+/// ne doit jamais porter cet etat.
+#[tokio::test]
+async fn apply_flags_needs_restart_for_upgrade_without_recreating_pod() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let name = unique_name("test-workshop-upgrade");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_openbao(client.clone());
+
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+
+    let building_status = atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("premier apply()");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": building_status })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("patch du statut");
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+
+    let status = atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer");
+    let expected_pod_name = format!("{name}-parent");
+    assert_eq!(
+        status.upgrade_state, None,
+        "un pod fraichement cree ne doit jamais avoir besoin d'un redemarrage"
+    );
+
+    let pod_before = pods
+        .get(&expected_pod_name)
+        .await
+        .expect("le pod parent doit avoir ete cree");
+    let uid_before = pod_before.metadata.uid.clone();
+
+    // Simule un `helm upgrade` du controller : le pod deja en place porte
+    // desormais un hash de template obsolete par rapport a ce que le
+    // controller construirait aujourd'hui (patch direct de l'annotation,
+    // le seul champ mutable du pod une fois cree).
+    pods.patch(
+        &expected_pod_name,
+        &PatchParams::default(),
+        &Patch::Merge(&serde_json::json!({
+            "metadata": { "annotations": { "atelier.dev/template-hash": "stale-hash-from-an-older-controller" } }
+        })),
+    )
+    .await
+    .expect("patch de l'annotation de hash");
+
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+    let status_after = atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer suite au hash obsolete");
+
+    assert_eq!(
+        status_after.upgrade_state,
+        Some(atelier_common::WorkshopUpgradeState::NeedsRestartForUpgrade),
+        "un hash de template divergent doit positionner NeedsRestartForUpgrade"
+    );
+
+    let pod_after = pods
+        .get(&expected_pod_name)
+        .await
+        .expect("le pod parent doit toujours exister, jamais recree de force");
+    assert_eq!(
+        pod_after.metadata.uid, uid_before,
+        "le pod (et donc la microVM active qu'il heberge) ne doit jamais etre recree pour un simple changement de template"
+    );
+
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    pods.delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    jobs.delete(&format!("{name}-image-build"), &foreground_delete())
+        .await
+        .ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
 /// Suspendre un Workshop doit liberer son pod parent sans toucher a son
 /// ServiceAccount ; le reprendre doit recreer le pod (phase `Resuming` puis
 /// `Running`) sans reconstruire l'image.

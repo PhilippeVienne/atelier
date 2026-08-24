@@ -1,0 +1,75 @@
+{{- if .Values.litellm.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm-auth") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  LITELLM_MASTER_KEY: {{ .Values.litellm.masterKey | quote }}
+  {{- if .Values.postgresql.enabled }}
+  DATABASE_URL: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.litellm }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm") | nindent 8 }}
+      annotations:
+        # Ce conteneur recoit ses identifiants via `envFrom: secretRef`
+        # (au-dessus) : Kubernetes ne redemarre JAMAIS un pod du seul fait
+        # que le CONTENU d'un Secret deja monte/injecte a change (contrainte
+        # generale, pas specifique a `envFrom`) — un `helm upgrade` qui
+        # change `postgresql.auth.adminPassword`/`sslMode` mettrait a jour le
+        # Secret mais laisserait ce pod tourner indefiniment avec l'ancienne
+        # valeur, deja injectee dans son environnement au demarrage.
+        # Constate empiriquement lors de la validation de ce chart (Jalon
+        # M6) : un changement de `postgresql.external.sslMode` applique par
+        # `helm upgrade` n'a pas fait redemarrer ce pod. Cette annotation
+        # fait varier le hash du template a chaque changement pertinent,
+        # forcant Kubernetes a recreer le pod (meme mecanisme que
+        # `TEMPLATE_HASH_ANNOTATION` cote pod parent d'un Workshop, voir
+        # `crates/controller/src/reconcile.rs`, mais ici c'est Kubernetes
+        # lui-meme qui agit sur le changement, pas juste un signal de
+        # statut : ce Deployment n'a pas la contrainte de continuite d'une
+        # microVM active).
+        checksum/database-secret: {{ toYaml .Values.postgresql | sha256sum }}
+    spec:
+      containers:
+        - name: litellm
+          image: "{{ .Values.litellm.image.repository }}:{{ .Values.litellm.image.tag }}"
+          imagePullPolicy: {{ .Values.litellm.image.pullPolicy }}
+          args: ["--port", "{{ .Values.litellm.service.port }}"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.litellm.service.port }}
+          envFrom:
+            - secretRef:
+                name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm-auth") }}
+          env:
+            - name: ATELIER_DEFAULT_WORKSHOP_BUDGET_USD
+              value: {{ .Values.litellm.defaultWorkshopBudgetUsd | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.litellm.resources | nindent 12 }}
+{{- end }}

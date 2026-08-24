@@ -1,0 +1,55 @@
+{{- if .Values.rbac.create }}
+{{- if .Values.controller.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "controller") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["atelier.dev"]
+    resources: ["workshops", "workshops/status", "workshops/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create"]
+{{- end }}
+---
+{{- if .Values.apiServer.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["atelier.dev"]
+    resources: ["workshops", "workshops/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
+---
+{{- if .Values.pmEngine.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "pm-engine") }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["atelier.dev"]
+    resources: ["workshops", "workshops/status"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
+{{- end }}
