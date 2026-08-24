@@ -252,15 +252,15 @@ graph TD
 
 ### 6.1. Client LiteLLM & Provisioning dynamique des Virtual Keys (TTL Court)
 * **Fichier impacté** : `crates/controller/src/litellm.rs` (Nouveau module)
-  - [ ] **3.1.1** : Définir la structure `LiteLlmClient` avec méthodes `generate_virtual_key(workshop_name, owner, max_budget_usd, ttl)` et `delete_virtual_key(key_alias)`.
-  - [ ] **3.1.2** : Implémenter l'appel `POST /key/generate` avec budget plafond, TTL de 1-2h et métadonnées de Workshop.
+  - [-/claude-code/sess-6f3eef77-f] **3.1.1** : Définir la structure `LiteLlmClient` avec méthodes `generate_virtual_key(workshop_name, owner, max_budget_usd, ttl)` et `delete_virtual_key(key_alias)`.
+  - [-/claude-code/sess-6f3eef77-f] **3.1.2** : Implémenter l'appel `POST /key/generate` avec budget plafond, TTL de 1-2h et métadonnées de Workshop.
 * **Fichier impacté** : [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs)
-  - [ ] **3.1.3** : Lors du provisioning et lors de la reprise post-suspension (`resume`), générer la Virtual Key et l'injecter dans `/etc/environment` (`ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`).
-  - [ ] **3.1.4** : Clés éphémères de build : générer une Virtual Key temporaire dédiée pour le Job `image-builder` et la révoquer dès l'achèvement du Job.
+  - [-/claude-code/sess-6f3eef77-f] **3.1.3** : Lors du provisioning et lors de la reprise post-suspension (`resume`), générer la Virtual Key et l'injecter dans `/etc/environment` (`ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`).
+  - [-/claude-code/sess-6f3eef77-f] **3.1.4** : Clés éphémères de build : générer une Virtual Key temporaire dédiée pour le Job `image-builder` et la révoquer dès l'achèvement du Job.
 
 ### 6.2. Enforcing des quotas & Nettoyage dans le Finalizer `atelier.dev/cleanup`
 * **Fichier impacté** : [`crates/controller/src/reconcile.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/src/reconcile.rs)
-  - [ ] **3.2.1** : Lors de la suppression d'un Workshop, exécuter `litellm_client.delete_virtual_key(&format!("atelier-wks-{}", name)).await` avant de libérer le finalizer. Idempotent (404 ignoré).
+  - [-/claude-code/sess-6f3eef77-f] **3.2.1** : Lors de la suppression d'un Workshop, exécuter `litellm_client.delete_virtual_key(&format!("atelier-wks-{}", name)).await` avant de libérer le finalizer. Idempotent (404 ignoré).
 
 ### 🧪 Tests & Preuves Attendues pour M3
 1. `cargo test -p atelier-controller --test litellm` :
@@ -329,8 +329,8 @@ graph TD
 
 ### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
-  - [ ] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
-  - [ ] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante.
+  - [-/claude-code/sess-6f3eef77-g] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
+  - [-/claude-code/sess-6f3eef77-g] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante.
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
 - [ ] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX).
@@ -354,9 +354,9 @@ graph TD
 
 ### 8.3. Base `atelier_pm` : Checkpointer PostgreSQL & Mémoire RAG `pgvector` avec RLS
 * **Script de migration SQL** : `20260824000000_init_pm_engine.sql`
-  - [ ] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`.
-  - [ ] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active.
-  - [ ] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph.
+  - [-/claude-code/sess-6f3eef77-g] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`.
+  - [-/claude-code/sess-6f3eef77-g] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active.
+  - [-/claude-code/sess-6f3eef77-g] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph.
 
 ### 8.4. Adaptateurs Multi-Forges Git & Pipeline Redis Streams (At-Least-Once)
 * **Fichiers** : `services/pm-engine/git_providers/`
@@ -441,25 +441,25 @@ graph TD
   ```
 
 ### 9.2. Fichiers Ingress Dédiés (x4) avec TLS cert-manager
-- [ ] **6.2.1** : `keycloak-ingress.yaml` (`auth.example.com`).
-- [ ] **6.2.2** : `forgejo-ingress.yaml` (`git.example.com` — HTTPS pur).
-- [ ] **6.2.3** : `dashboard-ingress.yaml` (`app.example.com`).
-- [ ] **6.2.4** : `apiserver-ingress.yaml` (`api.example.com` — WebSocket supporté avec timeouts étendus).
+- [-/claude-code/sess-6f3eef77-h] **6.2.1** : `keycloak-ingress.yaml` (`auth.example.com`).
+- [-/claude-code/sess-6f3eef77-h] **6.2.2** : `forgejo-ingress.yaml` (`git.example.com` — HTTPS pur).
+- [-/claude-code/sess-6f3eef77-h] **6.2.3** : `dashboard-ingress.yaml` (`app.example.com`).
+- [-/claude-code/sess-6f3eef77-h] **6.2.4** : `apiserver-ingress.yaml` (`api.example.com` — WebSocket supporté avec timeouts étendus).
 
 ### 9.3. Séquencement des 5 Jobs d'initialisation Helm
-- [ ] **6.3.1** : `db-init-job.yaml` crée les 6 bases PostgreSQL et le rôle d'administration `atelier_migrator`.
-- [ ] **6.3.2** : `db-migrate-job.yaml` applique les migrations SQL via `atelier_migrator`.
-- [ ] **6.3.3** : `keycloak-init-job.yaml` configure automatiquement le Realm `atelier` et les clients OIDC.
-- [ ] **6.3.4** : `openbao-init-job.yaml` active la méthode d'auth Kubernetes.
-- [ ] **6.3.5** : `s3-init-job.yaml` crée les buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments`.
+- [-/claude-code/sess-6f3eef77-h] **6.3.1** : `db-init-job.yaml` crée les 6 bases PostgreSQL et le rôle d'administration `atelier_migrator`.
+- [-/claude-code/sess-6f3eef77-h] **6.3.2** : `db-migrate-job.yaml` applique les migrations SQL via `atelier_migrator`.
+- [-/claude-code/sess-6f3eef77-h] **6.3.3** : `keycloak-init-job.yaml` configure automatiquement le Realm `atelier` et les clients OIDC.
+- [-/claude-code/sess-6f3eef77-h] **6.3.4** : `openbao-init-job.yaml` active la méthode d'auth Kubernetes.
+- [-/claude-code/sess-6f3eef77-h] **6.3.5** : `s3-init-job.yaml` crée les buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments`.
 
 ### 9.4. Support des Identités Cloud & Rolling Upgrades Non Perturbateurs
-- [ ] **6.4.1** : Annotations ServiceAccount pour AWS IRSA (`eks.amazonaws.com/role-arn`), GCP Workload Identity et Azure Workload ID.
-- [ ] **6.4.2** : Gestion du statut `NeedsRestartForUpgrade` pour préserver les microVMs actives lors des `helm upgrade`.
+- [-/claude-code/sess-6f3eef77-h] **6.4.1** : Annotations ServiceAccount pour AWS IRSA (`eks.amazonaws.com/role-arn`), GCP Workload Identity et Azure Workload ID.
+- [-/claude-code/sess-6f3eef77-h] **6.4.2** : Gestion du statut `NeedsRestartForUpgrade` pour préserver les microVMs actives lors des `helm upgrade`.
 
 ### 9.5. Rédaction du Guide Administrateur (`docs/admin-guide.md`)
-- [ ] **6.5.1** : Rédiger le guide complet (KVM bare-metal & cloud nested virt, 4 domaines DNS, S3 multi-cloud, AWS IRSA/AssumeRole, backup/restore PostgreSQL et dépannage).
-- [ ] **6.5.2** : Déclarer la page dans [`mkdocs.yml`](file:///home/philippe/github.com/PhilippeVienne/atelier/mkdocs.yml).
+- [-/claude-code/sess-6f3eef77-h] **6.5.1** : Rédiger le guide complet (KVM bare-metal & cloud nested virt, 4 domaines DNS, S3 multi-cloud, AWS IRSA/AssumeRole, backup/restore PostgreSQL et dépannage).
+- [-/claude-code/sess-6f3eef77-h] **6.5.2** : Déclarer la page dans [`mkdocs.yml`](file:///home/philippe/github.com/PhilippeVienne/atelier/mkdocs.yml).
 
 ### 🧪 Tests & Preuves Attendues pour M6
 1. `helm lint charts/atelier` : Zéro erreur de syntaxe.
