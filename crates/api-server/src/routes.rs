@@ -35,6 +35,12 @@ pub struct AppState {
     /// injecter de Basic Auth (fonctionnalite optionnelle si non
     /// configuree, meme convention que le reste du projet).
     pub session_auth: Option<crate::session_auth::SessionAuthClient>,
+    /// Backend S3 pour l'archivage des sessions terminal (Jalon M2, voir
+    /// `crate::session_recorder`). `None` si `S3_ENDPOINT` est absent :
+    /// l'archivage est alors simplement desactive, aucune session n'est
+    /// enregistree (fonctionnalite optionnelle si non configuree, meme
+    /// convention que `session_auth`).
+    pub storage: Option<std::sync::Arc<crate::storage::S3StorageBackend>>,
 }
 
 pub fn router(state: AppState, auth: AuthState) -> Router {

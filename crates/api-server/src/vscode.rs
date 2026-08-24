@@ -48,10 +48,13 @@ pub async fn vscode_proxy_root(
     proxy_to_guest_port(
         state,
         user,
-        name,
-        String::new(),
-        code_server_port(),
-        "vscode",
+        GuestProxyTarget {
+            name,
+            path: String::new(),
+            port: code_server_port(),
+            url_prefix: "vscode",
+            record_session: false,
+        },
         req,
     )
     .await
@@ -63,7 +66,35 @@ pub async fn vscode_proxy(
     Path((name, path)): Path<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response, ApiError> {
-    proxy_to_guest_port(state, user, name, path, code_server_port(), "vscode", req).await
+    proxy_to_guest_port(
+        state,
+        user,
+        GuestProxyTarget {
+            name,
+            path,
+            port: code_server_port(),
+            url_prefix: "vscode",
+            record_session: false,
+        },
+        req,
+    )
+    .await
+}
+
+/// Parametres d'un pont HTTP+WebSocket vers un port de la microVM agent
+/// (voir [`proxy_to_guest_port`]) : regroupes en struct plutot qu'en
+/// arguments positionnels separes (au-dela de 7, `clippy::too_many_arguments`
+/// se declenche, et la confusion entre plusieurs `String`/`u16`/`bool`
+/// positionnels devient reelle).
+pub(crate) struct GuestProxyTarget {
+    pub name: String,
+    pub path: String,
+    pub port: u16,
+    pub url_prefix: &'static str,
+    /// Si vrai, la sortie du tunnel (direction serveur->client) est
+    /// dupliquee vers `crate::session_recorder` et archivee sur S3 (voir ce
+    /// module) — seul `crate::terminal` l'active, jamais `code-server`.
+    pub record_session: bool,
 }
 
 /// Pont HTTP+WebSocket generique vers un port de la microVM agent, reutilise
@@ -75,12 +106,16 @@ pub async fn vscode_proxy(
 pub(crate) async fn proxy_to_guest_port(
     state: AppState,
     user: AuthenticatedUser,
-    name: String,
-    path: String,
-    port: u16,
-    url_prefix: &str,
+    target: GuestProxyTarget,
     mut req: Request<Body>,
 ) -> Result<Response, ApiError> {
+    let GuestProxyTarget {
+        name,
+        path,
+        port,
+        url_prefix,
+        record_session,
+    } = target;
     tracing::debug!(name = %name, path = %path, port, user = %user.0, "proxy_to_guest_port appele");
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
@@ -173,18 +208,27 @@ pub(crate) async fn proxy_to_guest_port(
             .body(Body::empty())
             .map_err(|err| ApiError::bad_gateway(format!("reponse d'upgrade invalide: {err}")))?;
 
+        let recording = if record_session {
+            state
+                .storage
+                .clone()
+                .map(|storage| crate::session_recorder::SessionRecording::start(storage, name))
+        } else {
+            None
+        };
         tokio::spawn(async move {
             match (server_upgrade.await, client_upgrade.await) {
                 (Ok(server_io), Ok(client_io)) => {
                     let mut server_io = TokioIo::new(server_io);
                     let mut client_io = TokioIo::new(client_io);
                     if let Err(err) =
-                        tokio::io::copy_bidirectional(&mut server_io, &mut client_io).await
+                        copy_bidirectional_with_recording(&mut server_io, &mut client_io, recording)
+                            .await
                     {
-                        tracing::debug!(%err, "tunnel websocket code-server ferme");
+                        tracing::debug!(%err, "tunnel websocket ferme");
                     }
                 }
-                _ => tracing::warn!("upgrade websocket vers code-server echoue"),
+                _ => tracing::warn!("upgrade websocket vers le guest echoue"),
             }
         });
         return Ok(reply);
@@ -211,6 +255,48 @@ pub(crate) async fn proxy_to_guest_port(
     builder
         .body(Body::new(incoming_body))
         .map_err(|err| ApiError::bad_gateway(format!("reponse de code-server invalide: {err}")))
+}
+
+/// Equivalent de `tokio::io::copy_bidirectional`, mais capable de dupliquer
+/// (« tee ») le flux serveur->client vers un [`crate::session_recorder::SessionRecording`]
+/// au fur et a mesure, sans jamais bufferiser la session entiere. `recording`
+/// vaut `None` pour tous les tunnels qui ne sont pas enregistres
+/// (`code-server`, ou `ttyd` sans backend S3 configure) : dans ce cas le
+/// comportement est strictement identique a `copy_bidirectional`. Seule la
+/// direction serveur->client (la sortie affichee du terminal) est
+/// enregistree, jamais la saisie utilisateur (voir `crate::session_recorder`).
+async fn copy_bidirectional_with_recording(
+    server_io: &mut TokioIo<hyper::upgrade::Upgraded>,
+    client_io: &mut TokioIo<hyper::upgrade::Upgraded>,
+    mut recording: Option<crate::session_recorder::SessionRecording>,
+) -> std::io::Result<()> {
+    let mut server_to_client = [0u8; 16 * 1024];
+    let mut client_to_server = [0u8; 16 * 1024];
+    loop {
+        tokio::select! {
+            n = server_io.read(&mut server_to_client) => {
+                let n = n?;
+                if n == 0 {
+                    break;
+                }
+                if let Some(recording) = recording.as_mut() {
+                    recording.write_chunk(&server_to_client[..n]).await;
+                }
+                client_io.write_all(&server_to_client[..n]).await?;
+            }
+            n = client_io.read(&mut client_to_server) => {
+                let n = n?;
+                if n == 0 {
+                    break;
+                }
+                server_io.write_all(&client_to_server[..n]).await?;
+            }
+        }
+    }
+    if let Some(recording) = recording {
+        recording.finish().await;
+    }
+    Ok(())
 }
 
 /// Ouvre une connexion TCP "virtuelle" vers `(pod_ip, remote_port)` a

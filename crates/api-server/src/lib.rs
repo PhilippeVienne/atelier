@@ -2,6 +2,7 @@ pub mod auth;
 pub mod portforward;
 pub mod routes;
 pub mod session_auth;
+pub mod session_recorder;
 pub mod storage;
 pub mod terminal;
 pub mod vscode;

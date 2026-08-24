@@ -40,6 +40,10 @@ base64 = "0.22"
 async-compression = { version = "0.4.43", features = ["tokio", "zstd"] }
 bytes = "1"
 async-trait = "0.1.92"
+# Identifiant de session terminal enregistree (crate::session_recorder) :
+# deja present transitivement via aws-runtime, declare explicitement car
+# utilise directement dans notre propre code.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 sha2 = "0.10"

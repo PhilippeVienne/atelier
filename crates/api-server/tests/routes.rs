@@ -133,6 +133,7 @@ async fn health_endpoints_respond_without_auth() {
             db_pool: test_db_pool().await,
             openbao_addr: None,
             session_auth: None,
+            storage: None,
         },
         auth,
     );
@@ -192,6 +193,7 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
             db_pool: test_db_pool().await,
             openbao_addr: None,
             session_auth: None,
+            storage: None,
         },
         auth,
     );
@@ -520,6 +522,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             db_pool: test_db_pool().await,
             openbao_addr: None,
             session_auth: None,
+            storage: None,
         },
         auth,
     );
@@ -765,6 +768,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             db_pool: test_db_pool().await,
             openbao_addr: None,
             session_auth: None,
+            storage: None,
         },
         auth,
     );
@@ -941,6 +945,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             db_pool: test_db_pool().await,
             openbao_addr: None,
             session_auth: None,
+            storage: None,
         },
         auth,
     );
@@ -1388,6 +1393,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             db_pool: test_db_pool().await,
             openbao_addr: Some(openbao_addr.clone()),
             session_auth: Some(session_auth),
+            storage: None,
         },
         auth,
     );

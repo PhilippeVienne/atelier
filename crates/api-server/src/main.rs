@@ -30,6 +30,8 @@ async fn main() -> anyhow::Result<()> {
     let session_auth = openbao_addr
         .clone()
         .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
+    let storage =
+        atelier_api_server::storage::S3StorageBackend::from_env()?.map(std::sync::Arc::new);
 
     let app = routes::router(
         AppState {
@@ -38,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
             db_pool,
             openbao_addr,
             session_auth,
+            storage,
         },
         auth,
     );
