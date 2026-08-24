@@ -1,0 +1,60 @@
+# Ollama de developpement (meme convention que deploy/dev/redis et
+# deploy/dev/postgres) : un seul Pod, pas de persistance (emptyDir),
+# donnees jetables a la suppression du pod.
+#
+# Usage prevu (Jalon M5, tache 5.0.2) : sert de backend d'embedding LOCAL
+# (aucune cle, aucun appel externe) pour `deploy/dev/llm-proxy` — LiteLLM
+# route le modele `embedding-dev-local` vers ce pod (voir
+# `deploy/dev/llm-proxy/config.yaml`). Substitue a l'API d'inference
+# hebergee de Hugging Face (`huggingface/sentence-transformers/...`), qui
+# exige desormais une authentification meme pour un modele public (constate
+# empiriquement, voir docs/PROGRESS.md) — contraire a l'objectif "sans cle
+# payante bloquante" de cette tache.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: atelier-ollama-dev
+  namespace: default
+  labels:
+    app: atelier-ollama-dev
+spec:
+  containers:
+    - name: ollama
+      image: ollama/ollama:0.9.6
+      ports:
+        - name: http
+          containerPort: 11434
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 11434
+        initialDelaySeconds: 3
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 11434
+        initialDelaySeconds: 10
+        periodSeconds: 15
+      volumeMounts:
+        - name: models
+          mountPath: /root/.ollama
+  volumes:
+    # emptyDir : le modele telecharge (voir README.md, etape ponctuelle
+    # `ollama pull`) est perdu a la suppression du pod, comme les autres
+    # composants `deploy/dev/*` — a retelecharger au prochain provisioning.
+    - name: models
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-ollama-dev
+  namespace: default
+spec:
+  selector:
+    app: atelier-ollama-dev
+  ports:
+    - port: 11434
+      targetPort: 11434
+  type: ClusterIP

@@ -47,6 +47,24 @@ model_list:
       input_cost_per_token: 0.5
       output_cost_per_token: 0.5
 
+  # Modele d'embedding leger pour valider les tests vectoriels `pgvector` en
+  # dev sans cle payante bloquante (Jalon M5, tache 5.0.2 — voir
+  # `services/pm-engine`, table `project_memories`). Route vers Ollama
+  # (`deploy/dev/ollama`, service global du cluster, meme niveau que ce
+  # LiteLLM), entierement local. L'API d'inference hebergee de Hugging Face
+  # (`huggingface/sentence-transformers/...`) exige desormais une
+  # authentification meme pour un modele public (verifie empiriquement,
+  # voir `deploy/dev/ollama/README.md`) — contraire a l'objectif de cette
+  # tache. Dimension native 384, differente de `VECTOR(1536)` (calibree sur
+  # `text-embedding-3-small`, voir
+  # `services/pm-engine/migrations/20260824000000_init_pm_engine.sql`) : ne
+  # pas ecrire directement dans `project_memories` avec ce modele sans
+  # adaptation (re-projection ou colonne dediee aux tests dev).
+  - model_name: embedding-dev-local
+    litellm_params:
+      model: ollama/all-minilm
+      api_base: http://atelier-ollama-dev:11434
+
 litellm_settings:
   # Evite les rejets sur des arguments specifiques a l'API Anthropic que le
   # backend cible (DeepSeek, via une traduction OpenAI-compatible) ne

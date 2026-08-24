@@ -313,7 +313,7 @@ graph TD
 ### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
   - [x] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock. *(`deploy/dev/redis/dev-pod.yaml` déployé sur `kind-atelier-dev`, cycle `XADD`/`XGROUP CREATE`/`XREADGROUP`/`XPENDING`/`XACK` vérifié à la main, voir `docs/PROGRESS.md` 2026-08-24.)*
-  - [-/claude-code/sess-c7a1e9-m5] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger (ex: `text-embedding-3-small` ou modèle local `all-MiniLM-L6-v2`) pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Bloqué le 2026-08-24 : `deploy/dev/llm-proxy/` en cours de déploiement concurrent par l'agent M3 au moment du passage — patch proposé mais non appliqué, voir `docs/PROGRESS.md`.)*
+  - [x] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Route `embedding-dev-local` → Ollama (`deploy/dev/ollama`, nouveau, modèle `all-minilm`) plutôt que l'API Hugging Face proposée initialement — celle-ci exige désormais une authentification même pour un modèle public, constaté empiriquement. Testé réellement : `POST /v1/embeddings` → vecteur de dimension 384, voir `docs/PROGRESS.md`.)*
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
 - [x] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX). *(`uv pip install -e ".[dev]"` réussit réellement, voir `docs/PROGRESS.md` 2026-08-24.)*

@@ -2283,3 +2283,27 @@ cargo test --workspace                                        # 100% vert (contr
 **Non teste de bout en bout avec une vraie microVM Firecracker** : le cluster kind partage n'a pas de `atelier-controller` reel en cours d'execution au moment de cette session (aurait fallu le redemarrer avec le code fusionne + orchestrer un vrai build d'image incluant les changements `atelier-workspace`) — juge hors budget raisonnable pour cette session au vu de la validation deja obtenue a chaque couche (guest, controller/OpenBao, net-proxy, client SSH). A confirmer par une session future disposant d'un controller live.
 
 **Statut** : ✅ Taches 4.2.2 et 4.2.3 validees avec l'adaptation de canal documentee (SSH plutot que WebSocket/vsock, decision utilisateur). `[-/claude-code/sess-c7a1e9-m4]` remplace par `[x]`. DoD M4 : 3/3 lignes `[x]` desormais (le pilotage MCP du cycle de vie ET `exec_in_workshop` sont verifies). ⚠️ **4.2.4 (confinement de securite automatique) reste `[ ]`, deliberement hors perimetre** — aucune detection d'anomalie reseau n'existe dans `net-proxy` aujourd'hui, necessiterait sa propre conception (heuristiques de detection, nouveau statut Workshop, alerte Dashboard).
+
+### [2026-08-24 22:50] Jalon M5 (suite) - tache 5.0.2 : embedding dev via Ollama plutot que Hugging Face
+
+Le patch propose par la session precedente (`huggingface/sentence-transformers/all-MiniLM-L6-v2`, API d'inference hebergee de Hugging Face) a ete teste reellement une fois `deploy/dev/llm-proxy/` stabilise (M3 fusionne) : **echec**, Hugging Face exige desormais une authentification meme pour un modele public (`litellm.AuthenticationError`, page de login HTML retournee par l'API). Contraire a l'objectif explicite de cette tache ("sans cle payante bloquante").
+
+**Solution retenue** : `deploy/dev/ollama/` (nouveau, meme convention que `deploy/dev/redis`/`deploy/dev/postgres` — Pod + Service, `emptyDir`, pas de persistance), modele `all-minilm` (meme famille que `sentence-transformers/all-MiniLM-L6-v2`, ~45 Mo, telecharge une fois via `kubectl exec ... ollama pull all-minilm`, meme convention d'etape ponctuelle post-deploiement que l'activation OpenBao). `deploy/dev/llm-proxy/config.yaml` : `embedding-dev-local` route maintenant vers `ollama/all-minilm` (`api_base: http://atelier-ollama-dev:11434`), 100% local, aucune cle, aucun appel reseau externe apres le telechargement initial.
+
+**Test reel execute** (contre le cluster kind partage, LiteLLM redeploye avec la nouvelle configuration) :
+```
+kubectl apply -f deploy/dev/ollama/dev-pod.yaml
+kubectl exec atelier-ollama-dev -- ollama pull all-minilm   # succes, ~45 Mo
+
+kubectl create configmap atelier-llm-proxy-config --from-file=config.yaml=deploy/dev/llm-proxy/config.yaml
+kubectl rollout restart deployment/atelier-llm-proxy && kubectl rollout status ...
+
+curl -X POST http://localhost:4000/v1/embeddings \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -d '{"model":"embedding-dev-local","input":"test"}'
+# -> vecteur reel de dimension 384 (coherent avec all-MiniLM-L6-v2), aucune erreur
+```
+
+**Limite assumee documentee** (`deploy/dev/ollama/README.md`) : dimension native 384, differente de `VECTOR(1536)` de `project_memories` (calibree sur `text-embedding-3-small`) — ne pas ecrire directement dans cette colonne avec ce modele sans adaptation (re-projection ou colonne dediee aux tests dev), meme limite deja documentee par la session precedente pour l'option Hugging Face.
+
+**Statut** : ✅ Tache 5.0.2 validee, `[-/claude-code/sess-c7a1e9-m5]` remplace par `[x]`.
