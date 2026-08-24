@@ -2,83 +2,196 @@
 
 [![Documentation Site](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://philippevienne.github.io/atelier/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
+[![Contributing Guide](https://img.shields.io/badge/Contributions-Welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Environnement sécurisé et contrôlé pour agents de code (Claude Code, Gemini CLI, etc.) : chaque agent tourne dans une microVM Firecracker orchestrée par un pod Kubernetes, avec un tooling dédié (proxy réseau, injection d'identité, passerelle MCP) qui médiatise tous ses accès au monde extérieur.
+**Atelier** est une plateforme cloud-native haute sécurité en **Rust**, **Python (LangGraph)** et **Next.js 16** permettant d'orchestrer et d'isoler des agents de code autonomes (Claude Code, Gemini CLI, Cursor, Antigravity, etc.) dans des **microVMs Firecracker** sous Kubernetes.
+
+Chaque agent s'exécute dans une microVM jaillée et isolée au niveau matériel (KVM), avec une médiation totale de ses accès au monde extérieur : proxy réseau egress avec allowlist stricte, injection transparente de secrets à la volée, passerelle MCP sécurisée, persistance S3 chiffrée et quotas d'inférence LLM contrôlés.
 
 🌐 **Site officiel & Documentation** : [https://philippevienne.github.io/atelier/](https://philippevienne.github.io/atelier/)
 
-Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le détail des composants et du modèle de sécurité, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) pour le guide de déploiement et CI/CD (GHCR), et [docs/PROGRESS.md](docs/PROGRESS.md) pour l'état d'avancement courant.
+---
 
-## 🚀 CI/CD & Images Docker (GHCR)
+## 🏛️ Architecture & Composants
 
-Les workflows GitHub Actions (`.github/workflows/`) assurent le contrôle de qualité et la publication des conteneurs :
-- **CI (`ci.yml`)** : `cargo fmt`, `cargo clippy`, `cargo test`, lint & build dashboard.
-- **Docker GHCR (`docker-ghcr.yml`)** : publication automatique des 10 composants sur `ghcr.io/philippevienne/atelier-<composant>:latest`.
+```mermaid
+flowchart TD
+    subgraph Clients["Orchestrateurs & Utilisateurs"]
+        UI["Dashboard Next.js 16 (BFF)"]
+        PM["DevFactory PM Engine (LangGraph)"]
+        EXT_MCP["Clients MCP Externes (Claude Desktop, IDEs)"]
+    end
 
-## 📦 Structure du dépôt
+    subgraph Core["Passerelle & Control Plane"]
+        API["Atelier API Server (Axum)<br/>REST / WS / MCP (/v1/mcp)"]
+        CTRL["Atelier Controller (K8s Operator)"]
+        DB[("PostgreSQL 16<br/>(RLS + pgvector)")]
+        S3[("Stockage S3 / RustFS<br/>(Sessions Zstd & Snapshots)")]
+    end
 
-- `crates/common` — types partagés, dont le CRD `Workshop`
-- `crates/controller` — opérateur Kubernetes (réconciliation des `Workshop`)
-- `crates/api-server` — API externe (auth JWT, CRUD de `Workshop`)
-- `crates/image-builder` — devcontainer.json → rootfs Firecracker (cache content-addressed)
-- `crates/vm-supervisor` — cycle de vie de la microVM Firecracker (pod parent)
-- `crates/firecracker` — lib partagée jailer/boot/snapshot-restore + réseau TAP link-local
-- `crates/builder-vm-init` — init de la microVM jetable qui isole `envbuilder`
-- `crates/net-proxy` — proxy de sortie réseau avec allowlist (egress HTTP/CONNECT, DNS, port-forward)
-- `crates/identity-proxy` — injection de credentials OpenBao dans les appels sortants
-- `crates/mcp-gateway` — serveur MCP exposé à l'agent
-- `crates/kvm-device-plugin` — device plugin Kubernetes pour `/dev/kvm`
-- `crds/` — manifestes CRD générés (`cargo run -p atelier-controller --bin crdgen`)
-- `dashboard/` — dashboard Next.js (admin + utilisateur final)
-- `deploy/manifests/` — manifestes Kubernetes prêts pour le déploiement en production
-- `deploy/dev/` — environnement de développement local (Kind, OpenBao, Kanidm, OTLP)
+    subgraph ParentPod["Pod Parent Kubernetes (Workshop Sandbox)"]
+        subgraph Proxies["Tooling & Proxies de Sécurité"]
+            NET["net-proxy<br/>(Egress Allowlist & DNS)"]
+            ID["identity-proxy<br/>(Injection Tokens & OpenBao)"]
+            MCP["mcp-gateway<br/>(Passerelle MCP Locale)"]
+        end
 
-## Developpement
+        subgraph GuestVM["MicroVM Firecracker (Guest Sandbox non privilégié)"]
+            VM["Kernel Linux dédié + RootFS DevContainer<br/>Agent IA (Claude Code / Gemini CLI / Cursor)"]
+        end
+    end
 
-```sh
-# control plane (Rust)
-cargo check --workspace
+    UI -->|REST / WS Tunnels| API
+    PM -->|REST / MCP WS| API
+    EXT_MCP -->|MCP Streamable /v1/mcp| API
 
-# regenerer le CRD apres modification de crates/common/src/crd.rs
-cargo run -p atelier-controller --bin crdgen > crds/workshop.yaml
+    API -->|Reconciliation CRD| CTRL
+    API -->|Logs / Audit / MCP Buffer| DB
+    API -->|Archivage zstd| S3
 
-# dashboard
+    CTRL -->|Orchestre Pods & KVM| ParentPod
+
+    VM <-->|HTTP Egress & DNS| NET
+    VM <-->|Git HTTPS & Secrets| ID
+    VM <-->|Outils in-VM (TAP/VSOCK)| MCP
+```
+
+
+### 1. Control Plane & Passerelles (Rust)
+- **`crates/common`** : Types partagés, définition de la ressource personnalisée (CRD) `Workshop` et initialisation télémétrique OpenTelemetry (OTLP).
+- **`crates/controller`** : Opérateur Kubernetes (`kube-rs`) réconciliant les `Workshop`, gérant le cycle de vie des pods parents, le provisionnement OpenBao, les quotas LLM et l'injection Git HTTPS.
+- **`crates/api-server`** : Passerelle centrale Axum (authentification OIDC JWT universelle, endpoints de supervision `/health/*`, tunnels VS Code `code-server` et Terminal `ttyd` avec Basic Auth dynamique, et **Serveur MCP externe `/v1/mcp`** SSE & WebSockets).
+- **`crates/image-builder`** & **`crates/builder-vm-init`** : Compilation des fichiers `.devcontainer/devcontainer.json` en images rootfs Firecracker avec mise en cache content-addressed et isolation totale du build dans une microVM jetable.
+
+### 2. Isolation MicroVM & Proxies de Sécurité (Rust)
+- **`crates/firecracker`** & **`crates/vm-supervisor`** : Orchestration de la microVM Firecracker avec confinement Jailer, interfaces réseau TAP link-local et snapshots mémoire différentiels.
+- **`crates/kvm-device-plugin`** : DaemonSet Kubernetes exposant `/dev/kvm` et `/dev/net/tun` aux pods sans exiger de privilèges `root` (`securityContext.privileged: false`).
+- **`crates/net-proxy`** : Médiation réseau egress stricte (filtrage HTTP CONNECT avec allowlist dynamique, serveur DNS interne link-local et bypass pour `git.atelier.internal`).
+- **`crates/identity-proxy`** : Courtier de secrets OpenBao injectant à la volée les identifiants et tokens (Personal Access Tokens Forgejo/GitHub/GitLab, credentials cloud) sans jamais exposer de clés privées dans la VM.
+- **`crates/mcp-gateway`** : Serveur MCP link-local fournissant à l'agent in-VM les outils de diagnostic, de compilation et d'accès aux services autorisés.
+
+### 3. Intelligence & Gestion Autonome (Python 3.12 / LangGraph)
+- **`services/pm-engine`** : Moteur DevFactory basé sur LangGraph et FastAPI. Consomme les événements tickets/issues en mode at-least-once via **Redis Streams**, gère la mémoire sémantique du projet dans PostgreSQL avec **`pgvector`** et RLS multi-tenant étanche, et interagit avec les microVMs via le serveur MCP externe.
+
+### 4. Interface Utilisateur & Intégration IDE (Next.js 16)
+- **`dashboard/`** : Application Next.js 16 App Router (BFF sécurisé, tokens de session dans cookies `httpOnly`, relayage des flux WebSockets pour VS Code et Terminal).
+
+---
+
+## 📦 Structure du Dépôt
+
+```text
+atelier/
+├── crates/                    # Workspace Rust (Control plane, superviseur, proxies)
+│   ├── api-server/            # Passerelle REST, WebSockets & Serveur MCP /v1/mcp
+│   ├── controller/            # Opérateur Kubernetes Workshop
+│   ├── common/                # CRD Workshop, client OpenBao, télémétrie OTLP
+│   ├── firecracker/           # Wrapper Firecracker Jailer & snapshot-restore
+│   ├── vm-supervisor/         # Processus parent pilotant la microVM
+│   ├── builder-vm-init/       # Init VM pour la compilation d'images devcontainer
+│   ├── image-builder/         # Constructeur d'images rootfs Firecracker
+│   ├── net-proxy/             # Proxy egress filtrant & résolveur DNS interne
+│   ├── identity-proxy/        # Injection transparente de credentials & tokens Git
+│   ├── mcp-gateway/           # Serveur MCP local in-VM
+│   └── kvm-device-plugin/     # Kubernetes Device Plugin pour /dev/kvm
+├── services/
+│   └── pm-engine/             # Moteur DevFactory LangGraph (Python 3.12, Redis, pgvector)
+├── dashboard/                 # Frontend & BFF Next.js 16 (React 19, TailwindCSS)
+├── charts/                    # Packaging Helm de production (Ingress dédiés, Cloud IAM)
+├── crds/                      # Manifestes CustomResourceDefinition (workshops.atelier.dev)
+├── deploy/
+│   ├── dev/                   # Stack de développement local Kind (Postgres, Keycloak, S3, Forgejo, PKI)
+│   └── manifests/             # Manifestes Kubernetes de référence
+└── docs/                      # Documentation technique, progression & spécifications d'architecture
+```
+
+---
+
+## 🚀 Démarrage Rapide en Développement Local
+
+Atelier s'appuie sur le principe fondamental **« Vérification Empirique Réelle (Zéro Mock) »** : tous les tests et le développement s'exécutent contre des composants réels déployés dans un cluster [Kind](https://kind.sigs.k8s.io/) local.
+
+### 1. Prérequis
+- Linux (avec support de virtualisation `/dev/kvm`)
+- **Docker** ou **Podman**
+- **Kind** (`kind create cluster`) & `kubectl`
+- **Rust** 1.80+ (`rustup`)
+- **Node.js** 22+ & **npm**
+- **Python** 3.12+ & **uv**
+
+### 2. Configuration des Domaines Locaux
+Ajoutez les domaines de développement à votre fichier `/etc/hosts` :
+```bash
+echo "127.0.0.1 auth.atelier.local git.atelier.local app.atelier.local api.atelier.local" | sudo tee -a /etc/hosts
+```
+
+### 3. Déploiement de la Stack Complète
+Le script d'orchestration initialise automatiquement la PKI locale, PostgreSQL 16 (`pgvector`), Keycloak 26 (OIDC), Forgejo (Git HTTPS), S3 RustFS, OpenBao et Traefik Ingress :
+
+```bash
+# Déployer toute l'infrastructure dans Kind
+./deploy/dev/local-stack.sh
+```
+
+### 4. Lancement des Services Locaux
+Sourcez les variables générées et lancez les composants en mode développement :
+
+```bash
+source deploy/dev/local-stack/env.sh
+
+# Terminal 1 : Opérateur Kubernetes
+cargo run -p atelier-controller --bin atelier-controller
+
+# Terminal 2 : API Server & Passerelle MCP
+cargo run -p atelier-api-server
+
+# Terminal 3 : Dashboard Next.js
 cd dashboard && npm run dev
+
+# Terminal 4 (Optionnel) : Moteur DevFactory PM Engine
+cd services/pm-engine && uv run uvicorn pm_engine.main:app --port 8100
 ```
 
-## Tests
+- **Dashboard UI** : [http://app.atelier.local:3000](http://app.atelier.local:3000) (ou `http://localhost:3000`)
+- **Keycloak IAM** : [http://auth.atelier.local:8080](http://auth.atelier.local:8080) (Identifiants : `admin` / `dev-only-not-for-production`)
+- **Forgejo Git** : [http://git.atelier.local:3000](http://git.atelier.local:3000)
+- **Stockage S3 (RustFS)** : `http://127.0.0.1:9000`
 
-Les tests des composants control plane qui parlent a Kubernetes (ex:
-`crates/controller`) sont des tests d'integration reels contre un cluster,
-pas des mocks. Un cluster [kind](https://kind.sigs.k8s.io/) local suffit :
+---
 
-```sh
-kind create cluster --name atelier-dev
-kubectl apply -f crds/workshop.yaml
+## 🧪 Tests & Assurance Qualité
+
+```bash
+# Vérifier le formatage et le typage strict
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Exécuter l'ensemble des tests unitaires et d'intégration
 cargo test --workspace
+
+# Tests du Dashboard
+cd dashboard && npm run build
+
+# Tests du Moteur PM Engine
+cd services/pm-engine && pytest -q
 ```
 
-Les tests de `crates/vm-supervisor` pilotent un vrai Firecracker (necessite
-KVM) : voir `deploy/dev/firecracker/README.md` pour recuperer les binaires
-et fixtures de test necessaires. Sans ces variables d'environnement, ce test
-est ignore comme les autres tests optionnels (Kanidm, OpenBao).
+---
 
-## Observabilite
+## 🤝 Communauté, Gouvernance & Sécurité
 
-Tous les binaires appellent `atelier_common::telemetry::init(...)` (voir
-`docs/ARCHITECTURE.md`). Sans configuration, ils se contentent de logger. Pour
-exporter les traces en OTLP vers un collecteur local :
+- **Code de Conduite** : Nous adhérons au [Code de Conduite des Contributeurs (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md) basé sur le Contributor Covenant 2.1.
+- **Guide de Contribution** : Consultez [CONTRIBUTING.md](CONTRIBUTING.md) et les directives d'agents [AGENTS.md](AGENTS.md).
+- **Gouvernance & Décisions** : Consultez [GOVERNANCE.md](GOVERNANCE.md) pour comprendre notre modèle de gouvernance et le cycle des RFCs ([`docs/specs/`](docs/specs/)).
+- **Assistance & Questions** : Consultez [SUPPORT.md](SUPPORT.md) ou participez aux [GitHub Discussions](https://github.com/PhilippeVienne/atelier/discussions).
+- **Signalement de Sécurité** : Consultez notre politique de divulgation responsable dans [SECURITY.md](SECURITY.md) (contact : `philippe@vienne.me`).
+- **Citation** : Pour citer Atelier dans vos publications de recherche ou travaux logiciels, consultez [CITATION.cff](CITATION.cff).
 
-```sh
-docker run -d --name atelier-otel-collector-dev -p 4317:4317 \
-  -v "$(pwd)/deploy/dev/otel/collector-config.yaml":/etc/otelcol/config.yaml:ro \
-  otel/opentelemetry-collector:latest --config /etc/otelcol/config.yaml
-
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run -p atelier-controller --bin atelier-controller
-```
+---
 
 ## 📄 Licence
 
-Ce projet est distribué sous la licence **GNU Affero General Public License v3.0** ([AGPLv3](LICENSE)).
-
-
+Ce projet est distribué sous licence **GNU Affero General Public License v3.0** ([AGPLv3](LICENSE)).
+Toute contribution soumise au dépôt est régie par les termes du [Contributor License Agreement (CLA.md)](CLA.md).

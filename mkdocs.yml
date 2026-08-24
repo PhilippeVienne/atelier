@@ -1,6 +1,7 @@
 site_name: Atelier — MicroVM Dev Environments for AI Agents
-site_description: Documentation et site officiel du projet Atelier (Firecracker, Kubernetes, MCP, OpenBao)
+site_description: Documentation et site officiel du projet Atelier (Firecracker, Kubernetes, MCP, Keycloak, OpenBao, LangGraph)
 site_author: Philippe Vienne
+site_url: https://philippevienne.github.io/atelier/
 
 theme:
   name: material
@@ -50,7 +51,10 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path:
+        - "."
+        - "docs"
   - pymdownx.tabbed:
       alternate_style: true
   - tables
@@ -70,11 +74,25 @@ nav:
   - 💻 Espace Développeur & Architecture:
       - Vue d'ensemble Architecture: ARCHITECTURE.md
       - Sécurité Réseau & Proxies: architecture/network-security.md
-      - Identités & Secrets (Kanidm / OpenBao): architecture/identity-secrets.md
+      - Identités & Secrets (Keycloak / OpenBao): architecture/identity-secrets.md
       - Snapshot RAM & Reprise microVM: architecture/snapshot-restore.md
       - Guide de Déploiement & CI/CD: DEPLOYMENT.md
-      - Matrice d'Avancement: PROGRESS.md
-  - 🤝 Contribution & Communauté:
+      - Journal d'Avancement Empirique: PROGRESS.md
+  - 📜 Spécifications Techniques (RFC):
+      - 00. Principes d'Architecture & Substituabilité: specs/00-architecture-principles-substitutability.md
+      - 01. Keycloak, Forgejo & PostgreSQL: specs/01-keycloak-forgejo-postgres.md
+      - 02. Packaging Helm & Guide Admin: specs/02-helm-deployment-admin-doc.md
+      - 03. Passerelle LiteLLM & Budgets: specs/03-litellm-proxy.md
+      - 04. Serveur MCP Externe (/v1/mcp): specs/04-external-mcp-server.md
+      - 05. Moteur DevFactory & LangGraph: specs/05-devfactory-pm-engine.md
+      - 06. Dashboard & Cadrage BFF: specs/06-dashboard-architecture-cadrage.md
+      - Plan d'Action Global & DoD: specs/PLAN-ACTION-GLOBAL.md
+  - 🤝 Communauté & Gouvernance:
       - Guide de Contribution: contributing.md
+      - Code de Conduite: code-of-conduct.md
+      - Politique de Sécurité: security.md
+      - Support & Assistance: support.md
+      - Gouvernance du Projet: governance.md
       - Directives Agents IA (Claude / Gemini): agents-guide.md
       - Accord de Licence CLA: cla.md
+      - Journal des Modifications (Changelog): changelog.md

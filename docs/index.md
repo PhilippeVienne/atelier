@@ -1,38 +1,41 @@
-# Atelier
+# Atelier — MicroVM Dev Environments for AI Agents
 
-**Environnement sécurisé et contrôlé pour agents de code (Claude Code, Gemini CLI, etc.)**
+**Atelier** est une plateforme cloud-native haute sécurité en **Rust**, **Python (LangGraph)** et **Next.js 16** permettant d'orchestrer et d'isoler des agents de code autonomes (Claude Code, Gemini CLI, Cursor, Antigravity, etc.) dans des **microVMs Firecracker** sous Kubernetes.
 
-Chaque agent de code s'exécute dans une **microVM Firecracker** dédiée orchestrée par un pod Kubernetes, avec un outillage de sécurité (proxy réseau, injection d'identité, passerelle MCP) qui médiatise et filtre tous ses accès au monde extérieur.
+Chaque agent s'exécute dans une microVM jaillée et isolée au niveau matériel (KVM), avec une médiation totale de ses accès au monde extérieur : proxy réseau egress avec allowlist stricte, injection transparente de secrets à la volée, passerelle MCP sécurisée, persistance S3 chiffrée et quotas d'inférence LLM contrôlés.
 
 ---
 
 ## ⚡ Caractéristiques Principales
 
-- **Isolation Matérielle KVM/Firecracker** : Chaque workload tourne dans sa propre micro-VM matérielle, évitant tout risque d'évasion de conteneur.
-- **Orchestration Kubernetes Native** : Gestion déclarative via le Custom Resource Definition (`Workshop`).
-- **Proxy Réseau avec Egress & Allowlist** : Filtrage strict des accès sortants (HTTP/CONNECT et DNS) et contrôles par domaines autorisés.
-- **Injection de Secrets OpenBao/Vault** : Les agents n'ont jamais accès direct aux tokens ou clés d'API ; l'identité est injectée à la volée.
-- **Passerelle MCP (Model Context Protocol)** : Expose un ensemble d'outils et de contextes sécurisés directement aux LLMs et agents AI.
-- **Dashboard Web Next.js 16** : Interface moderne pour piloter, créer et suivre les environnements de développement.
+- **Isolation Matérielle KVM/Firecracker** : Chaque workload tourne dans sa propre microVM matérielle non privilégiée via le `kvm-device-plugin`, éliminant tout risque d'évasion de conteneur.
+- **Orchestration Kubernetes Native** : Gestion déclarative du cycle de vie des environnements via le Custom Resource Definition (`Workshop`).
+- **Proxy Réseau avec Egress & Allowlist** : Filtrage strict des accès sortants (HTTP/CONNECT et DNS) et contrôles par domaines autorisés (`net-proxy`).
+- **Injection de Secrets & Tokens Git (`identity-proxy`)** : Les agents n'ont aucun token ou clé API en clair ; les identifiants OpenBao et Personal Access Tokens Git HTTPS sont injectés à la volée.
+- **Serveur MCP Externe & Passerelle in-VM** : Expose un serveur MCP standardisé (`/v1/mcp` SSE & WebSockets) pour piloter les microVMs depuis des orchestrateurs externes, complété par une passerelle MCP link-local pour l'agent.
+- **Moteur DevFactory & LangGraph (`pm-engine`)** : Automatisation de projet par IA (résolution de tickets, RAG `pgvector` multi-tenant avec RLS, streaming Redis).
+- **Dashboard Web Next.js 16** : Interface moderne App Router avec intégration VS Code (`code-server`) et terminal web (`ttyd`).
 
 ---
 
 ## 📦 Composants du Système
 
-| Composant | Description |
-| :--- | :--- |
-| **`crates/common`** | Types partagés, définition du CRD `Workshop` & télémétrie OpenTelemetry |
-| **`crates/controller`** | Opérateur Kubernetes réconciliant l'état des `Workshop` |
-| **`crates/api-server`** | API Gateway REST / WebSockets pour le streaming de logs et terminal |
-| **`crates/firecracker`** | Abstraction Firecracker VMM, jailer & gestionnaire réseau TAP |
-| **`crates/vm-supervisor`** | Superviseur in-pod du cycle de vie de la micro-VM |
-| **`crates/builder-vm-init`** | Daemon d'initialisation de la VM de build |
-| **`crates/net-proxy`** | Proxy de sortie réseau avec allowlist et filtrage DNS |
-| **`crates/identity-proxy`** | Reverse-proxy d'injection de secrets OpenBao |
-| **`crates/mcp-gateway`** | Passerelle Model Context Protocol pour AI Agents |
-| **`crates/image-builder`** | Construction de rootfs Firecracker depuis `devcontainer.json` |
-| **`crates/kvm-device-plugin`** | Device Plugin Kubernetes pour l'allocation `/dev/kvm` |
-| **`dashboard/`** | Application web Next.js 16 (React 19 / TypeScript / Tailwind CSS) |
+| Composant | Technologie | Description |
+| :--- | :--- | :--- |
+| **`crates/common`** | Rust | Types partagés, définition du CRD `Workshop` & télémétrie OpenTelemetry |
+| **`crates/controller`** | Rust | Opérateur Kubernetes réconciliant l'état des `Workshop` |
+| **`crates/api-server`** | Rust / Axum | Passerelle REST, WebSockets (VS Code, Terminal) et **Serveur MCP externe `/v1/mcp`** |
+| **`crates/firecracker`** | Rust | Abstraction Firecracker VMM, jailer & gestionnaire réseau TAP link-local |
+| **`crates/vm-supervisor`** | Rust | Superviseur in-pod du cycle de vie de la microVM |
+| **`crates/builder-vm-init`** | Rust | Daemon d'initialisation de la microVM de build `envbuilder` |
+| **`crates/net-proxy`** | Rust | Proxy de sortie réseau avec allowlist dynamique et filtrage DNS |
+| **`crates/identity-proxy`** | Rust | Reverse-proxy d'injection de secrets OpenBao et de tokens Git HTTPS |
+| **`crates/mcp-gateway`** | Rust | Passerelle Model Context Protocol link-local pour l'agent in-VM |
+| **`crates/image-builder`** | Rust | Construction d'images rootfs Firecracker depuis `devcontainer.json` |
+| **`crates/kvm-device-plugin`** | Rust / K8s | Device Plugin Kubernetes pour l'allocation `/dev/kvm` sans privilèges |
+| **`services/pm-engine`** | Python 3.12 / LangGraph | Moteur DevFactory autonome (Redis Streams, RLS `pgvector`) |
+| **`dashboard/`** | Next.js 16 / TypeScript | Application web BFF (React 19, TailwindCSS, JWT HttpOnly) |
+| **`charts/atelier`** | Helm 3 | Packaging monolithique de production pour Kubernetes |
 
 ---
 
@@ -40,7 +43,8 @@ Chaque agent de code s'exécute dans une **microVM Firecracker** dédiée orches
 
 - 📐 [**Architecture Globale**](ARCHITECTURE.md) : Modèle d'isolation et composants.
 - 🔒 [**Sécurité Réseau**](architecture/network-security.md) : Isolation TAP, proxy egress et règles iptables.
-- 🔑 [**Identité & Secrets**](architecture/identity-secrets.md) : Intégration Kanidm & OpenBao.
+- 🔑 [**Identité & Secrets**](architecture/identity-secrets.md) : Intégration Keycloak OIDC & OpenBao.
 - ⚡ [**Snapshot & Restore**](architecture/snapshot-restore.md) : Veille et reprise rapide des microVMs.
 - 🚀 [**Guide de Déploiement**](DEPLOYMENT.md) : Procédure de déploiement Kubernetes et CI/CD GHCR.
-- 📊 [**Progression du Projet**](PROGRESS.md) : Matrice de statut composant par composant.
+- 📜 [**Spécifications Techniques d'Architecture**](specs/00-architecture-principles-substitutability.md) : Les 7 documents de référence.
+- 📊 [**Plan d'Action Global & Progression**](specs/PLAN-ACTION-GLOBAL.md) : Feuilles de route détaillées et journal empirique.

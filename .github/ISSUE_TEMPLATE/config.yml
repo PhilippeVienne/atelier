@@ -1,8 +1,18 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Signalement de Sécurité (Vulnerability Disclosure)
+    url: https://github.com/PhilippeVienne/atelier/blob/main/SECURITY.md
+    about: Pour signaler une faille de sécurité en toute confidentialité (ne pas ouvrir d'issue publique).
   - name: Guide de Contribution
     url: https://github.com/PhilippeVienne/atelier/blob/main/CONTRIBUTING.md
     about: Consulter les consignes de dev et la charte de contribution.
+  - name: Code de Conduite
+    url: https://github.com/PhilippeVienne/atelier/blob/main/CODE_OF_CONDUCT.md
+    about: Normes de respect et d'inclusivité au sein de la communauté.
+  - name: Support & Questions
+    url: https://github.com/PhilippeVienne/atelier/blob/main/SUPPORT.md
+    about: Où poser vos questions et trouver de l'aide sur Atelier.
   - name: Directives Agents IA
     url: https://github.com/PhilippeVienne/atelier/blob/main/AGENTS.md
     about: Règles de développement pour Claude Code, Gemini CLI et Antigravity.
+
