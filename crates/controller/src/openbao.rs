@@ -247,6 +247,48 @@ pub async fn ensure_session_auth(
     Ok(password)
 }
 
+/// Ecrit (ou remplace) la Virtual Key LiteLLM courante d'un Workshop sous
+/// `secret/data/workshops/<name>/llm_key`, champ `value` (voir
+/// `crate::litellm::LLM_VIRTUAL_KEY_SECRET_PATH`/`_FIELD`). Contrairement a
+/// [`ensure_session_auth`], PAS idempotent-preservant : une Virtual Key est
+/// volontairement regeneree a chaque creation du pod parent (provisioning
+/// initial ou reprise post-suspension, TTL court renouvele a chaud — voir
+/// `docs/specs/03-litellm-proxy.md`), donc toujours ecrasee ici plutot que
+/// relue si presente.
+///
+/// C'est `identity-proxy` qui relit ensuite ce secret (meme role
+/// Kubernetes-auth que le reste du Workshop, `secret/workshops/<name>/*` est
+/// deja couvert par `ensure_workshop_role`) pour remplacer, sur le chemin de
+/// sortie vers l'alias interne `llm-proxy`, l'en-tete `Authorization`
+/// statique baked dans l'image par la vraie Virtual Key de ce Workshop —
+/// voir le commentaire de tete de `crate::litellm` pour la justification
+/// complete de ce choix d'injection.
+pub async fn ensure_llm_virtual_key_secret(
+    config: &OpenBaoConfig,
+    workshop_name: &str,
+    virtual_key: &str,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/v1/secret/data/workshops/{workshop_name}/{}",
+        config.addr,
+        crate::litellm::LLM_VIRTUAL_KEY_SECRET_PATH
+    );
+
+    client
+        .put(&url)
+        .header("X-Vault-Token", &config.token)
+        .json(&serde_json::json!({
+            "data": { crate::litellm::LLM_VIRTUAL_KEY_SECRET_FIELD: virtual_key }
+        }))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("ecriture du secret llm_key OpenBao: {e}"))?;
+
+    Ok(())
+}
+
 fn generate_session_password() -> String {
     use rand::Rng;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

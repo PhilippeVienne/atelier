@@ -27,6 +27,7 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         registry_insecure: true,
         llm_proxy_addr: None,
         llm_proxy_auth_token: None,
+        litellm: None,
     }
 }
 
@@ -482,6 +483,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         registry_insecure: true,
         llm_proxy_addr: None,
         llm_proxy_auth_token: None,
+        litellm: None,
     };
 
     workshops
@@ -556,6 +558,177 @@ async fn apply_provisions_openbao_role_when_configured() {
         .await
         .ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Necessite EN PLUS une vraie instance LiteLLM (ATELIER_LLM_PROXY_ADDR /
+/// ATELIER_LLM_PROXY_AUTH_TOKEN, voir deploy/dev/llm-proxy/README.md), au
+/// meme titre qu'OpenBao (OPENBAO_ADDR / OPENBAO_TOKEN) — sans l'une des
+/// deux, silencieusement ignore.
+///
+/// Taches 3.1.3/3.2.1 (Jalon M3) : verifie que `apply()` genere une vraie
+/// Virtual Key LiteLLM pour ce Workshop, l'ecrit dans OpenBao
+/// (`secret/workshops/<name>/llm_key`), et cable la regle d'injection
+/// `identity-proxy` correspondante (host `llm-proxy`) dans la spec du pod
+/// parent cree — puis que le finalizer `atelier.dev/cleanup` revoque
+/// effectivement cette cle cote LiteLLM (verifie via `/key/info`, 404 apres
+/// suppression).
+#[tokio::test]
+async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
+    atelier_common::telemetry::ensure_crypto_provider();
+
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+    let Some(litellm_config) = atelier_controller::litellm::config_from_env(
+        std::env::var("ATELIER_LLM_PROXY_ADDR").ok(),
+        std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok(),
+    ) else {
+        eprintln!(
+            "ATELIER_LLM_PROXY_ADDR/ATELIER_LLM_PROXY_AUTH_TOKEN non definis, test ignore (voir deploy/dev/llm-proxy/README.md)"
+        );
+        return;
+    };
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name = unique_name("test-workshop-llm");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let base_url = format!("http://{}", litellm_config.addr);
+    let master_key = litellm_config.master_key.clone();
+    let ctx = ReconcileCtx {
+        client: client.clone(),
+        openbao: Some(atelier_controller::openbao::OpenBaoConfig {
+            addr: openbao_addr.clone(),
+            token: openbao_token.clone(),
+        }),
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_auth_token: None,
+        litellm: Some(litellm_config),
+    };
+
+    workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "phase": "Pending", "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+
+    atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let expected_pod_name = format!("{name}-parent");
+    let pod = pods
+        .get(&expected_pod_name)
+        .await
+        .expect("le pod parent doit avoir ete cree");
+    let identity_proxy = pod
+        .spec
+        .as_ref()
+        .and_then(|s| s.containers.iter().find(|c| c.name == "identity-proxy"))
+        .expect("conteneur identity-proxy present");
+    let rules_json = identity_proxy
+        .env
+        .as_ref()
+        .and_then(|env| {
+            env.iter()
+                .find(|e| e.name == "ATELIER_IDENTITY_INJECTION_RULES")
+        })
+        .and_then(|e| e.value.clone())
+        .expect("ATELIER_IDENTITY_INJECTION_RULES doit etre defini");
+    assert!(
+        rules_json.contains("\"llm-proxy\""),
+        "la regle d'injection pour l'alias llm-proxy doit etre presente: {rules_json}"
+    );
+
+    // La Virtual Key doit avoir ete ecrite dans OpenBao, exploitable par
+    // identity-proxy (meme role Kubernetes-auth que le reste du Workshop).
+    let http = reqwest::Client::new();
+    let secret: serde_json::Value = http
+        .get(format!(
+            "{openbao_addr}/v1/secret/data/workshops/{name}/llm_key"
+        ))
+        .header("X-Vault-Token", &openbao_token)
+        .send()
+        .await
+        .expect("lecture du secret llm_key")
+        .error_for_status()
+        .expect("le secret llm_key doit avoir ete ecrit par apply()")
+        .json()
+        .await
+        .expect("reponse JSON de lecture llm_key");
+    let virtual_key = secret["data"]["data"]["value"]
+        .as_str()
+        .expect("champ value du secret llm_key")
+        .to_string();
+    assert!(virtual_key.starts_with("sk-"), "{virtual_key}");
+
+    // La cle doit exister cote LiteLLM (pas seulement dans OpenBao).
+    let info = http
+        .get(format!("{base_url}/key/info"))
+        .bearer_auth(&master_key)
+        .query(&[("key", &virtual_key)])
+        .send()
+        .await
+        .expect("appel /key/info");
+    assert_eq!(
+        info.status(),
+        reqwest::StatusCode::OK,
+        "la Virtual Key doit exister cote LiteLLM juste apres provisioning"
+    );
+
+    // Le finalizer `atelier.dev/cleanup` (tache 3.2.1) doit la revoquer a la
+    // suppression du Workshop : appelle directement `cleanup()` (la logique
+    // executee par le handler `Event::Cleanup` du finalizer, voir
+    // `reconcile()`) plutot que d'attendre un `Controller` complet en cours
+    // d'execution (aucun n'est demarre dans ce test), meme approche que les
+    // tests OpenBao ci-dessus qui exercent `apply()` directement.
+    atelier_controller::reconcile::cleanup(&ctx, &with_digest)
+        .await
+        .expect("cleanup() ne doit pas echouer");
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+
+    let info_after_delete = http
+        .get(format!("{base_url}/key/info"))
+        .bearer_auth(&master_key)
+        .query(&[("key", &virtual_key)])
+        .send()
+        .await
+        .expect("appel /key/info apres suppression");
+    assert_ne!(
+        info_after_delete.status(),
+        reqwest::StatusCode::OK,
+        "la Virtual Key ne doit plus exister cote LiteLLM apres suppression"
+    );
+
+    pods.delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
 }
 
 /// Necessite OPENBAO_ADDR/OPENBAO_TOKEN (voir deploy/dev/openbao/README.md),

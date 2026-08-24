@@ -1,5 +1,7 @@
-use crate::{openbao, storage};
-use atelier_common::{Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus};
+use crate::{litellm, openbao, storage};
+use atelier_common::{
+    IdentityInjectionRule, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopStatus,
+};
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
@@ -159,6 +161,14 @@ pub struct ReconcileCtx {
     /// LiteLLM (`LITELLM_MASTER_KEY`) — partage par tous les Workshops dans
     /// ce lot, voir "Limites assumees" de `docs/PROGRESS.md`.
     pub llm_proxy_auth_token: Option<String>,
+    /// Client d'administration LiteLLM (Jalon M3, Virtual Keys par
+    /// Workshop) — construit a partir des DEUX memes variables que
+    /// `llm_proxy_addr`/`llm_proxy_auth_token` ci-dessus (voir
+    /// `crate::litellm::config_from_env`). `None` : fonctionnalite
+    /// desactivee (aucune Virtual Key generee, le jeton statique partage
+    /// ci-dessus reste le seul chemin, comportement inchange par rapport a
+    /// avant ce jalon), meme convention que `openbao`.
+    pub litellm: Option<litellm::LiteLlmConfig>,
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -171,6 +181,8 @@ pub async fn run() -> anyhow::Result<()> {
         .unwrap_or(false);
     let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
     let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok();
+    let litellm_config =
+        litellm::config_from_env(llm_proxy_addr.clone(), llm_proxy_auth_token.clone());
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -184,6 +196,7 @@ pub async fn run() -> anyhow::Result<()> {
                 registry_insecure,
                 llm_proxy_addr,
                 llm_proxy_auth_token,
+                litellm: litellm_config,
             }),
         )
         .for_each(|res| async move {
@@ -235,11 +248,29 @@ fn error_policy(
 /// d'autoriser sa suppression effective : role OpenBao. Les ressources
 /// Kubernetes owned (Job, ServiceAccount, Pod) sont laissees au garbage
 /// collector standard.
-async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> {
+///
+/// `pub` (comme `apply` ci-dessous) pour etre exercee directement par les
+/// tests d'integration (`crates/controller/tests/reconcile.rs`) sans
+/// demarrer un `Controller` complet ni attendre le cycle finalizer reel.
+pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> {
     let name = workshop.name_any();
 
     if let Some(openbao_config) = &ctx.openbao {
         openbao::delete_workshop_role(openbao_config, &name).await?;
+    }
+
+    // Tache 3.2.1 (Jalon M3) : revoque la Virtual Key LiteLLM de ce
+    // Workshop avant de liberer le finalizer, sans quoi elle resterait
+    // valide (et consommable) au-dela de la duree de vie du Workshop qui
+    // l'a fait naitre, jusqu'a expiration de son TTL court. Idempotent
+    // (`LiteLlmClient::delete_virtual_key` traite un 404 comme un succes) :
+    // sur du retry apres un echec precedent, ne fait jamais echouer le
+    // finalizer pour une cle deja absente.
+    if let Some(litellm_config) = &ctx.litellm {
+        let client = litellm::LiteLlmClient::new(litellm_config.clone());
+        client
+            .delete_virtual_key(&litellm::workshop_key_alias(&name))
+            .await?;
     }
 
     Ok(())
@@ -520,6 +551,38 @@ async fn ensure_image_build_job(
         }
     }
 
+    // Tache 3.1.4 (Jalon M3) : Virtual Key ephemere dediee a CE Job de
+    // build, distincte de celle du pod parent (`ensure_parent_pod`) —
+    // generee seulement si le Job n'existe pas encore (`spec.template` d'un
+    // Job est immuable, voir plus bas : la regenerer a chaque reconcile
+    // serait sans effet sur un Job deja cree, et gaspillerait des Virtual
+    // Keys jamais utilisees a chaque passage). Best-effort : un echec de
+    // generation retombe sur le jeton statique partage historique
+    // (`ctx.llm_proxy_auth_token`) plutot que de bloquer tout le build.
+    let job_already_exists = jobs.get_opt(&job_name).await?.is_some();
+    let build_llm_auth_token: Option<String> = if job_already_exists {
+        None
+    } else if let Some(litellm_config) = &ctx.litellm {
+        let client = litellm::LiteLlmClient::new(litellm_config.clone());
+        match client
+            .generate_virtual_key(
+                &litellm::build_key_alias(name),
+                &workshop.spec.owner_subject,
+                workshop.spec.resources.max_llm_budget_usd,
+                litellm::BUILD_VIRTUAL_KEY_TTL,
+            )
+            .await
+        {
+            Ok(virtual_key) => Some(virtual_key.key),
+            Err(err) => {
+                tracing::error!(%err, "generation de la Virtual Key LiteLLM (build) echouee, repli sur le jeton statique partage");
+                ctx.llm_proxy_auth_token.clone()
+            }
+        }
+    } else {
+        ctx.llm_proxy_auth_token.clone()
+    };
+
     let net_proxy_port: u16 = 3128;
     // Memes valeurs que `ensure_parent_pod` (`NET_PROXY_TRANSPARENT_HTTP_PORT`/
     // `_TLS_PORT`) : la VM builder utilise desormais elle aussi la
@@ -597,8 +660,11 @@ async fn ensure_image_build_job(
     // `/etc/environment` (`inject_net_proxy_config`, crates/image-builder) —
     // pas `ATELIER_LLM_PROXY_ADDR` : l'alias `llm-proxy` est resolu au
     // runtime par le `net-proxy` du pod parent, pas au moment du build.
+    // Valeur = Virtual Key ephemere de ce Job si LiteLLM est configure et
+    // que le Job vient d'etre cree (voir `build_llm_auth_token` plus haut),
+    // sinon le jeton statique partage historique.
     .chain(
-        ctx.llm_proxy_auth_token
+        build_llm_auth_token
             .as_ref()
             .map(|token| env_var("ATELIER_LLM_PROXY_AUTH_TOKEN", token)),
     )
@@ -754,6 +820,33 @@ async fn ensure_image_build_job(
         .and_then(|s| s.failed)
         .unwrap_or(0)
         > 0;
+    let job_succeeded = current
+        .as_ref()
+        .and_then(|j| j.status.as_ref())
+        .and_then(|s| s.succeeded)
+        .unwrap_or(0)
+        > 0;
+
+    // Suite de la tache 3.1.4 : revoque la Virtual Key ephemere de ce Job
+    // des qu'il a atteint un etat terminal (succes ou echec), qu'il ait ete
+    // cree lors de CE reconcile ou d'un precedent — `apply()` continue
+    // d'appeler cette fonction a chaque cycle tant que
+    // `status.imageDigest` n'a pas ete patche par `image-builder` lui-meme,
+    // donc plusieurs passages peuvent voir le Job deja termine. Best-effort
+    // et non bloquant (comme le reste du provisioning ci-dessus) :
+    // idempotent cote LiteLLM (404 traite comme un succes), un echec
+    // n'empeche jamais la progression du Workshop.
+    if let Some(litellm_config) = &ctx.litellm {
+        if job_failed || job_succeeded {
+            let client = litellm::LiteLlmClient::new(litellm_config.clone());
+            if let Err(err) = client
+                .delete_virtual_key(&litellm::build_key_alias(name))
+                .await
+            {
+                tracing::warn!(%err, "revocation de la Virtual Key LiteLLM (build) echouee");
+            }
+        }
+    }
 
     let phase = if job_failed {
         WorkshopPhase::Failed
@@ -777,6 +870,13 @@ async fn ensure_parent_pod(
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), ns);
     let pod_name = format!("{name}-parent");
     let sa_name = pod_name.clone();
+    // Determine en amont si CE pod va etre cree par cet appel (branche
+    // `None` du `match` plus bas) : `spec.containers[].env` d'un pod deja
+    // existant est immuable (meme contrainte que pour le Job de build), donc
+    // regenerer une Virtual Key a chaque reconcile d'un pod deja en place
+    // serait sans effet sur lui (il ne la recevrait jamais) tout en
+    // consommant inutilement des Virtual Keys cote LiteLLM. Voir tache 3.1.3.
+    let pod_will_be_created = pods.get_opt(&pod_name).await?.is_none();
 
     let owner_ref = workshop
         .controller_owner_ref(&())
@@ -855,7 +955,61 @@ async fn ensure_parent_pod(
     // microVM builder, ci-dessus dans `ensure_image_build_job`) : c'est ici
     // le sens original de `Workshop.spec.egress_allowlist`.
     let egress_allowlist = workshop.spec.egress_allowlist.join(",");
-    let identity_injection_rules = serde_json::to_string(&workshop.spec.identity_injection_rules)
+    // Taches 3.1.3 (Jalon M3) : a chaque (re)creation du pod parent
+    // (provisioning initial OU reprise post-suspension, `resume` supprime
+    // puis recree ce meme pod via `ensure_suspended`/ce chemin — voir
+    // `pod_will_be_created` ci-dessus), genere une Virtual Key LiteLLM
+    // dediee, isolee, a budget plafonne
+    // (`Workshop.spec.resources.maxLlmBudgetUsd`) et TTL court
+    // ([`litellm::VIRTUAL_KEY_TTL`]). Necessite OpenBao EN PLUS de LiteLLM :
+    // c'est le seul canal disponible ici pour livrer cette cle a l'agent
+    // sans jamais la faire transiter par la spec du pod (lisible via
+    // `kubectl get pod -o yaml`) — voir le commentaire de tete de
+    // `crate::litellm` pour la justification complete de ce choix
+    // d'injection (regle d'injection `identity-proxy` generique,
+    // reutilisee telle quelle, plutot qu'un nouveau canal metadata).
+    let mut effective_identity_injection_rules = workshop.spec.identity_injection_rules.clone();
+    if pod_will_be_created {
+        if let (Some(litellm_config), Some(openbao_config)) = (&ctx.litellm, &ctx.openbao) {
+            let client = litellm::LiteLlmClient::new(litellm_config.clone());
+            match client
+                .generate_virtual_key(
+                    &litellm::workshop_key_alias(name),
+                    &workshop.spec.owner_subject,
+                    workshop.spec.resources.max_llm_budget_usd,
+                    litellm::VIRTUAL_KEY_TTL,
+                )
+                .await
+            {
+                Ok(virtual_key) => {
+                    match openbao::ensure_llm_virtual_key_secret(
+                        openbao_config,
+                        name,
+                        &virtual_key.key,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            effective_identity_injection_rules.push(IdentityInjectionRule {
+                                host: litellm::LLM_PROXY_ALIAS_HOST.to_string(),
+                                header: "Authorization".to_string(),
+                                prefix: "Bearer ".to_string(),
+                                secret_path: litellm::LLM_VIRTUAL_KEY_SECRET_PATH.to_string(),
+                                field: litellm::LLM_VIRTUAL_KEY_SECRET_FIELD.to_string(),
+                            });
+                        }
+                        Err(err) => {
+                            tracing::error!(%err, "ecriture de la Virtual Key LiteLLM dans OpenBao echouee, isolation par Workshop desactivee pour cette session");
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(%err, "generation de la Virtual Key LiteLLM echouee, isolation par Workshop desactivee pour cette session");
+                }
+            }
+        }
+    }
+    let identity_injection_rules = serde_json::to_string(&effective_identity_injection_rules)
         .unwrap_or_else(|_| "[]".to_string());
     let tools = workshop.spec.tools.join(",");
     // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
