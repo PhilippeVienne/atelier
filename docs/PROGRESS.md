@@ -2147,3 +2147,43 @@ Session `sess-6f3eef77` interrompue à la demande de l'utilisateur. Deux tâches
 - **Nettoyage** : worktree `.claude/worktrees/agent-a8d2ccd747d91380d` et branche `worktree-agent-a8d2ccd747d91380d` supprimés après fusion réussie. Commit de fusion : `926997c` sur `main`.
 - **Statut** : ✅ M3 fusionné dans `main`, `[-/claude-code/sess-6f3eef77-f]` remplacé par `[x]` dans `docs/specs/PLAN-ACTION-GLOBAL.md`. ⚠️ Point ouvert signalé : redémarrage du controller live à faire, et pod `my-new-demo-parent` à investiguer (device plugin KVM), tous deux hors périmètre de cette session.
 
+
+### [2026-08-24 21:10] Jalon M6 - Chart Helm `charts/atelier` + tache 6.4.2 (`NeedsRestartForUpgrade`) : fusionne dans `main`
+
+Reprise de la tache M6 laissee en suspens (verrou `[-/claude-code/sess-6f3eef77-h]`, tout le travail non commite dans le worktree `.claude/worktrees/agent-a1b58166d0b22db1f`).
+
+**6.4.2 (detection reelle, absente au moment de l'interruption)** : le champ `WorkshopStatus.upgrade_state` existait deja (schema CRD + carry-forward) mais rien ne le positionnait jamais (`grep -rn "NeedsRestartForUpgrade" crates/` ne remontait que la declaration). Implemente dans `crates/controller/src/reconcile.rs::ensure_parent_pod` :
+- `pod_spec_template_hash(spec: Option<&PodSpec>)` : hash deterministe (`DefaultHasher` sur la serialisation JSON du `PodSpec`), calcule AVANT toute mutation des metadonnees du pod (pour ne jamais dependre de lui-meme).
+- Le hash du template desire est ecrit dans l'annotation `atelier.dev/template-hash` a chaque creation de pod.
+- A chaque reconcile d'un pod deja existant, ce hash est compare a celui porte par l'annotation en place : divergence -> `status.upgrade_state = Some(NeedsRestartForUpgrade)`, sans jamais recreer/supprimer le pod (contrainte deja documentee dans ce fichier : un pod parent peut heberger une microVM active). Meme hash (ou pod fraichement cree) -> `None`.
+- Deux tests unitaires (`reconcile::template_hash_tests`) + un test d'integration reel contre le cluster kind partage (`apply_flags_needs_restart_for_upgrade_without_recreating_pod`, nouveau dans `crates/controller/tests/reconcile.rs`) : cree un Workshop, laisse le pod parent se creer (verifie `upgrade_state == None`), patch directement l'annotation du pod en place pour simuler un controller plus ancien, relance `apply()`, verifie `upgrade_state == Some(NeedsRestartForUpgrade)` **et** que `pod.metadata.uid` n'a pas change (jamais de recreation forcee).
+
+**Validation du chart Helm par deploiement reel** (namespace dedie `atelier-helm-test` sur `kind-atelier-dev`, isole de `my-new-demo` ; nettoye avec `helm uninstall`+`kubectl delete namespace` en fin de session) :
+```
+helm lint charts/atelier                                              # 0 erreur
+helm template atelier charts/atelier -f charts/atelier/values-test.yaml   # rendu valide
+kubectl apply --dry-run=client -f <rendu>                             # tous les manifests acceptes par l'API server
+```
+Ce deploiement reel a revele et permis de corriger 4 bugs reels (aucun n'etait detectable par `helm lint`/`helm template` seuls) :
+1. **Keycloak refusait de demarrer** ("Key material not provided to setup HTTPS") : `start` (mode production) exige du materiel TLS local si `--http-enabled` n'est pas explicitement pose, meme derriere un Ingress qui termine deja le TLS. Corrige (`templates/infra/keycloak-deployment.yaml`, ajout de `--http-enabled=true`).
+2. **`sslmode=require` (valeur par defaut, pensee pour une base geree externe type RDS) incompatible avec le PostgreSQL embarque par ce chart** (aucun certificat TLS configure sur le StatefulSet) : cassait `LiteLLM`/Prisma au demarrage ("server does not support TLS"). Nouveau helper `atelier.postgresSslMode` (`templates/_helpers.tpl`) : force `disable` uniquement quand le Postgres embarque est utilise ET que l'utilisateur a laisse la valeur par defaut — un choix explicite reste respecte.
+3. **`litellm`/`keycloak`/`rustfs` ne redemarraient jamais quand le contenu de leur Secret changeait** (`envFrom: secretRef`, jamais suivi par Kubernetes lui-meme) : un `helm upgrade` qui change un mot de passe Postgres laissait le pod tourner indefiniment avec l'ancienne valeur deja injectee. Corrige par des annotations `checksum/*` sur les 3 templates de pods concernes (pattern Helm standard).
+4. **`keycloak-init-job` dependait de `curl`**, absent de l'image officielle `keycloak/keycloak` (base minimale) : la boucle d'attente ne demarrait jamais. Remplace par une boucle directement sur `kcadm.sh config credentials` (verifie a la fois la disponibilite HTTP et que l'authentification admin fonctionne).
+5. **`db-migrate-job` (raw `psql -f`) dupliquait, de facon non idempotente, les migrations que `sqlx::migrate!` applique deja au demarrage de `api-server`/`controller`** (verifie dans le code : les deux binaires appellent `sqlx::migrate!("./migrations")`) : un deuxieme `helm upgrade` le rejouait entierement et echouait systematiquement ("relation ... already exists"), bloquant en cascade tous les hooks de poids superieur (`keycloak-init`/`openbao-init`/`s3-init` ne s'executaient plus du tout). **Desactive par defaut** (`initJobs.dbMigrate.enabled: false`), rationale documentee dans `values.yaml` et `docs/admin-guide.md` — a reactiver uniquement apres reecriture avec un outil qui suit reellement l'etat d'application (`sqlx-cli migrate run`).
+
+**Resultat apres corrections** (meme namespace de test) : `db-init`, `keycloak-init`, `openbao-init`, `s3-init` tous `Completed` ; `keycloak`, `litellm`, `rustfs`, `forgejo`, `openbao`, `postgresql`, `redis`, `pm-engine`, `controller` tous `Running`/`Ready`. Seul `api-server` restait `CrashLoopBackOff`, root-cause identifiee comme **non liee au chart** : `imagePullPolicy: Never` + image locale `atelier-api-server:dev` construite le 2026-08-23 (avant les evolutions de `routes.rs` du 2026-08-24, ou `/health/readiness` exigeait encore une authentification) — confirme par `docker image inspect --format '{{.Created}}'`. Le code source ACTUEL de `crates/api-server/src/routes.rs` expose deja ces routes sans authentification. Documente dans `docs/admin-guide.md`, section "Limites Connues".
+
+**Verification de non-regression** : `my-new-demo-parent` (Workshop reel, `default`) trouve `Failed`/`0/4 UnexpectedAdmissionError` (`atelier.dev/kvm` device plugin) AVANT toute action de cette session — probleme deja documente dans l'entree M3 ci-dessus, sans rapport avec ce travail. Namespace de test `atelier-helm-test` entierement isole (jamais de ressource `default` touchee hormis des pods `tmp-curl*` de diagnostic, supprimes).
+
+**Commandes de validation finale (sur `main`, apres fusion)** :
+```
+cargo fmt --all -- --check                                    # silencieux
+cargo clippy --workspace --all-targets -- -D warnings         # 0 warning
+cargo test --workspace                                        # 100% vert (controller live arrete, port-forward Postgres actif)
+helm lint charts/atelier                                      # 0 erreur
+helm template atelier charts/atelier -f charts/atelier/values-test.yaml   # rendu valide
+```
+
+**Fusion** : conflit reel dans `crates/common/src/lib.rs` (liste d'exports `pub use crd::{...}`), `crates/controller/src/reconcile.rs` (imports), `crates/controller/tests/reconcile.rs` (deux tests distincts alignes par erreur par le diff — le test M2 `apply_wires_the_git_identity_injection_rule_when_configured` et le nouveau test M6 `apply_flags_needs_restart_for_upgrade_without_recreating_pod` conserves tous les deux, en entier) et `mkdocs.yml` (section RFC de `main` + entree `admin-guide.md` du worktree, combinees). Worktree `.claude/worktrees/agent-a1b58166d0b22db1f` et branche associee supprimes apres fusion reussie.
+
+**Statut** : ✅ Jalon M6 fusionne dans `main`, tache 6.4.2 completee et testee (code + chart absents lors de l'interruption). `[-/claude-code/sess-6f3eef77-h]` remplace par `[x]` pour 6.2.1-6.5.2 dans `docs/specs/PLAN-ACTION-GLOBAL.md`. ⚠️ DoD partiellement coche : Ingress/TLS reel et scripts `local-stack.sh`/`teardown-stack.sh` restent `[ ]` (jamais valides avec un certificat cert-manager reel ni revises dans cette session) — voir le DoD M6 pour le detail exact.

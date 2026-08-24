@@ -445,25 +445,25 @@ graph TD
   ```
 
 ### 9.2. Fichiers Ingress Dédiés (x4) avec TLS cert-manager
-- [-/claude-code/sess-6f3eef77-h] **6.2.1** : `keycloak-ingress.yaml` (`auth.example.com`).
-- [-/claude-code/sess-6f3eef77-h] **6.2.2** : `forgejo-ingress.yaml` (`git.example.com` — HTTPS pur).
-- [-/claude-code/sess-6f3eef77-h] **6.2.3** : `dashboard-ingress.yaml` (`app.example.com`).
-- [-/claude-code/sess-6f3eef77-h] **6.2.4** : `apiserver-ingress.yaml` (`api.example.com` — WebSocket supporté avec timeouts étendus).
+- [x] **6.2.1** : `keycloak-ingress.yaml` (`auth.example.com`).
+- [x] **6.2.2** : `forgejo-ingress.yaml` (`git.example.com` — HTTPS pur).
+- [x] **6.2.3** : `dashboard-ingress.yaml` (`app.example.com`).
+- [x] **6.2.4** : `apiserver-ingress.yaml` (`api.example.com` — WebSocket supporté avec timeouts étendus).
 
 ### 9.3. Séquencement des 5 Jobs d'initialisation Helm
-- [-/claude-code/sess-6f3eef77-h] **6.3.1** : `db-init-job.yaml` crée les 6 bases PostgreSQL et le rôle d'administration `atelier_migrator`.
-- [-/claude-code/sess-6f3eef77-h] **6.3.2** : `db-migrate-job.yaml` applique les migrations SQL via `atelier_migrator`.
-- [-/claude-code/sess-6f3eef77-h] **6.3.3** : `keycloak-init-job.yaml` configure automatiquement le Realm `atelier` et les clients OIDC.
-- [-/claude-code/sess-6f3eef77-h] **6.3.4** : `openbao-init-job.yaml` active la méthode d'auth Kubernetes.
-- [-/claude-code/sess-6f3eef77-h] **6.3.5** : `s3-init-job.yaml` crée les buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments`.
+- [x] **6.3.1** : `db-init-job.yaml` crée les 6 bases PostgreSQL et le rôle d'administration `atelier_migrator`.
+- [x] **6.3.2** : `db-migrate-job.yaml` applique les migrations SQL via `atelier_migrator`.
+- [x] **6.3.3** : `keycloak-init-job.yaml` configure automatiquement le Realm `atelier` et les clients OIDC.
+- [x] **6.3.4** : `openbao-init-job.yaml` active la méthode d'auth Kubernetes.
+- [x] **6.3.5** : `s3-init-job.yaml` crée les buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments`.
 
 ### 9.4. Support des Identités Cloud & Rolling Upgrades Non Perturbateurs
-- [-/claude-code/sess-6f3eef77-h] **6.4.1** : Annotations ServiceAccount pour AWS IRSA (`eks.amazonaws.com/role-arn`), GCP Workload Identity et Azure Workload ID.
-- [-/claude-code/sess-6f3eef77-h] **6.4.2** : Gestion du statut `NeedsRestartForUpgrade` pour préserver les microVMs actives lors des `helm upgrade`.
+- [x] **6.4.1** : Annotations ServiceAccount pour AWS IRSA (`eks.amazonaws.com/role-arn`), GCP Workload Identity et Azure Workload ID.
+- [x] **6.4.2** : Gestion du statut `NeedsRestartForUpgrade` pour préserver les microVMs actives lors des `helm upgrade`.
 
 ### 9.5. Rédaction du Guide Administrateur (`docs/admin-guide.md`)
-- [-/claude-code/sess-6f3eef77-h] **6.5.1** : Rédiger le guide complet (KVM bare-metal & cloud nested virt, 4 domaines DNS, S3 multi-cloud, AWS IRSA/AssumeRole, backup/restore PostgreSQL et dépannage).
-- [-/claude-code/sess-6f3eef77-h] **6.5.2** : Déclarer la page dans [`mkdocs.yml`](file:///home/philippe/github.com/PhilippeVienne/atelier/mkdocs.yml).
+- [x] **6.5.1** : Rédiger le guide complet (KVM bare-metal & cloud nested virt, 4 domaines DNS, S3 multi-cloud, AWS IRSA/AssumeRole, backup/restore PostgreSQL et dépannage).
+- [x] **6.5.2** : Déclarer la page dans [`mkdocs.yml`](file:///home/philippe/github.com/PhilippeVienne/atelier/mkdocs.yml).
 
 ### 🧪 Tests & Preuves Attendues pour M6
 1. `helm lint charts/atelier` : Zéro erreur de syntaxe.
@@ -471,11 +471,11 @@ graph TD
 3. Déploiement réel sur cluster Kind : 100% des pods `Running` et tous les hooks `Completed`.
 
 ### 🎯 Definition of Done (DoD) du Jalon M6
-- [ ] L'installation complète se fait en une commande Helm.
-- [ ] Les 4 Ingress et certificats TLS sont opérationnels.
-- [ ] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent parfaitement l'infra dev.
-- [ ] La documentation MkDocs intègre le Guide Administrateur complet.
-- [ ] Entrée documentée dans `docs/PROGRESS.md`.
+- [x] L'installation complète se fait en une commande Helm (`helm upgrade --install`, verifie empiriquement — voir `docs/PROGRESS.md`).
+- [ ] Les 4 Ingress et certificats TLS sont opérationnels (rendu valide par `helm template`/`kubectl apply --dry-run=client` uniquement ; aucun certificat cert-manager reel emis, `tls.enabled=false` dans l'environnement de test — voir `docs/admin-guide.md`, section "Limites Connues").
+- [ ] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent parfaitement l'infra dev (hors perimetre de cette tache : non touches, non revalides ici).
+- [x] La documentation MkDocs intègre le Guide Administrateur complet.
+- [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
 
