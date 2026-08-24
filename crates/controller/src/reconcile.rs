@@ -941,6 +941,12 @@ async fn ensure_parent_pod(
         if let Err(err) = openbao::ensure_session_auth(openbao_config, name).await {
             tracing::error!(%err, "provisioning du secret session_auth OpenBao echoue");
         }
+        // Meme raisonnement : `net-proxy` (cle publique) et `api-server`
+        // (cle privee, role cluster-wide) relisent chacun ce secret de leur
+        // cote — voir `openbao::ensure_ssh_key` (Jalon M4, tache 4.2.3).
+        if let Err(err) = openbao::ensure_ssh_key(openbao_config, name).await {
+            tracing::error!(%err, "provisioning du secret ssh_key OpenBao echoue");
+        }
     }
 
     // Le PVC de cache existe deja (cree lors de la phase BuildingImage),

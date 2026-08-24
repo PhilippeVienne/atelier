@@ -34,6 +34,11 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # Serveur HTTP des sondes de sante (`GET /health/ready`), voir
 # `crates/controller/src/health.rs`.
 axum.workspace = true
+# Generation de la paire de cles SSH par Workshop (Jalon M4, tache 4.2.3,
+# voir `crates/controller/src/openbao.rs::ensure_ssh_key`) : format OpenSSH
+# natif (`to_openssh`/pubkey `to_string`), directement consommable par
+# `authorized_keys` cote guest et par le client `russh` cote `api-server`.
+ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
 
 [[bin]]
 name = "crdgen"

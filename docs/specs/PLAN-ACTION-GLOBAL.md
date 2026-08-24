@@ -290,27 +290,10 @@ graph TD
 
 ### 7.2. Implémentation des Tools MCP, Exécution Asynchrone Bufferisée & Migrations
 * **Fichier impacté** : `crates/api-server/src/mcp_server.rs` (les 6 tools lifecycle sont dans le même module que le transport — pas de fichier `mcp_tools.rs` séparé, le tool_router de `rmcp` rend cette séparation peu utile pour ce volume d'outils)
-  - [x] **4.2.1** (partiel, `exec_in_workshop` hors périmètre) : `tools/list` annonce `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop` — mêmes règles de visibilité que la route REST (`ensure_owner`), testé de bout en bout contre un vrai cluster (`tests/mcp.rs`). **`exec_in_workshop` non implémenté** : nécessiterait un nouveau canal d'exécution de commande hôte→guest, qui n'existe nulle part dans le code actuel (le seul canal existant vers le guest est le terminal interactif `ttyd`, pas une RPC exec/stdout/stderr/exit-code) — décision prise avec l'utilisateur de scoper cette session sans cette tâche plutôt que d'improviser un protocole non testé. Voir 4.2.2/4.2.3/4.2.4 ci-dessous, laissées `[ ]`.
-  - [-/claude-code/sess-c7a1e9-m4] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
-    ```sql
-    CREATE TABLE IF NOT EXISTS exec_commands (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        workshop_name VARCHAR(128) NOT NULL,
-        command TEXT NOT NULL,
-        status VARCHAR(32) NOT NULL DEFAULT 'Running', -- 'Running', 'Completed', 'Failed', 'Timeout'
-        exit_code INT,
-        stdout_buffer TEXT NOT NULL DEFAULT '',
-        stderr_buffer TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-    );
-    CREATE INDEX idx_exec_commands_workshop ON exec_commands (workshop_name);
-    ```
-  - [-/claude-code/sess-c7a1e9-m4] **4.2.3** : `exec_in_workshop` (Asynchrone & Bufferisé) :
-    - Enregistre la commande dans `exec_commands` et retourne un `execution_id`.
-    - Streame en temps réel via WebSocket/vsock tout en écrivant les chunks dans la base.
-    - Permet la reconnexion client sur coupure réseau via `GET /v1/workshops/{name}/exec/{id}/stream`.
-  - [ ] **4.2.4** : Confinement automatique : en cas d'anomalie réseau détectée par `net-proxy`, déclencher immédiatement le Security Lockdown et le snapshot d'urgence.
+  - [x] **4.2.1** : `tools/list` annonce `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop`, `exec_in_workshop` — mêmes règles de visibilité que la route REST (`ensure_owner`), testé de bout en bout contre un vrai cluster (`tests/mcp.rs`).
+  - [x] **4.2.2** : Migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` — schéma étendu avec `owner_subject` + RLS (`current_setting('app.current_tenant')`), même convention que `session_logs`/`audit_events` (non prévu par le schéma d'origine, mais l'isolation par propriétaire ne doit jamais reposer sur la seule logique applicative).
+  - [x] **4.2.3** (canal SSH plutôt que WebSocket/vsock, décision prise avec l'utilisateur) : `exec_in_workshop` enregistre la commande dans `exec_commands` et retourne `execution_id` immédiatement (`crate::exec::spawn`), exécute en arrière-plan (`tokio::spawn`) via un **canal SSH dédié** (cle Ed25519 par Workshop, générée par `controller` dans OpenBao — `openssh-server` ajouté au dépôt `atelier-workspace`, cle publique servie par `net-proxy` via `GET /ssh-authorized-key`, même schéma que `session-auth`), atteint par le même tunnel `portforward` que `ttyd`/`code-server`. `GET /v1/workshops/{name}/exec/{id}/stream` (SSE, sondage PostgreSQL) permet la reconnexion à tout moment. Testé de bout en bout avec un vrai binaire `net-proxy` + un vrai serveur SSH (`russh::server`, `tests/exec.rs`).
+  - [ ] **4.2.4** : Confinement automatique : en cas d'anomalie réseau détectée par `net-proxy`, déclencher immédiatement le Security Lockdown et le snapshot d'urgence. Non implémenté (aucune détection d'anomalie n'existe dans `net-proxy` aujourd'hui — hors périmètre convenu avec l'utilisateur pour cette session, nécessiterait sa propre conception).
 
 ### 🧪 Tests & Preuves Attendues pour M4
 1. `cargo test -p atelier-api-server --test mcp_endpoints` :
@@ -319,8 +302,8 @@ graph TD
    - Appel de `exec_in_workshop("echo Hello from MCP")` ➔ streaming en temps réel et persistance dans PostgreSQL.
 
 ### 🎯 Definition of Done (DoD) du Jalon M4
-- [x] Claude Desktop ou Cursor peut piloter Atelier via `/v1/mcp` (transport Streamable HTTP, le SDK MCP officiel que ces clients utilisent — verifie avec un vrai client `rmcp` de bout en bout, `tests/mcp.rs`) — limite au cycle de vie (create/list/status/suspend/resume/delete), pas `exec_in_workshop`.
-- [ ] L'outil `exec_in_workshop` est résilient aux coupures réseau grâce au buffer PostgreSQL (non implémenté, voir 4.2.2-4.2.4).
+- [x] Claude Desktop ou Cursor peut piloter Atelier via `/v1/mcp` (transport Streamable HTTP, le SDK MCP officiel que ces clients utilisent — verifie avec un vrai client `rmcp` de bout en bout, `tests/mcp.rs`), y compris `exec_in_workshop`.
+- [x] L'outil `exec_in_workshop` est résilient aux coupures réseau grâce au buffer PostgreSQL (`GET /v1/workshops/{name}/exec/{id}/stream`, reconnexion testée par relecture du buffer complet depuis la base — voir `crate::exec`). Confinement de sécurité automatique (4.2.4) non implémenté (hors périmètre convenu).
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---

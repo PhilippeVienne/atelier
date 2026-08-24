@@ -45,6 +45,7 @@ mod metadata;
 mod portforward;
 mod proxy;
 mod session_auth;
+mod ssh_authorized_key;
 mod tls_sni;
 mod upstream;
 
@@ -194,6 +195,11 @@ async fn main() -> anyhow::Result<()> {
     // OpenBao n'est pas configure, meme convention que le reste des
     // fonctionnalites optionnelles.
     let session_auth_cache: session_auth::SessionAuthCache = Arc::new(RwLock::new(None));
+    // Cle publique SSH autorisee (Jalon M4, tache 4.2.3, voir
+    // `crate::ssh_authorized_key`) : meme cycle de vie/degradation que
+    // `session_auth_cache' ci-dessus, servie par le meme endpoint metadata.
+    let ssh_authorized_key_cache: ssh_authorized_key::SshAuthorizedKeyCache =
+        Arc::new(RwLock::new(None));
     match (
         std::env::var("OPENBAO_ADDR"),
         std::env::var("ATELIER_WORKSHOP_NAME"),
@@ -201,8 +207,12 @@ async fn main() -> anyhow::Result<()> {
         (Ok(openbao_addr), Ok(workshop_name)) => {
             let client = OpenBaoClient::from_env(openbao_addr, workshop_name);
             tokio::spawn(session_auth::refresh_loop(
-                client,
+                client.clone(),
                 Arc::clone(&session_auth_cache),
+            ));
+            tokio::spawn(ssh_authorized_key::refresh_loop(
+                client,
+                Arc::clone(&ssh_authorized_key_cache),
             ));
         }
         (Ok(_), Err(_)) => {
@@ -226,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| DEFAULT_METADATA_ADDR.to_string());
     let metadata_router = metadata::router(metadata::MetadataState {
         session_auth: session_auth_cache,
+        ssh_authorized_key: ssh_authorized_key_cache,
     });
     let metadata_listener = TcpListener::bind(&metadata_addr).await?;
     tracing::info!(%metadata_addr, "serveur metadata guest (session-auth) en ecoute");

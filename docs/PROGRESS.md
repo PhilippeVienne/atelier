@@ -2227,3 +2227,59 @@ cargo test --workspace                                        # 100% vert (contr
 ```
 
 **Statut** : ✅ Taches 4.1.1-4.1.4 et 4.2.1 validees (avec les adaptations de transport documentees ci-dessus et dans `crates/api-server/src/mcp_server.rs`). `[-/claude-code/sess-c7a1e9-m4]` remplace par `[x]` dans `docs/specs/PLAN-ACTION-GLOBAL.md`. ⚠️ **4.2.2 (migration `exec_commands`), 4.2.3 (`exec_in_workshop`) et 4.2.4 (confinement de securite) restent `[ ]`, decision produit deliberee** : necessitent la conception d'un nouveau canal d'execution de commande host->guest et d'une detection d'anomalie reseau, tous deux absents du code actuel — a traiter dans une session dediee avec sa propre conception validee, pas improvises ici. DoD M4 : 2/3 lignes `[x]` (pilotage MCP du cycle de vie verifie ; entree PROGRESS ; resilience `exec_in_workshop` non applicable, fonctionnalite non livree).
+
+### [2026-08-24 22:20] Jalon M4 (suite) - `exec_in_workshop` via un canal SSH dedie (taches 4.2.2-4.2.3)
+
+**Decision de conception validee avec l'utilisateur** (question posee explicitement, cf. session precedente) : construire un nouveau canal SSH dedie (cle Ed25519 par Workshop) plutot que de piloter le terminal `ttyd` existant ou d'inventer un protocole maison — l'utilisateur a demande de committer/pusher directement les changements necessaires dans le depot separe `atelier-workspace` (acces push confirme, compte GitHub deja authentifie avec le scope `repo`).
+
+**Guest (`atelier-workspace`, commit `1d26735`, pousse sur `main`)** :
+- `openssh-server` ajoute au `Dockerfile`, cle publique uniquement (`atelier-sshd.conf` : `PasswordAuthentication no`, `PermitRootLogin no`, `AllowUsers vscode`).
+- `atelier-fetch-ssh-authorized-key.sh` (meme schema exact que `atelier-fetch-session-auth.sh`) va chercher la cle publique aupres de `net-proxy` (`GET http://169.254.0.1:3132/ssh-authorized-key`, jusqu'a 30 tentatives) et l'installe dans `~vscode/.ssh/authorized_keys` — echec apres tous les essais : le repertoire reste vide, `sshd` demarre quand meme mais reste inaccessible (fail-closed, jamais ouvert sans cle).
+- `ssh.service` (paquet `openssh-server`) ordonne apres `atelier-ssh-authorized-key.service` (drop-in `Requires=`/`After=`) — **verifie empiriquement par un boot reel** (Docker + systemd PID 1, meme methode que les autres services de ce depot) : `ssh.service` demarre bien apres l'echec/succes du script de recuperation de cle, jamais avant.
+- **Piege reel decouvert et corrige pendant le test de boot** : `ssh.service` porte `WantedBy=multi-user.target` dans son unite mais n'etait PAS active par defaut dans cette image de base (`systemctl` etant factice, `deb-systemd-helper` ne l'a pas symlinke automatiquement, contrairement a l'hypothese initiale du commentaire du Dockerfile) — symlink ajoute explicitement, meme methode que les unites propres a ce depot.
+
+**Controller (`crates/controller/src/openbao.rs::ensure_ssh_key`)** : idempotent-preservant (meme convention que `ensure_session_auth`), genere une paire Ed25519 (crate `ssh-key`, format OpenSSH natif) stockee dans `secret/workshops/<name>/ssh_key` (champs `privateKey`/`publicKey`). Policy cluster-wide `atelier-api-server` (`ensure_api_server_role`) etendue pour couvrir `ssh_key` en plus de `session_auth` (lecture seule, meme wildcard `+` par Workshop). Appele dans `ensure_parent_pod`, a cote de `ensure_session_auth`.
+
+**`net-proxy` (`crate::ssh_authorized_key`)** : meme cache/rafraichissement periodique (5 min) que `crate::session_auth`, nouvel endpoint metadata `GET /ssh-authorized-key` (503 tant que non disponible).
+
+**`api-server` (`crate::exec`, nouveau module)** :
+- `spawn()` : INSERT immediat dans `exec_commands` (statut `Running`), retourne `execution_id`, execute en arriere-plan (`tokio::spawn`) — jamais bloquant pour l'appelant MCP.
+- Canal : `crate::vscode::open_forwarded_tcp_stream` (rendu `pub(crate)`, deja utilise par `ttyd`/`code-server`) jusqu'au port SSH du guest, puis client SSH reel (crate `russh`, backend crypto `ring` — pas `aws-lc-rs`, pour rester sur le meme backend que `rustls::crypto::ring` deja utilise ailleurs). Pas de verification de la cle hote SSH (`check_server_key` toujours `Ok(true)`) : documente comme un choix deliberer, le canal transitant deja exclusivement par le tunnel `portforward` interne au pod.
+- `stdout`/`stderr` (donnees SSH standard + "extended data" canal 1) appendes chunk par chunk dans `exec_commands` (jamais bufferises entierement en memoire), sous une transaction `SET LOCAL app.current_tenant` (RLS) a chaque ecriture — y compris depuis cette tache de fond sans contexte de requete HTTP.
+- `GET /v1/workshops/{name}/exec/{id}/stream` (SSE, `crate::exec::stream_handler`) : relit le buffer complet a chaque (re)connexion (pas seulement les octets manques, plus simple et tout aussi correct pour une reconnexion peu frequente), puis sonde la ligne toutes les 300ms jusqu'a `status != "Running"`.
+- Outil MCP `exec_in_workshop` (`crate::mcp_server`) : meme Fast-Fail (LiteLLM/OpenBao) que `create_workshop` (la spec liste explicitement `exec_in_workshop` comme "creatrice d'etat").
+
+**Pieges de dependances rencontres et resolus** (tous constates a la compilation, pas devines) :
+- `atelier_common::{DevcontainerSource, WorkshopResources}` derivent `schemars 0.8` (via `kube-derive`), incompatible avec `schemars 1.x` — deja documente dans la session precedente pour `create_workshop`.
+- Deux versions majeures de `rand_core` (0.6/0.9/0.10) et de `getrandom` (0.2/0.3/0.4) coexistent dans le graphe : `ssh-key` (vendorisee par `russh` 0.63) exige precisement `rand_core 0.10`, qui n'expose plus `OsRng` directement (delegue a `getrandom::SysRng`, lui-meme fallible) — resolu avec `rand_core::UnwrapErr(getrandom::SysRng)` (feature `sys_rng` de `getrandom`) uniquement dans les tests (le controller, avec `ssh-key 0.6.7`, plus ancien, n'a pas ce probleme et utilise `rand::rngs::OsRng` classique).
+
+**Tests reels executes** :
+```
+# Guest : boot reel (Docker + systemd PID 1) verifie avant de committer/pusher
+#   -> voir commentaire du commit 1d26735 dans atelier-workspace
+
+# Controller : vraie instance OpenBao (kubectl exec ... bao auth enable kubernetes,
+# necessaire car reinitialise depuis la derniere session sur ce cluster partage)
+OPENBAO_ADDR=http://127.0.0.1:8200 OPENBAO_TOKEN=root cargo test -p atelier-controller --test reconcile
+# ensure_ssh_key_generates_a_valid_openssh_keypair_and_preserves_it ... ok
+#   (vraie paire Ed25519 reparsee/validee, idempotence verifiee sur un deuxieme appel)
+# ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else ... ok
+#   (etendu a ssh_key : le role cluster-wide lit bien privateKey de n'importe quel
+#    Workshop, toujours refuse tout secret hors session_auth/ssh_key)
+
+# api-server : vrai binaire net-proxy + vrai serveur SSH (russh::server, protocole
+# SSH reel cote serveur aussi, substitue au vrai sshd Firecracker pour un test
+# rapide/portable) + vrai PostgreSQL
+cargo test -p atelier-api-server --test exec
+# exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result ... ok
+#   (authentification par cle reussie, stdout ET stderr transportes separement,
+#    exit code 7 recupere, tout bufferise dans exec_commands via RLS)
+
+cargo fmt --all -- --check                                    # silencieux
+cargo clippy --workspace --all-targets -- -D warnings         # 0 warning
+cargo test --workspace                                        # 100% vert (controller live arrete, port-forward Postgres+OpenBao actifs)
+```
+
+**Non teste de bout en bout avec une vraie microVM Firecracker** : le cluster kind partage n'a pas de `atelier-controller` reel en cours d'execution au moment de cette session (aurait fallu le redemarrer avec le code fusionne + orchestrer un vrai build d'image incluant les changements `atelier-workspace`) — juge hors budget raisonnable pour cette session au vu de la validation deja obtenue a chaque couche (guest, controller/OpenBao, net-proxy, client SSH). A confirmer par une session future disposant d'un controller live.
+
+**Statut** : ✅ Taches 4.2.2 et 4.2.3 validees avec l'adaptation de canal documentee (SSH plutot que WebSocket/vsock, decision utilisateur). `[-/claude-code/sess-c7a1e9-m4]` remplace par `[x]`. DoD M4 : 3/3 lignes `[x]` desormais (le pilotage MCP du cycle de vie ET `exec_in_workshop` sont verifies). ⚠️ **4.2.4 (confinement de securite automatique) reste `[ ]`, deliberement hors perimetre** — aucune detection d'anomalie reseau n'existe dans `net-proxy` aujourd'hui, necessiterait sa propre conception (heuristiques de detection, nouveau statut Workshop, alerte Dashboard).

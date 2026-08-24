@@ -43,15 +43,28 @@ async-trait = "0.1.92"
 # Identifiant de session terminal enregistree (crate::session_recorder) :
 # deja present transitivement via aws-runtime, declare explicitement car
 # utilise directement dans notre propre code.
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 # Serveur MCP externe (Jalon M4, crate::mcp_server) : memes features que
 # `crates/mcp-gateway` (transport Streamable HTTP officiel du SDK Rust).
 rmcp = { version = "3.1.4", features = ["server", "macros", "transport-streamable-http-server", "server-side-http", "tower"] }
+# Client SSH pour exec_in_workshop (crate::exec, Jalon M4, tache 4.2.3) :
+# "ring" plutot que le defaut "aws-lc-rs", pour rester sur le meme backend
+# crypto que `rustls::crypto::ring` deja utilise ailleurs dans ce crate
+# (`main.rs`) — pas de deuxieme implementation crypto dans le meme binaire.
+russh = { version = "0.63", default-features = false, features = ["ring", "flate2"] }
 http = "1"
 
 [dev-dependencies]
 sha2 = "0.10"
 tower = "0.5"
+# Genere une paire de cles SSH de test (tests/exec.rs) et fait tourner un
+# serveur SSH minimal (`russh::server`) pour valider `crate::exec` sans
+# microVM Firecracker reelle. Version 0.10 precisement : c'est celle
+# qu'exige `ssh-key` (vendorisee par `russh` 0.63), pas celle du `rand`
+# "generaliste" (0.8/0.9 coexistent ailleurs dans le graphe de dependances)
+# — constate a la compilation (erreurs de trait bound sinon).
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
 # Client MCP reel pour les tests d'integration de crate::mcp_server (Jalon
 # M4) : se connecte au vrai transport Streamable HTTP servi par le routeur,
 # plutot que de simuler des requetes JSON-RPC brutes a la main.

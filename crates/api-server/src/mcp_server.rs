@@ -30,7 +30,10 @@
 //! handlers") : [`authenticated_user`] les relit a chaque appel d'outil.
 
 use crate::auth::AuthenticatedUser;
-use crate::routes::{ensure_owner, patch_desired_state, validate_name, workshops_api, AppState};
+use crate::routes::{
+    ensure_owner, patch_desired_state, resolve_running_pod_ip, validate_name, workshops_api,
+    AppState,
+};
 use atelier_common::{
     DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopResources, WorkshopSpec,
 };
@@ -176,6 +179,16 @@ struct WorkshopNameParams {
     name: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ExecInWorkshopParams {
+    /// Nom du Workshop cible.
+    name: String,
+    /// Commande shell a executer dans le guest (via SSH, utilisateur
+    /// "vscode").
+    command: String,
+}
+
 #[tool_router]
 impl WorkshopMcpServer {
     #[tool(
@@ -314,6 +327,63 @@ impl WorkshopMcpServer {
             .map_err(|err| api_error_to_mcp(err.into()))?;
         Ok(format!("suppression de \"{name}\" demandee"))
     }
+
+    #[tool(
+        description = "Execute une commande dans le Workshop, de facon asynchrone et bufferisee : renvoie immediatement un execution_id (l'execution continue meme apres deconnexion), reconnexion possible via GET /v1/workshops/{name}/exec/{id}/stream. Refuse (Fast-Fail) si LiteLLM ou OpenBao, configures, sont injoignables, ou si le Workshop n'est pas Running."
+    )]
+    async fn exec_in_workshop(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(ExecInWorkshopParams { name, command }): Parameters<ExecInWorkshopParams>,
+    ) -> Result<String, ErrorData> {
+        let user = authenticated_user(&parts)?;
+        // Meme garantie que create_workshop (tache 4.1.2) : exec_in_workshop
+        // est elle aussi listee comme "creatrice d'etat" par
+        // docs/specs/04-external-mcp-server.md (elle demarre un processus
+        // dans le guest).
+        ensure_state_creating_dependencies_reachable(&self.state).await?;
+
+        let workshop = workshops_api(&self.state)
+            .get(&name)
+            .await
+            .map_err(|err| api_error_to_mcp(err.into()))?;
+        ensure_owner(&workshop, &user).map_err(api_error_to_mcp)?;
+        let pod_ip = resolve_running_pod_ip(&self.state, &workshop)
+            .await
+            .map_err(api_error_to_mcp)?;
+
+        let session_auth = self.state.session_auth.as_ref().ok_or_else(|| {
+            ErrorData::internal_error(
+                "OPENBAO_ADDR non configure : exec_in_workshop indisponible (aucune cle SSH accessible)",
+                None,
+            )
+        })?;
+        let private_key = session_auth.ssh_private_key(&name).await.ok_or_else(|| {
+            ErrorData::internal_error(
+                "cle SSH indisponible pour ce Workshop (pas encore provisionnee, ou OpenBao injoignable)",
+                None,
+            )
+        })?;
+
+        let execution_id = crate::exec::spawn(
+            self.state.clone(),
+            user.0,
+            name.clone(),
+            pod_ip,
+            private_key,
+            command,
+        )
+        .await
+        .map_err(|err| {
+            ErrorData::internal_error(format!("enregistrement de l'execution: {err}"), None)
+        })?;
+
+        serde_json::to_string_pretty(&serde_json::json!({
+            "executionId": execution_id,
+            "streamUrl": format!("/v1/workshops/{name}/exec/{execution_id}/stream"),
+        }))
+        .map_err(|err| ErrorData::internal_error(format!("serialisation: {err}"), None))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -322,8 +392,8 @@ impl ServerHandler for WorkshopMcpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Pilote le cycle de vie de Workshops Atelier (environnements de developpement \
              isoles) : create_workshop, list_workshops, get_workshop_status, suspend_workshop, \
-             resume_workshop, delete_workshop. exec_in_workshop n'est pas encore disponible \
-             (voir docs/specs/PLAN-ACTION-GLOBAL.md, tache 4.2.3).",
+             resume_workshop, delete_workshop, exec_in_workshop (asynchrone et bufferise, voir \
+             GET /v1/workshops/{name}/exec/{id}/stream pour la reconnexion).",
         )
     }
 }

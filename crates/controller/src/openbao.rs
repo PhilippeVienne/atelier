@@ -116,12 +116,15 @@ pub const API_SERVER_ROLE: &str = "atelier-api-server";
 /// cluster-wide utilise par `api-server` (voir [`API_SERVER_ROLE`]) :
 /// bound au ServiceAccount du Deployment `api-server` (pas a celui d'un
 /// Workshop), avec une policy `read` seule (jamais d'ecriture) sur
-/// `secret/data|metadata/workshops/+/session_auth` — le `+` est un
-/// wildcard OpenBao/Vault KV v2 pour un seul segment de chemin : couvre
-/// `session_auth` de n'importe quel Workshop, mais rien d'autre
+/// `secret/data|metadata/workshops/+/{session_auth,ssh_key}` — le `+` est
+/// un wildcard OpenBao/Vault KV v2 pour un seul segment de chemin : couvre
+/// `session_auth`/`ssh_key` de n'importe quel Workshop, mais rien d'autre
 /// (`secret/workshops/<name>/git`, `secret/workshops/<name>/<injection
 /// rule>` restent hors de portee, reserves aux composants qui tournent
-/// dans le pod du Workshop concerne).
+/// dans le pod du Workshop concerne). `ssh_key` ajoute pour `exec_in_workshop`
+/// (Jalon M4, tache 4.2.3, voir `crate::openbao::ensure_ssh_key`) :
+/// `api-server` y lit la cle PRIVEE pour s'authentifier en SSH aupres du
+/// guest, jamais la cle publique seule (deja servie au guest par net-proxy).
 ///
 /// A appeler une seule fois au demarrage du controller (`main.rs`), pas a
 /// chaque reconciliation : ce role ne depend d'aucun Workshop particulier.
@@ -132,7 +135,18 @@ pub async fn ensure_api_server_role(
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
-    let policy_hcl = "path \"secret/data/workshops/+/session_auth\" { capabilities = [\"read\"] }\npath \"secret/metadata/workshops/+/session_auth\" { capabilities = [\"read\"] }".to_string();
+    let policy_hcl = [
+        "session_auth",
+        "ssh_key",
+    ]
+    .iter()
+    .map(|secret| {
+        format!(
+            "path \"secret/data/workshops/+/{secret}\" {{ capabilities = [\"read\"] }}\npath \"secret/metadata/workshops/+/{secret}\" {{ capabilities = [\"read\"] }}"
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
 
     client
         .put(format!("{}/v1/sys/policy/{API_SERVER_ROLE}", config.addr))
@@ -245,6 +259,78 @@ pub async fn ensure_session_auth(
         .map_err(|e| anyhow::anyhow!("ecriture du secret session_auth OpenBao: {e}"))?;
 
     Ok(password)
+}
+
+/// Idempotent-preservant comme [`ensure_session_auth`] (une paire de cles
+/// generee une seule fois par Workshop, jamais regeneree tant qu'elle
+/// existe) : provisionne la paire de cles SSH (Ed25519) utilisee par
+/// `api-server` (`crates/api-server/src/exec.rs`) pour `exec_in_workshop`
+/// (Jalon M4, tache 4.2.3) — canal separe de `ttyd`, dedie a l'execution de
+/// commandes fiables (exit code explicite), pas a une session interactive.
+///
+/// La cle PRIVEE reste dans OpenBao, lue uniquement par `api-server` (meme
+/// role cluster-wide dedie que `session_auth`, voir
+/// `crate::session_auth::SessionAuthClient` cote api-server) ; seule la cle
+/// PUBLIQUE est servie au guest par `net-proxy`
+/// (`crates/net-proxy/src/ssh_authorized_key.rs`), qui l'installe dans
+/// `~vscode/.ssh/authorized_keys` avant que `sshd` ne demarre (voir le
+/// script `atelier-fetch-ssh-authorized-key.sh` du depot `atelier-workspace`).
+pub async fn ensure_ssh_key(config: &OpenBaoConfig, workshop_name: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/v1/secret/data/workshops/{workshop_name}/ssh_key",
+        config.addr
+    );
+
+    let existing = client
+        .get(&url)
+        .header("X-Vault-Token", &config.token)
+        .send()
+        .await?;
+    if existing.status().is_success() {
+        let body: serde_json::Value = existing
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("reponse de lecture du secret ssh_key invalide: {e}"))?;
+        if body["data"]["data"]["privateKey"].as_str().is_some()
+            && body["data"]["data"]["publicKey"].as_str().is_some()
+        {
+            return Ok(());
+        }
+    }
+
+    let (private_key, public_key) = generate_ssh_keypair(workshop_name)?;
+    client
+        .put(&url)
+        .header("X-Vault-Token", &config.token)
+        .json(&serde_json::json!({
+            "data": { "privateKey": private_key, "publicKey": public_key }
+        }))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("ecriture du secret ssh_key OpenBao: {e}"))?;
+
+    Ok(())
+}
+
+/// `comment` = le nom du Workshop : purement informatif (visible dans
+/// `authorized_keys`/lors d'un `ssh -v`, aucun role de securite), utile pour
+/// diagnostiquer rapidement quelle cle correspond a quel Workshop.
+fn generate_ssh_keypair(comment: &str) -> anyhow::Result<(String, String)> {
+    let private_key =
+        ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519)
+            .map_err(|e| anyhow::anyhow!("generation de la paire de cles SSH: {e}"))?;
+    let mut public_key = private_key.public_key().clone();
+    public_key.set_comment(comment);
+    let private_pem = private_key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .map_err(|e| anyhow::anyhow!("serialisation de la cle privee SSH: {e}"))?
+        .to_string();
+    let public_line = public_key
+        .to_openssh()
+        .map_err(|e| anyhow::anyhow!("serialisation de la cle publique SSH: {e}"))?;
+    Ok((private_pem, public_line))
 }
 
 /// Ecrit (ou remplace) la Virtual Key LiteLLM courante d'un Workshop sous

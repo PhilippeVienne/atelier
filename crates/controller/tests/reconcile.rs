@@ -1015,6 +1015,9 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
 /// lire le secret `session_auth` de N'IMPORTE QUEL Workshop (a partir d'un
 /// seul ServiceAccount cluster-wide, celui du Deployment `api-server`), mais
 /// rien d'autre (pas les autres secrets d'un Workshop, ex: `git`).
+///
+/// Etend cette meme verification a `ssh_key` (Jalon M4, tache 4.2.3,
+/// ajoute a la meme policy pour `exec_in_workshop`).
 #[tokio::test]
 async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else() {
     atelier_common::telemetry::ensure_crypto_provider();
@@ -1091,6 +1094,19 @@ async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else
         .expect("ecriture du secret session_auth de test")
         .error_for_status()
         .expect("ecriture du secret session_auth de test refusee");
+
+        http.put(format!(
+            "{openbao_addr}/v1/secret/data/workshops/{name}/ssh_key"
+        ))
+        .header("X-Vault-Token", &openbao_token)
+        .json(&serde_json::json!({
+            "data": { "privateKey": format!("private-{name}"), "publicKey": format!("public-{name}") }
+        }))
+        .send()
+        .await
+        .expect("ecriture du secret ssh_key de test")
+        .error_for_status()
+        .expect("ecriture du secret ssh_key de test refusee");
     }
     // Un secret HORS `session_auth` sous le meme Workshop : le wildcard `+`
     // de la policy `atelier-api-server` ne couvre que le dernier segment de
@@ -1157,6 +1173,25 @@ async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else
             Some(expected_password),
             "mot de passe session_auth inattendu pour {name}"
         );
+
+        let ssh_key: serde_json::Value = http
+            .get(format!(
+                "{openbao_addr}/v1/secret/data/workshops/{name}/ssh_key"
+            ))
+            .header("X-Vault-Token", &client_token)
+            .send()
+            .await
+            .expect("requete de lecture ssh_key")
+            .error_for_status()
+            .expect("le role api-server doit pouvoir lire ssh_key de n'importe quel Workshop")
+            .json()
+            .await
+            .expect("reponse JSON de lecture ssh_key");
+        assert_eq!(
+            ssh_key["data"]["data"]["privateKey"].as_str(),
+            Some(format!("private-{name}")).as_deref(),
+            "cle privee ssh_key inattendue pour {name}"
+        );
     }
 
     let git_secret_denied = http
@@ -1177,4 +1212,108 @@ async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else
         .delete(sa_name, &DeleteParams::default())
         .await;
     let _ = namespaces.delete(ns, &DeleteParams::default()).await;
+}
+
+/// Necessite OPENBAO_ADDR/OPENBAO_TOKEN, silencieusement ignore sans ces
+/// variables.
+///
+/// Tache 4.2.3 (Jalon M4) : `ensure_ssh_key` genere une vraie paire de cles
+/// Ed25519 valide (verifie en la reparsant avec `ssh_key`), au format
+/// OpenSSH standard, et reste idempotent-preservant (ne regenere jamais une
+/// paire deja presente) — meme convention que `ensure_session_auth`.
+#[tokio::test]
+async fn ensure_ssh_key_generates_a_valid_openssh_keypair_and_preserves_it() {
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+
+    let openbao_config = atelier_controller::openbao::OpenBaoConfig {
+        addr: openbao_addr.clone(),
+        token: openbao_token.clone(),
+    };
+    let name = unique_name("test-ssh-key");
+
+    atelier_controller::openbao::ensure_ssh_key(&openbao_config, &name)
+        .await
+        .expect("ensure_ssh_key (premier appel) ne doit pas echouer");
+
+    let http = reqwest::Client::new();
+    let secret: serde_json::Value = http
+        .get(format!(
+            "{openbao_addr}/v1/secret/data/workshops/{name}/ssh_key"
+        ))
+        .header("X-Vault-Token", &openbao_token)
+        .send()
+        .await
+        .expect("requete de lecture ssh_key")
+        .error_for_status()
+        .expect("le secret ssh_key doit avoir ete ecrit")
+        .json()
+        .await
+        .expect("reponse JSON de lecture ssh_key");
+
+    let private_key = secret["data"]["data"]["privateKey"]
+        .as_str()
+        .expect("champ privateKey present")
+        .to_string();
+    let public_key = secret["data"]["data"]["publicKey"]
+        .as_str()
+        .expect("champ publicKey present")
+        .to_string();
+
+    // Les deux cles doivent etre reellement valides (pas juste des chaines
+    // opaques) : reparsees avec la meme crate que celle qui les a generees,
+    // et former une paire coherente (la cle publique derivee de la cle
+    // privee doit correspondre a celle stockee separement).
+    let parsed_private = ssh_key::PrivateKey::from_openssh(&private_key)
+        .expect("la cle privee stockee doit etre un OpenSSH valide");
+    let parsed_public: ssh_key::PublicKey = public_key
+        .parse()
+        .expect("la cle publique stockee doit etre un OpenSSH valide");
+    assert_eq!(
+        parsed_private.public_key().key_data(),
+        parsed_public.key_data(),
+        "la cle publique stockee doit correspondre a la cle privee stockee"
+    );
+    assert!(
+        public_key.contains(&name),
+        "le commentaire de la cle publique doit identifier le Workshop (diagnostic)"
+    );
+
+    // Idempotence : un deuxieme appel ne doit pas regenerer la paire.
+    atelier_controller::openbao::ensure_ssh_key(&openbao_config, &name)
+        .await
+        .expect("ensure_ssh_key (deuxieme appel) ne doit pas echouer");
+    let secret_after: serde_json::Value = http
+        .get(format!(
+            "{openbao_addr}/v1/secret/data/workshops/{name}/ssh_key"
+        ))
+        .header("X-Vault-Token", &openbao_token)
+        .send()
+        .await
+        .expect("requete de relecture ssh_key")
+        .error_for_status()
+        .expect("le secret ssh_key doit toujours exister")
+        .json()
+        .await
+        .expect("reponse JSON de relecture ssh_key");
+    assert_eq!(
+        secret_after["data"]["data"]["privateKey"].as_str(),
+        Some(private_key.as_str()),
+        "un deuxieme appel ne doit jamais regenerer la paire de cles existante"
+    );
+
+    http.delete(format!(
+        "{openbao_addr}/v1/secret/metadata/workshops/{name}/ssh_key"
+    ))
+    .header("X-Vault-Token", &openbao_token)
+    .send()
+    .await
+    .ok();
 }

@@ -306,7 +306,7 @@ async fn copy_bidirectional_with_recording(
 /// pas besoin de reimplementer `Sink`/`Stream` a la main : une tache de
 /// fond pompe entre le websocket et une moitie de `tokio::io::duplex`,
 /// l'autre moitie est rendue a l'appelant.
-async fn open_forwarded_tcp_stream(
+pub(crate) async fn open_forwarded_tcp_stream(
     pod_ip: &str,
     remote_port: u16,
 ) -> anyhow::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> {

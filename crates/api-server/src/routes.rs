@@ -65,6 +65,10 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/events", get(list_workshop_events))
         .route(
+            "/v1/workshops/{name}/exec/{id}/stream",
+            get(crate::exec::stream_handler),
+        )
+        .route(
             "/v1/workshops/{name}/portforward",
             get(crate::portforward::portforward),
         )

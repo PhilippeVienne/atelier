@@ -12,8 +12,9 @@
 //! controller, voir
 //! `crates/controller/src/openbao.rs::ensure_api_server_role`), dont la
 //! policy n'autorise que la LECTURE de `secret/{data,metadata}/workshops/+/
-//! session_auth` (le `+` est un wildcard OpenBao pour un seul segment de
-//! chemin, donc un seul Workshop a la fois) — rien d'autre.
+//! {session_auth,ssh_key}` (le `+` est un wildcard OpenBao pour un seul
+//! segment de chemin, donc un seul Workshop a la fois) — rien d'autre.
+//! `ssh_key` (cle privee, tache 4.2.3) sert a `crate::exec`.
 
 use atelier_common::OpenBaoClient;
 use std::sync::Arc;
@@ -77,6 +78,27 @@ impl SessionAuthClient {
     /// simplement sans injecter de Basic Auth plutot que de bloquer la
     /// requete.
     pub async fn session_password(&self, workshop_name: &str) -> Option<String> {
+        self.read_secret_field(workshop_name, "session_auth", "password")
+            .await
+    }
+
+    /// Lit la cle privee SSH d'un Workshop donne
+    /// (`secret/data/workshops/<name>/ssh_key`, champ `privateKey`) —
+    /// utilisee par `crate::exec` (`exec_in_workshop`, Jalon M4, tache
+    /// 4.2.3) pour s'authentifier aupres du guest. Meme convention
+    /// degradee que [`Self::session_password`] : `None` en cas d'echec,
+    /// jamais d'erreur.
+    pub async fn ssh_private_key(&self, workshop_name: &str) -> Option<String> {
+        self.read_secret_field(workshop_name, "ssh_key", "privateKey")
+            .await
+    }
+
+    async fn read_secret_field(
+        &self,
+        workshop_name: &str,
+        secret_path: &str,
+        field: &str,
+    ) -> Option<String> {
         let token = match self.client_token(false).await {
             Ok(token) => token,
             Err(err) => {
@@ -87,10 +109,10 @@ impl SessionAuthClient {
 
         match self
             .client
-            .read_field_for(&token, workshop_name, "session_auth", "password")
+            .read_field_for(&token, workshop_name, secret_path, field)
             .await
         {
-            Ok(password) => Some(password),
+            Ok(value) => Some(value),
             Err(first_err) => {
                 // Le token cache a pu etre invalide plus tot que prevu
                 // (role recree, horloge decalee...) : un seul essai de
@@ -104,16 +126,18 @@ impl SessionAuthClient {
                 };
                 match self
                     .client
-                    .read_field_for(&token, workshop_name, "session_auth", "password")
+                    .read_field_for(&token, workshop_name, secret_path, field)
                     .await
                 {
-                    Ok(password) => Some(password),
+                    Ok(value) => Some(value),
                     Err(err) => {
                         tracing::warn!(
                             %first_err,
                             %err,
                             workshop = %workshop_name,
-                            "lecture du secret session_auth (api-server) echouee"
+                            secret_path,
+                            field,
+                            "lecture d'un secret (api-server) echouee"
                         );
                         None
                     }
