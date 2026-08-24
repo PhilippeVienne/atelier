@@ -291,7 +291,7 @@ graph TD
 ### 7.2. Implémentation des Tools MCP, Exécution Asynchrone Bufferisée & Migrations
 * **Fichier impacté** : `crates/api-server/src/mcp_server.rs` (les 6 tools lifecycle sont dans le même module que le transport — pas de fichier `mcp_tools.rs` séparé, le tool_router de `rmcp` rend cette séparation peu utile pour ce volume d'outils)
   - [x] **4.2.1** (partiel, `exec_in_workshop` hors périmètre) : `tools/list` annonce `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop` — mêmes règles de visibilité que la route REST (`ensure_owner`), testé de bout en bout contre un vrai cluster (`tests/mcp.rs`). **`exec_in_workshop` non implémenté** : nécessiterait un nouveau canal d'exécution de commande hôte→guest, qui n'existe nulle part dans le code actuel (le seul canal existant vers le guest est le terminal interactif `ttyd`, pas une RPC exec/stdout/stderr/exit-code) — décision prise avec l'utilisateur de scoper cette session sans cette tâche plutôt que d'improviser un protocole non testé. Voir 4.2.2/4.2.3/4.2.4 ci-dessous, laissées `[ ]`.
-  - [ ] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
+  - [-/claude-code/sess-c7a1e9-m4] **4.2.2** : Créer la migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` :
     ```sql
     CREATE TABLE IF NOT EXISTS exec_commands (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -306,7 +306,7 @@ graph TD
     );
     CREATE INDEX idx_exec_commands_workshop ON exec_commands (workshop_name);
     ```
-  - [ ] **4.2.3** : `exec_in_workshop` (Asynchrone & Bufferisé) :
+  - [-/claude-code/sess-c7a1e9-m4] **4.2.3** : `exec_in_workshop` (Asynchrone & Bufferisé) :
     - Enregistre la commande dans `exec_commands` et retourne un `execution_id`.
     - Streame en temps réel via WebSocket/vsock tout en écrivant les chunks dans la base.
     - Permet la reconnexion client sur coupure réseau via `GET /v1/workshops/{name}/exec/{id}/stream`.
