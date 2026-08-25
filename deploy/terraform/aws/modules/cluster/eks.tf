@@ -1,0 +1,109 @@
+# Mode up/down (var.enable_cluster, voir variables.tf) : le cluster entier
+# (control plane + node group, poste de cout dominant) est detruit/recree
+# via `count` plutot que scale a 0, qui laisserait le control plane EKS
+# ($0.10/h, facture meme sans noeud) continuer a tourner.
+module "eks" {
+  count = var.enable_cluster ? 1 : 0
+
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = var.cluster_name
+  kubernetes_version = var.kubernetes_version
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  endpoint_public_access  = true
+  endpoint_private_access = true
+
+  # Le compte/role Terraform obtient l'acces admin via un Access Entry EKS
+  # natif (remplace l'ancienne aws-auth ConfigMap) - necessaire pour pouvoir
+  # ensuite executer `helm install charts/atelier` (etape manuelle separee,
+  # voir README.md) depuis le meme poste.
+  enable_cluster_creator_admin_permissions = true
+
+  # IRSA : cree le fournisseur OIDC du cluster, consomme par iam.tf pour la
+  # trust policy du role unique `cloudIdentity.annotations` (voir
+  # docs/admin-guide.md section 4.1 - ce chart applique le meme role a tous
+  # les ServiceAccounts qu'il cree, pas un role distinct par composant).
+  enable_irsa = true
+
+  # `before_compute = true` sur vpc-cni/kube-proxy : sans ca, le module cree
+  # ces addons via `aws_eks_addon.this`, qui porte un `depends_on` implicite
+  # sur le node group (voir source du module) - deadlock reel rencontre en
+  # test (2026-08-25) : le node group n'atteint jamais `ACTIVE` (attend que
+  # ses noeuds passent Ready) tant que vpc-cni n'est pas installe, mais
+  # vpc-cni n'est cree qu'apres le node group. `before_compute` route ces
+  # deux addons via `aws_eks_addon.before_compute`, sans cette dependance :
+  # ils sont prets avant meme que les instances EC2 ne demarrent. `coredns`
+  # reste un addon normal (ses pods ont reellement besoin d'un noeud pour
+  # etre planifies).
+  addons = {
+    coredns = {}
+    kube-proxy = {
+      before_compute = true
+    }
+    vpc-cni = {
+      before_compute = true
+    }
+    eks-pod-identity-agent = {}
+  }
+
+  eks_managed_node_groups = {
+    (var.cluster_name) = {
+      instance_types = [var.node_instance_type]
+      ami_type       = "AL2023_x86_64_STANDARD"
+
+      min_size     = var.node_min_size
+      max_size     = var.node_max_size
+      desired_size = var.node_desired_size
+
+      block_device_mappings = {
+        root = {
+          device_name = "/dev/xvda"
+          ebs = {
+            volume_size = var.node_disk_size_gb
+            volume_type = "gp3"
+          }
+        }
+      }
+
+      # Active la virtualisation imbriquee au niveau de l'hyperviseur Nitro
+      # (L0) - condition necessaire mais pas suffisante : le noyau du
+      # noeud doit encore charger le module kvm_intel pour que /dev/kvm
+      # apparaisse (voir cloudinit_pre_nodeadm ci-dessous). Non verifie
+      # empiriquement contre un vrai cluster EKS dans cette session (aucun
+      # compte AWS disponible) - a valider avec `ls -la /dev/kvm` sur un
+      # noeud reel avant de compter dessus en production.
+      cpu_options = {
+        nested_virtualization = "enabled"
+      }
+
+      cloudinit_pre_nodeadm = [
+        {
+          content_type = "text/x-shellscript"
+          content      = <<-EOT
+            #!/bin/bash
+            set -euo pipefail
+            modprobe kvm_intel
+            echo kvm_intel > /etc/modules-load.d/kvm.conf
+            cat <<'UDEV' > /etc/udev/rules.d/60-atelier-kvm.rules
+            SUBSYSTEM=="misc", KERNEL=="kvm", GROUP="kvm", MODE="0666"
+            UDEV
+            udevadm control --reload-rules
+            udevadm trigger --name-match=kvm || true
+          EOT
+        }
+      ]
+
+      labels = {
+        "atelier.dev/kvm" = "true"
+      }
+    }
+  }
+
+  tags = {
+    "atelier.dev/cluster" = var.cluster_name
+  }
+}

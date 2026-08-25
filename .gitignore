@@ -39,3 +39,20 @@ services/*/**/__pycache__/
 services/*/*.egg-info/
 services/*/.pytest_cache/
 
+# Terraform (deploy/terraform/) : state local, cache providers, valeurs
+# reelles par environnement (domaine/zone Cloudflare, etc. - voir
+# live/*/terraform.tfvars.example pour les placeholders suivis par git),
+# et le backend.hcl genere par bootstrap.sh (nom de bucket/table reels).
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+backend.hcl
+# Plans sauvegardes (`terraform plan -out=...`) : binaire pouvant contenir
+# des secrets en clair (mots de passe generes, etc.), jamais a committer.
+tfplan*
+

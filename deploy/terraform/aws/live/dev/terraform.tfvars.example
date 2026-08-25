@@ -1,0 +1,24 @@
+region       = "eu-west-3"
+environment  = "dev"
+cluster_name = "atelier"
+
+# Namespace Kubernetes ou `helm install charts/atelier` sera execute -
+# doit correspondre a `--namespace` / Release.Namespace au moment du helm
+# install, sans quoi la trust policy IRSA refusera les ServiceAccounts.
+irsa_namespace = "default"
+
+# Prefixe de nommage S3 - doit etre globalement unique sur AWS (les noms
+# de bucket S3 ne sont pas scopes par compte).
+s3_bucket_prefix = "atelier-mon-organisation"
+
+node_instance_type = "m7i.xlarge"
+node_desired_size  = 2
+node_min_size      = 1
+node_max_size      = 4
+
+# Domaine reel + zone Cloudflare PARENTE (pas de valeur par defaut dans le
+# code, volontairement - voir modules/dns/variables.tf). Trouver l'ID de
+# zone via `curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+#   "https://api.cloudflare.com/client/v4/zones?name=<domaine-racine>"`.
+domain_name        = "atelier.example.com"
+cloudflare_zone_id = "changeme"
