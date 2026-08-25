@@ -29,6 +29,7 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         llm_proxy_auth_token: None,
         git_identity: None,
         litellm: None,
+        component_image_registry: None,
     }
 }
 
@@ -757,6 +758,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         llm_proxy_auth_token: None,
         git_identity: None,
         litellm: None,
+        component_image_registry: None,
     };
 
     workshops
@@ -892,6 +894,7 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         llm_proxy_auth_token: None,
         git_identity: None,
         litellm: Some(litellm_config),
+        component_image_registry: None,
     };
 
     workshops

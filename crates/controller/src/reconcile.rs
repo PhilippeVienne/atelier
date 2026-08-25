@@ -22,12 +22,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const FIELD_MANAGER: &str = "atelier-controller";
-// TODO: rendre configurable (registre interne) une fois l'image publiee.
-const IMAGE_BUILDER_IMAGE: &str = "atelier-image-builder:dev";
-const VM_SUPERVISOR_IMAGE: &str = "atelier-vm-supervisor:dev";
-const NET_PROXY_IMAGE: &str = "atelier-net-proxy:dev";
-const IDENTITY_PROXY_IMAGE: &str = "atelier-identity-proxy:dev";
-const MCP_GATEWAY_IMAGE: &str = "atelier-mcp-gateway:dev";
 // Image officielle (pas de fork/rebuild maison) : premier simulateur du
 // projet, voir `docs/PROGRESS.md` ("mcp-gateway", tool `enable_simulator`).
 const SIMULATOR_IMAGE: &str = "localstack/localstack:3";
@@ -185,6 +179,58 @@ pub struct ReconcileCtx {
     /// ci-dessus reste le seul chemin, comportement inchange par rapport a
     /// avant ce jalon), meme convention que `openbao`.
     pub litellm: Option<litellm::LiteLlmConfig>,
+    /// Prefixe de registre pour les images des composants embarques dans
+    /// les pods Workshop (vm-supervisor/net-proxy/identity-proxy/
+    /// mcp-gateway, Job image-builder) - a NE PAS confondre avec
+    /// `registry_addr` ci-dessus, qui sert au rootfs/kernel OCI de la
+    /// devcontainer construite par image-builder et consommee par
+    /// vm-supervisor (chemin completement independant, jamais pull par
+    /// kubelet). `None` (defaut dev) : noms bruts "atelier-<composant>:dev",
+    /// presents sur le noeud via `kind load docker-image`
+    /// (`deploy/dev/local-stack.sh`), aucun pull reseau necessaire. Sur un
+    /// cluster reel (EKS...), doit pointer vers un registre ayant recu ces
+    /// images au prealable (voir `deploy/terraform/aws/mirror-images.sh`).
+    pub component_image_registry: Option<String>,
+}
+
+impl ReconcileCtx {
+    /// `name` sans prefixe "atelier-" ni suffixe ":dev" (ex: "net-proxy").
+    fn component_image(&self, name: &str) -> String {
+        component_image_ref(self.component_image_registry.as_deref(), name)
+    }
+}
+
+/// Fonction libre (donc testable sans construire un `ReconcileCtx` complet,
+/// qui exige un `kube::Client` reel) derriere `ReconcileCtx::component_image`.
+fn component_image_ref(registry: Option<&str>, name: &str) -> String {
+    match registry {
+        Some(registry) => format!("{registry}/atelier-{name}:dev"),
+        None => format!("atelier-{name}:dev"),
+    }
+}
+
+#[cfg(test)]
+mod component_image_tests {
+    use super::component_image_ref;
+
+    #[test]
+    fn falls_back_to_the_bare_dev_tag_without_a_registry() {
+        assert_eq!(
+            component_image_ref(None, "net-proxy"),
+            "atelier-net-proxy:dev"
+        );
+    }
+
+    #[test]
+    fn prefixes_with_the_configured_registry() {
+        assert_eq!(
+            component_image_ref(
+                Some("123456789012.dkr.ecr.eu-west-3.amazonaws.com/atelier"),
+                "net-proxy"
+            ),
+            "123456789012.dkr.ecr.eu-west-3.amazonaws.com/atelier/atelier-net-proxy:dev"
+        );
+    }
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -200,6 +246,7 @@ pub async fn run() -> anyhow::Result<()> {
     let git_identity = git_identity::config_from_env();
     let litellm_config =
         litellm::config_from_env(llm_proxy_addr.clone(), llm_proxy_auth_token.clone());
+    let component_image_registry = std::env::var("ATELIER_COMPONENT_IMAGE_REGISTRY").ok();
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -215,6 +262,7 @@ pub async fn run() -> anyhow::Result<()> {
                 llm_proxy_auth_token,
                 git_identity,
                 litellm: litellm_config,
+                component_image_registry,
             }),
         )
         .for_each(|res| async move {
@@ -754,7 +802,7 @@ async fn ensure_image_build_job(
                     init_containers: Some(vec![
                         Container {
                             name: "net-proxy".into(),
-                            image: Some(NET_PROXY_IMAGE.into()),
+                            image: Some(ctx.component_image("net-proxy")),
                             restart_policy: Some("Always".into()),
                             env: Some(vec![
                                 env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
@@ -780,7 +828,7 @@ async fn ensure_image_build_job(
                         },
                         Container {
                             name: "copy-tools".into(),
-                            image: Some(IMAGE_BUILDER_IMAGE.into()),
+                            image: Some(ctx.component_image("image-builder")),
                             command: Some(vec![
                                 "cp".to_string(),
                                 "/usr/local/bin/crane".to_string(),
@@ -792,7 +840,7 @@ async fn ensure_image_build_job(
                     ]),
                     containers: vec![Container {
                         name: "image-builder".into(),
-                        image: Some(IMAGE_BUILDER_IMAGE.into()),
+                        image: Some(ctx.component_image("image-builder")),
                         env: Some(env),
                         volume_mounts: Some(vec![cache_mount, tools_mount]),
                         // /dev/kvm et /dev/net/tun alloues via le device
@@ -1173,7 +1221,7 @@ async fn ensure_parent_pod(
             containers: vec![
                 Container {
                     name: "vm-supervisor".into(),
-                    image: Some(VM_SUPERVISOR_IMAGE.into()),
+                    image: Some(ctx.component_image("vm-supervisor")),
                     env: Some(
                         vec![
                             env_var("ATELIER_VM_ROOTFS_PATH", &rootfs_path),
@@ -1214,7 +1262,7 @@ async fn ensure_parent_pod(
                 },
                 Container {
                     name: "net-proxy".into(),
-                    image: Some(NET_PROXY_IMAGE.into()),
+                    image: Some(ctx.component_image("net-proxy")),
                     env: Some(
                         vec![
                             env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
@@ -1299,7 +1347,7 @@ async fn ensure_parent_pod(
                 },
                 Container {
                     name: "identity-proxy".into(),
-                    image: Some(IDENTITY_PROXY_IMAGE.into()),
+                    image: Some(ctx.component_image("identity-proxy")),
                     env: Some(
                         vec![
                             env_var(
@@ -1324,7 +1372,7 @@ async fn ensure_parent_pod(
                 },
                 Container {
                     name: "mcp-gateway".into(),
-                    image: Some(MCP_GATEWAY_IMAGE.into()),
+                    image: Some(ctx.component_image("mcp-gateway")),
                     env: Some(
                         vec![
                             env_var(
