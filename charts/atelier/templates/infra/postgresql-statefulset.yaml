@@ -19,9 +19,9 @@ stringData:
   # fait `deploy/dev/postgres/` aujourd'hui : voir docs/admin-guide.md pour
   # la limite connue (RLS inerte face a un role superutilisateur/BYPASSRLS)
   # et la migration a prevoir vers un role applicatif `atelier_app` scope.
-  controllerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.controller }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
-  apiServerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.apiServer }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
-  pmEngineDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.pmEngine }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  controllerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ include "atelier.urlEncodePassword" .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.controller }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  apiServerDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ include "atelier.urlEncodePassword" .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.apiServer }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  pmEngineDatabaseUrl: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ include "atelier.urlEncodePassword" .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.pmEngine }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
 ---
 {{- if not .Values.postgresql.external.enabled }}
 apiVersion: apps/v1

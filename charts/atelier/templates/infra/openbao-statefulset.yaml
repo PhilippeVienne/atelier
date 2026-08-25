@@ -54,6 +54,16 @@ spec:
       # — non, volontairement PAS present la-bas : OpenBao n'a besoin que du
       # ClusterRoleBinding dedie ci-dessous, distinct du RBAC controller/api-server).
       serviceAccountName: {{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}
+      # fsGroup 1000 : convention HashiCorp Vault/OpenBao (l'entrypoint de
+      # l'image tente de chown() puis bascule vers un utilisateur non-root
+      # "vault" UID 100/GID 1000). Sans fsGroup, un volume EBS neuf est monte
+      # root:root 0755 - le process non-root ne peut alors pas ecrire
+      # /openbao/data/vault.db ("permission denied", constate empiriquement
+      # sur ce cluster : le stockage de dev (deploy/dev/) ne l'a jamais exige,
+      # son provisioner montant les volumes avec des permissions plus
+      # permissives qu'un vrai volume EBS).
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: openbao
           image: "{{ .Values.openbao.image.repository }}:{{ .Values.openbao.image.tag }}"
@@ -61,7 +71,15 @@ spec:
           {{- if .Values.openbao.devMode }}
           args: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200", "-dev-root-token-id=root"]
           {{- else }}
-          args: ["server", "-config=/openbao/config/config.hcl"]
+          # Pas de "-config=..." explicite : docker-entrypoint.sh (image
+          # openbao/openbao officielle) genere deja lui-meme
+          # "-config=/openbao/config" (le repertoire, charge tout .hcl/.json
+          # dedans) des qu'il voit l'argument "server", puis ajoute NOS
+          # arguments a la suite - un "-config=" explicite ici duplique donc
+          # le flag et fait charger/binder le listener HTTP deux fois
+          # ("bind: address already in use" au demarrage, constate
+          # empiriquement lors du premier `helm install` sur ce cluster).
+          args: ["server"]
           {{- end }}
           securityContext:
             capabilities:

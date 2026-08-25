@@ -166,9 +166,25 @@ output "helm_values_snippet" {
         image:
           repository: "${var.ecr_registry}/mirror/keycloak"
       openbaoInit:
+        # Desactive pour le premier `helm install`/upgrade uniquement :
+        # OpenBao demarre scelle (docs/admin-guide.md section 7.2) et
+        # l'init/unseal est deliberement manuel, jamais automatise dans un
+        # hook - ce Job echoue donc systematiquement tant que
+        # openbao.rootTokenSecretName ne pointe pas vers un Secret cree a la
+        # main apres l'unseal. Repasser a `true` (ou retirer cette ligne)
+        # dans un `helm upgrade` ulterieur une fois ce Secret cree.
+        enabled: false
         image:
           repository: "${var.ecr_registry}/mirror/openbao"
       s3Init:
+        # s3-init-job authentifie toujours `mc` via le secret
+        # cloudIdentity.fallbackSecretName, y compris quand cloudIdentity.provider
+        # = "aws" (IRSA ci-dessus) - ce secret n'est cense exister qu'en mode
+        # provider "none" (voir charts/atelier/values.yaml), et `mc` ne sait de
+        # toute facon pas s'authentifier via IRSA (necessite une cle d'acces/
+        # secrete explicite). Desactive : les 3 buckets sont deja crees par ce
+        # module (s3.tf), le job serait de toute facon un no-op idempotent.
+        enabled: false
         image:
           repository: "${var.ecr_registry}/mirror/minio-mc"
   EOT

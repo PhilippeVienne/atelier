@@ -30,6 +30,15 @@ data:
     SELECT format('ALTER ROLE atelier_migrator WITH LOGIN PASSWORD %L CREATEDB', :'migrator_password')
     WHERE EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'atelier_migrator')\gexec
 
+    -- Necessaire pour les CREATE/ALTER DATABASE ... OWNER TO ci-dessous : le
+    -- self-hosted `postgres` (deploy/dev/) est superuser, mais le master
+    -- user Aurora/RDS ne l'est jamais (restriction managee par AWS) - sans
+    -- etre membre du role cible, "must be able to SET ROLE" (erreur reelle
+    -- rencontree lors du premier `helm install` sur Aurora Serverless v2,
+    -- voir deploy/terraform/aws/README.md). Idempotent (CURRENT_USER est
+    -- deja membre a partir du 2e passage, GRANT ne fait alors rien).
+    GRANT atelier_migrator TO CURRENT_USER;
+
     SELECT 'CREATE DATABASE {{ .Values.postgresql.databases.apiServer }} OWNER atelier_migrator'
     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.databases.apiServer }}')\gexec
 

@@ -26,7 +26,7 @@ futures-util = "0.3"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 # Stockage S3 hybride des archives de session (Jalon M2, cf.
 # crates/api-server/src/storage.rs). "rt-tokio" fournit l'implementation
 # par defaut du sleep/retry async requise par le client (sinon panique a

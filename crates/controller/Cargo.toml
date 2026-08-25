@@ -30,7 +30,7 @@ rand = "0.8"
 # le pod Kubernetes du parent peut etre `Running` bien avant que systemd,
 # a l'interieur de la microVM, ait fini de demarrer ce service.
 tokio-tungstenite = "0.29"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 # Serveur HTTP des sondes de sante (`GET /health/ready`), voir
 # `crates/controller/src/health.rs`.
 axum.workspace = true

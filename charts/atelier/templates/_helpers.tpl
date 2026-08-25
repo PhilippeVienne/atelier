@@ -56,6 +56,35 @@ qu'aucune annotation explicite n'est fournie.
 {{- end -}}
 
 {{/*
+Encode les caracteres reserves d'une URI (RFC 3986) dans un mot de passe
+avant de l'interpoler dans une chaine "postgres://user:PASSWORD@host:port/db" -
+sans ceci, un mot de passe genere par AWS Secrets Manager (RDS
+manage_master_user_password, voir deploy/terraform/aws/modules/cluster/database.tf)
+contenant "?"/"#" tronque l'URI au mauvais endroit ("invalid port number"
+constate empiriquement lors du premier `helm install` contre Aurora - le "?"
+d'un mot de passe demarre une chaine de requete, "#" un fragment). Sprig/Helm
+n'expose pas de fonction d'encodage URL native (contrairement a html/template) :
+chaine de `replace` sur les caracteres reserves de la RFC, "%" en premier pour
+ne pas re-encoder les "%XX" produits par les remplacements suivants. Ne PAS
+utiliser pour KC_DB_PASSWORD (keycloak-deployment.yaml) : ce n'est pas une URI,
+c'est une valeur de variable d'environnement discrete, l'encoder la
+corromprait.
+*/}}
+{{- define "atelier.urlEncodePassword" -}}
+{{- $s := . -}}
+{{- $s = $s | replace "%" "%25" -}}
+{{- $s = $s | replace ":" "%3A" -}}
+{{- $s = $s | replace "/" "%2F" -}}
+{{- $s = $s | replace "?" "%3F" -}}
+{{- $s = $s | replace "#" "%23" -}}
+{{- $s = $s | replace "[" "%5B" -}}
+{{- $s = $s | replace "]" "%5D" -}}
+{{- $s = $s | replace "@" "%40" -}}
+{{- $s = $s | replace " " "%20" -}}
+{{- $s -}}
+{{- end -}}
+
+{{/*
 DSN PostgreSQL pour un composant donne, pointant soit vers le PostgreSQL
 embarque de ce chart, soit vers `postgresql.external` si active.
 Usage : `include "atelier.postgresDsn" (dict "root" $ "database" .Values.postgresql.databases.apiServer "user" "atelier_app")`.

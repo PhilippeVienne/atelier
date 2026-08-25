@@ -60,6 +60,20 @@ module "eks" {
       before_compute = true
     }
     eks-pod-identity-agent = {}
+    # Sans cet addon, la StorageClass "gp2" par defaut du cluster (provisioner
+    # in-tree "kubernetes.io/aws-ebs") ne fonctionne pas : depuis la migration
+    # CSI (EKS 1.23+), ces requetes sont interceptees et routees vers le
+    # driver CSI EBS, absent si non installe explicitement - constate
+    # empiriquement (PVC openbao/redis/forgejo bloques "Pending", evenement
+    # "pod has unbound immediate PersistentVolumeClaims") lors du premier
+    # `helm install` sur ce cluster. Pod Identity (pas IRSA) : plus simple, le
+    # role n'a pas besoin de connaitre l'URL OIDC du cluster.
+    aws-ebs-csi-driver = {
+      pod_identity_association = [{
+        role_arn        = aws_iam_role.ebs_csi_driver[0].arn
+        service_account = "ebs-csi-controller-sa"
+      }]
+    }
   }
 
   eks_managed_node_groups = {

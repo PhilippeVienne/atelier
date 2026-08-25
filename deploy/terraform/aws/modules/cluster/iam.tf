@@ -88,3 +88,39 @@ resource "aws_iam_role_policy_attachment" "atelier_s3" {
   role       = aws_iam_role.atelier[0].name
   policy_arn = aws_iam_policy.atelier_s3.arn
 }
+
+# Role du driver CSI EBS (voir eks.tf, addon aws-ebs-csi-driver) - separe du
+# role IRSA `atelier` ci-dessus (usage applicatif) : celui-ci est assume par
+# les pods du controller CSI via EKS Pod Identity, pas par les ServiceAccounts
+# du chart.
+data "aws_iam_policy_document" "ebs_csi_driver_trust" {
+  count = var.enable_cluster ? 1 : 0
+
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  count = var.enable_cluster ? 1 : 0
+
+  name               = "${var.cluster_name}-${var.environment}-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_driver_trust[0].json
+
+  tags = {
+    "atelier.dev/cluster" = var.cluster_name
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  count = var.enable_cluster ? 1 : 0
+
+  role       = aws_iam_role.ebs_csi_driver[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}

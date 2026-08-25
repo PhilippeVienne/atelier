@@ -10,7 +10,7 @@ type: Opaque
 stringData:
   LITELLM_MASTER_KEY: {{ .Values.litellm.masterKey | quote }}
   {{- if .Values.postgresql.enabled }}
-  DATABASE_URL: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.litellm }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
+  DATABASE_URL: "postgres://{{ .Values.postgresql.auth.adminUser }}:{{ include "atelier.urlEncodePassword" .Values.postgresql.auth.adminPassword }}@{{ include "atelier.postgresHost" (dict "root" $) }}:{{ .Values.postgresql.external.port }}/{{ .Values.postgresql.databases.litellm }}?sslmode={{ include "atelier.postgresSslMode" (dict "root" $) }}"
   {{- end }}
 ---
 apiVersion: apps/v1
