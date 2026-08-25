@@ -161,6 +161,15 @@ output "helm_values_snippet" {
       image:
         repository: "${var.ecr_registry}/mirror/forgejo"
     openbao:
+      # Nom du Secret Kubernetes (cle "token") cree manuellement apres
+      # `bao operator init` + `bao operator unseal` (docs/admin-guide.md
+      # section 7.2 - deliberement hors du cycle de vie Helm/Terraform, ce
+      # module ne genere jamais ce secret lui-meme). Sans lui,
+      # openbao-init-job echoue et le controller/api-server ne peuvent pas
+      # s'authentifier contre OpenBao (constate empiriquement : "login
+      # OpenBao refuse" en boucle, VS Code/terminal des Workshops jamais
+      # authentifies).
+      rootTokenSecretName: "atelier-openbao-token"
       image:
         repository: "${var.ecr_registry}/mirror/openbao"
     litellm:
@@ -188,14 +197,6 @@ output "helm_values_snippet" {
         image:
           repository: "${var.ecr_registry}/mirror/keycloak"
       openbaoInit:
-        # Desactive pour le premier `helm install`/upgrade uniquement :
-        # OpenBao demarre scelle (docs/admin-guide.md section 7.2) et
-        # l'init/unseal est deliberement manuel, jamais automatise dans un
-        # hook - ce Job echoue donc systematiquement tant que
-        # openbao.rootTokenSecretName ne pointe pas vers un Secret cree a la
-        # main apres l'unseal. Repasser a `true` (ou retirer cette ligne)
-        # dans un `helm upgrade` ulterieur une fois ce Secret cree.
-        enabled: false
         image:
           repository: "${var.ecr_registry}/mirror/openbao"
       s3Init:

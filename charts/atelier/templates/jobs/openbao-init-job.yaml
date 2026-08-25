@@ -57,6 +57,18 @@ spec:
                 token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token \
                 kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
               echo "methode d'auth kubernetes configuree";
+              # Moteur KV v2 au chemin "secret/" : le controller y ecrit les
+              # secrets par Workshop (session_auth, ssh_key - voir
+              # crates/controller/src/openbao.rs). Un OpenBao fraichement
+              # initialise (hors mode -dev) ne l'active jamais tout seul -
+              # sans cette etape, ces ecritures echouent en boucle avec 404
+              # sur /v1/secret/data/... (constate empiriquement, absent de
+              # ce job avant que la question ne se pose reellement).
+              if bao secrets list -format=json | grep -q '"secret/"'; then
+                echo "moteur kv-v2 'secret/' deja active (idempotent)";
+              else
+                bao secrets enable -path=secret kv-v2;
+              fi
           env:
             {{- if .Values.openbao.devMode }}
             - name: BAO_TOKEN
