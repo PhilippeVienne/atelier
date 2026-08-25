@@ -196,6 +196,61 @@ helm upgrade --install atelier ../../../../../charts/atelier \
 `--namespace` utilise ici : la trust policy du role IAM (`modules/cluster/iam.tf`) restreint
 `sts:AssumeRoleWithWebIdentity` aux ServiceAccounts de ce seul namespace.
 
+## 7. Ingress : ALB Controller + external-dns
+
+`modules/cluster/alb-controller.tf`/`modules/dns/acm.tf` ne creent que les
+roles IAM (Pod Identity) et le certificat ACM - les deux controllers
+eux-memes s'installent via Helm classique (pas de provider Helm/Kubernetes
+dans ce module Terraform, voir choix d'architecture en tete de ce fichier),
+une seule fois par cluster (survit aux paliers pause/down/up, a reinstaller
+apres un `enable_cluster=false` -> `true` complet) :
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+helm repo update eks external-dns
+
+VPC_ID=$(aws eks describe-cluster --name <cluster_name> --region <region> \
+  --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=<cluster_name> \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=<region> \
+  --set vpcId="$VPC_ID"
+
+helm install external-dns external-dns/external-dns \
+  -n kube-system \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=external-dns \
+  --set provider.name=aws \
+  --set 'env[0].name=AWS_DEFAULT_REGION' \
+  --set 'env[0].value=<region>' \
+  --set txtOwnerId=<cluster_name>-<environment> \
+  --set 'domainFilters[0]=<domain_name>' \
+  --set policy=sync
+```
+
+`helm_values_snippet` (voir `outputs.tf`) pose deja `ingress.className: "alb"`
+et les annotations `alb.ingress.kubernetes.io/*` necessaires (un seul ALB
+partage entre les 4 Ingress via `group.name`, certificat ACM, redirection
+HTTP->HTTPS) - `external-dns` cree ensuite automatiquement les
+enregistrements Route53 a partir du champ `host` de chaque Ingress, aucune
+action manuelle supplementaire.
+
+**Piege PVC/AZ** : un volume EBS est zonal (cree dans l'AZ du noeud qui l'a
+demande la premiere fois). Si le node group est renouvele (upgrade de
+version, remplacement d'instance) et qu'aucun noeud restant ne se trouve
+dans cette AZ, le pod reste `Pending` ("didn't match PersistentVolume's node
+affinity") - constate empiriquement sur `atelier-forgejo` apres l'upgrade
+1.33->1.34 (2 noeuds sur 3 AZ possibles). Pour un volume sans donnees a
+proteger, `kubectl delete pvc <nom>` (puis `helm upgrade` pour recreer le
+Deployment) suffit ; pour un volume avec donnees reelles, il faudrait migrer
+les donnees vers un nouveau volume dans la bonne AZ avant de supprimer
+l'ancien.
+
 ## Base de donnees : Aurora PostgreSQL Serverless v2
 
 `modules/cluster/database.tf` remplace le StatefulSet `pgvector/pgvector:pg16` embarque

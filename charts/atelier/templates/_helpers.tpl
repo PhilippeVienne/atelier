@@ -133,3 +133,17 @@ desactives). Usage : `include "atelier.certManagerAnnotation" $`.
 cert-manager.io/{{ if eq .Values.tls.certManager.issuerKind "ClusterIssuer" }}cluster-issuer{{ else }}issuer{{ end }}: {{ .Values.tls.certManager.issuer | quote }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Annotations communes a poser sur TOUS les Ingress (contrairement a
+<composant>.ingress.annotations, specifiques a un seul) - typiquement les
+annotations alb.ingress.kubernetes.io/* (scheme, certificate-arn,
+group.name : partager un seul ALB entre les 4 Ingress necessite la meme
+valeur de group.name partout, voir deploy/terraform/aws/modules/cluster/outputs.tf).
+Usage : `include "atelier.commonIngressAnnotations" $`.
+*/}}
+{{- define "atelier.commonIngressAnnotations" -}}
+{{- with .Values.ingress.annotations }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}

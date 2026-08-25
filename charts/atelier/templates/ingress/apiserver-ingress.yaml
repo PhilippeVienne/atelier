@@ -8,6 +8,7 @@ metadata:
     {{- include "atelier.labels" $ | nindent 4 }}
   annotations:
     {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    {{- include "atelier.commonIngressAnnotations" $ | nindent 4 }}
     # Support WebSocket (voir docs/admin-guide.md, section "Choix du
     # controleur d'Ingress") : ingress-nginx laisse deja passer nativement
     # une requete `Upgrade: websocket` (aucune annotation n'est necessaire

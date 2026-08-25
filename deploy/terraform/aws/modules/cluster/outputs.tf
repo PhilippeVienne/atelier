@@ -78,6 +78,25 @@ output "helm_values_snippet" {
       annotations:
         eks.amazonaws.com/role-arn: "${try(aws_iam_role.atelier[0].arn, "")}"
 
+    # ALB Controller + ACM + external-dns (installes via Helm hors Terraform,
+    # voir README.md "Ingress") plutot que ingress-nginx/cert-manager : cree
+    # un seul ALB partage pour les 4 sous-domaines (group.name), TLS termine
+    # par le certificat ACM deja valide par modules/dns (pas de secret k8s a
+    # gerer), enregistrements Route53 crees automatiquement par external-dns
+    # a partir du champ "host" de chaque Ingress (pas d'annotation
+    # external-dns.alpha.kubernetes.io/hostname necessaire).
+    tls:
+      enabled: false
+    ingress:
+      className: "alb"
+      annotations:
+        alb.ingress.kubernetes.io/scheme: "internet-facing"
+        alb.ingress.kubernetes.io/target-type: "ip"
+        alb.ingress.kubernetes.io/certificate-arn: "${var.acm_certificate_arn}"
+        alb.ingress.kubernetes.io/group.name: "${var.cluster_name}"
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+        alb.ingress.kubernetes.io/ssl-redirect: "443"
+
     postgresql:
       # true est requis meme en mode externe : ce flag conditionne aussi
       # db-init-job/db-migrate-job/keycloak/forgejo/litellm, pas seulement

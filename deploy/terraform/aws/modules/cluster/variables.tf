@@ -270,6 +270,23 @@ variable "domain_name" {
   type        = string
 }
 
+# --- Ingress (ALB Controller + ACM + external-dns) -------------------------
+#
+# Ce module ne cree ni la zone Route53 ni le certificat ACM (voir
+# modules/dns) : ces deux variables ne sont utilisees ici que pour la
+# politique IAM external-dns (scope a la zone) et pour construire
+# helm_values_snippet (annotation ALB certificate-arn). Le root doit passer
+# module.dns.zone_id / module.dns.acm_certificate_arn.
+variable "route53_zone_id" {
+  description = "ID de la zone Route53 de var.domain_name (voir modules/dns/outputs.tf, output \"zone_id\") - scope la politique IAM external-dns a cette seule zone."
+  type        = string
+}
+
+variable "acm_certificate_arn" {
+  description = "ARN du certificat ACM valide couvrant *.<domain_name> (voir modules/dns/outputs.tf, output \"acm_certificate_arn\") - pose sur l'annotation alb.ingress.kubernetes.io/certificate-arn de helm_values_snippet."
+  type        = string
+}
+
 # --- Images (ECR, voir modules/ecr) ----------------------------------------
 #
 # Ce module ne cree AUCUN depot ECR (voir modules/ecr) : ecr_registry n'est

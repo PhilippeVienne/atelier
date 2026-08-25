@@ -8,6 +8,7 @@ metadata:
     {{- include "atelier.labels" $ | nindent 4 }}
   annotations:
     {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    {{- include "atelier.commonIngressAnnotations" $ | nindent 4 }}
     # Le dashboard relaie lui-meme des WebSocket longue duree (terminal
     # navigateur / VS Code embarque, voir dashboard/server.ts) vers
     # `api-server` — memes timeouts etendus que api-server-ingress pour la

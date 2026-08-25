@@ -62,6 +62,8 @@ module "cluster" {
   # directement : memes valeurs, mais rend explicite que modules/cluster ne
   # fait que consommer des chaines produites ailleurs, sans dependance
   # fonctionnelle aux modules dns/ecr (voir modules/cluster/variables.tf).
-  domain_name  = module.dns.domain_name
-  ecr_registry = module.ecr.registry
+  domain_name         = module.dns.domain_name
+  ecr_registry        = module.ecr.registry
+  route53_zone_id     = module.dns.zone_id
+  acm_certificate_arn = module.dns.acm_certificate_arn
 }

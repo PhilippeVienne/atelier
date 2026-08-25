@@ -34,6 +34,11 @@ ingress:
   # Mettre `ingress.className: ""` et fournir ses propres
   # `<composant>.ingress.annotations` pour un autre controleur.
   className: "nginx"
+  # Annotations posees sur TOUS les Ingress (contrairement a
+  # <composant>.ingress.annotations, specifiques a un seul) - typiquement
+  # les annotations alb.ingress.kubernetes.io/* quand className: "alb"
+  # (voir docs/admin-guide.md, section "Choix du controleur d'Ingress").
+  annotations: {}
 
 tls:
   enabled: true

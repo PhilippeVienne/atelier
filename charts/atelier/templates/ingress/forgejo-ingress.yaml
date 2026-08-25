@@ -8,6 +8,7 @@ metadata:
     {{- include "atelier.labels" $ | nindent 4 }}
   annotations:
     {{- include "atelier.certManagerAnnotation" $ | nindent 4 }}
+    {{- include "atelier.commonIngressAnnotations" $ | nindent 4 }}
     # Git via HTTPS pur (voir templates/infra/forgejo-deployment.yaml,
     # FORGEJO__server__DISABLE_SSH=true) : pas de configuration
     # supplementaire necessaire, un `git clone https://.../repo.git`
