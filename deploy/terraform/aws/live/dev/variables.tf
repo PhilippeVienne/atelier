@@ -39,6 +39,22 @@ variable "single_nat_gateway" {
   default = true
 }
 
+# Pas de valeur par defaut (voir modules/cluster/variables.tf) : force a
+# fournir son IP admin explicitement via terraform.tfvars.
+variable "admin_access_cidrs" {
+  type = list(string)
+}
+
+variable "cluster_log_retention_days" {
+  type    = number
+  default = 14
+}
+
+variable "flow_log_retention_days" {
+  type    = number
+  default = 14
+}
+
 variable "enable_cluster" {
   type    = bool
   default = true
@@ -114,6 +130,21 @@ variable "db_auto_pause_seconds" {
   default = 300
 }
 
+variable "db_backup_retention_days" {
+  type    = number
+  default = 7
+}
+
+variable "db_deletion_protection" {
+  type    = bool
+  default = true
+}
+
+variable "db_secret_rotation_days" {
+  type    = number
+  default = 90
+}
+
 variable "s3_bucket_prefix" {
   type    = string
   default = "atelier"
@@ -122,6 +153,28 @@ variable "s3_bucket_prefix" {
 variable "irsa_namespace" {
   type    = string
   default = "default"
+}
+
+variable "budget_enabled" {
+  type    = bool
+  default = true
+}
+
+variable "budget_limit_usd" {
+  type    = number
+  default = 50
+}
+
+variable "budget_alert_threshold_percent" {
+  type    = number
+  default = 80
+}
+
+# Pas de valeur par defaut : requis si budget_enabled = true (voir
+# modules/cluster/variables.tf).
+variable "budget_alert_email" {
+  type    = string
+  default = null
 }
 
 # Pas de valeur par defaut pour ces deux-la : nom de domaine et zone

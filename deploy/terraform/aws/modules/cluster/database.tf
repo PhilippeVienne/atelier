@@ -45,12 +45,13 @@ resource "aws_security_group" "atelier_db" {
     cidr_blocks = [var.vpc_cidr]
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # egress = [] explicite (pas juste omettre le bloc) : ingress/egress sont
+  # Optional+Computed sur cette ressource - les omettre entierement laisse
+  # Terraform ignorer silencieusement la regle "allow all" 0.0.0.0/0 deja
+  # en state (aucun diff), reellement rencontre en testant ce changement
+  # (terraform plan sans diff malgre le retrait du bloc). `egress = []`
+  # force la suppression : Aurora n'initie aucun flux sortant.
+  egress = []
 
   tags = {
     "atelier.dev/cluster" = var.cluster_name
@@ -81,6 +82,18 @@ resource "aws_rds_cluster" "atelier" {
     seconds_until_auto_pause = var.db_min_acu == 0 ? var.db_auto_pause_seconds : null
   }
 
+  backup_retention_period      = var.db_backup_retention_days
+  preferred_backup_window      = "02:00-03:00"
+  preferred_maintenance_window = "sun:03:00-sun:04:00"
+
+  # true par defaut (voir var.db_deletion_protection) : empeche un
+  # `terraform destroy`/replace accidentel de supprimer cette base (voir
+  # README.md "Securite"). Le palier "down" (enable_cluster=false,
+  # eks.tf/vpc.tf) ne touche jamais cette ressource, donc n'est pas
+  # affecte. Pour une vraie destruction volontaire : `terraform apply
+  # -var="db_deletion_protection=false"` d'abord, puis `terraform destroy`.
+  deletion_protection = var.db_deletion_protection
+
   # Compte de test : simplifie la destruction (pas de snapshot final a
   # gerer). A retirer (mettre `false` + `final_snapshot_identifier`) des
   # que ce cluster porte de vraies donnees a proteger.
@@ -105,4 +118,19 @@ resource "aws_rds_cluster_instance" "atelier" {
 
 data "aws_secretsmanager_secret_version" "atelier_db_admin" {
   secret_id = aws_rds_cluster.atelier.master_user_secret[0].secret_arn
+}
+
+# Rotation native RDS du secret genere par manage_master_user_password :
+# pas de Lambda a fournir (contrairement a l'ancienne rotation
+# Secrets Manager generique), AWS gere la rotation cote RDS depuis 2022.
+# rotate_immediately = false : la premiere rotation attend
+# db_secret_rotation_days plutot que de forcer un changement de mot de
+# passe des l'apply (eviterait de casser une session helm install en cours).
+resource "aws_secretsmanager_secret_rotation" "atelier_db_admin" {
+  secret_id           = aws_rds_cluster.atelier.master_user_secret[0].secret_arn
+  rotate_immediately  = false
+
+  rotation_rules {
+    automatically_after_days = var.db_secret_rotation_days
+  }
 }

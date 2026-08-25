@@ -14,8 +14,20 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  endpoint_public_access  = true
-  endpoint_private_access = true
+  # Restreint aux CIDR admin (voir var.admin_access_cidrs) plutot que
+  # 0.0.0.0/0 (defaut du module si non precise) : l'API server reste
+  # joignable depuis Internet (necessaire pour `helm install` depuis un
+  # poste hors VPC, voir README.md), mais seulement depuis les IP
+  # explicitement autorisees.
+  endpoint_public_access        = true
+  endpoint_private_access       = true
+  endpoint_public_access_cidrs  = var.admin_access_cidrs
+
+  # Audit de l'API server (voir README.md "Securite") : `audit` est le plus
+  # important (qui a fait quoi), les autres aident au diagnostic. Cree
+  # automatiquement le CloudWatch Log Group associe.
+  enabled_log_types                      = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+  cloudwatch_log_group_retention_in_days = var.cluster_log_retention_days
 
   # Le compte/role Terraform obtient l'acces admin via un Access Entry EKS
   # natif (remplace l'ancienne aws-auth ConfigMap) - necessaire pour pouvoir
@@ -65,6 +77,10 @@ module "eks" {
           ebs = {
             volume_size = var.node_disk_size_gb
             volume_type = "gp3"
+            # Cle geree AWS (aws/ebs) par defaut, pas de CMK dediee : voir
+            # README.md "Securite" pour le compromis (pas d'exigence
+            # conformite type SOC2 sur ce compte de test actuellement).
+            encrypted = true
           }
         }
       }

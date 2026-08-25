@@ -40,6 +40,25 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+# --- Securite reseau/audit --------------------------------------------
+
+variable "admin_access_cidrs" {
+  description = "CIDR autorises a atteindre l'API server EKS publique (voir eks.tf, public_access_cidrs). Aucune valeur par defaut volontairement : force a fournir explicitement l'IP admin plutot que d'heriter du 0.0.0.0/0 par defaut du module EKS. Trouver la sienne avec `curl -s https://checkip.amazonaws.com`."
+  type        = list(string)
+}
+
+variable "cluster_log_retention_days" {
+  description = "Retention (jours) du CloudWatch Log Group des logs d'audit du control plane EKS (voir eks.tf, cluster_enabled_log_types)."
+  type        = number
+  default     = 14
+}
+
+variable "flow_log_retention_days" {
+  description = "Retention (jours) du CloudWatch Log Group des VPC Flow Logs (voir vpc.tf, trafic REJECT uniquement)."
+  type        = number
+  default     = 14
+}
+
 # --- Mode up/down ---------------------------------------------------------
 #
 # Les postes couteux (control plane EKS ~$0.10/h facture meme a 0 noeud,
@@ -169,12 +188,67 @@ variable "db_auto_pause_seconds" {
   default     = 300
 }
 
+variable "db_backup_retention_days" {
+  description = "Retention (jours) des sauvegardes automatiques Aurora. Independant du mode up/down (var.enable_cluster) : ce cluster n'est jamais detruit/recree par les paliers up/down/pause."
+  type        = number
+  default     = 7
+}
+
+variable "db_deletion_protection" {
+  description = "true (defaut) : empeche un `terraform destroy`/replace accidentel de supprimer le cluster Aurora. A repasser a `false` explicitement (`-var`) avant une destruction volontaire, voir database.tf."
+  type        = bool
+  default     = true
+}
+
+variable "db_secret_rotation_days" {
+  description = "Frequence (jours) de rotation automatique native RDS du secret admin Aurora (voir database.tf, aws_secretsmanager_secret_rotation)."
+  type        = number
+  default     = 90
+}
+
 # --- S3 -----------------------------------------------------------------
 
 variable "s3_bucket_prefix" {
   description = "Prefixe applique aux 3 buckets S3 attendus par le chart Helm (s3Storage.buckets.*) pour garantir un nommage global unique. Les noms finaux sont <prefix>-sessions, <prefix>-snapshots, <prefix>-forgejo-lfs-attachments."
   type        = string
   default     = "atelier"
+}
+
+# --- Budget (garde-fou cout, complementaire a l'auto-pause) --------------
+#
+# Scope par tag (atelier.dev/cluster = var.cluster_name) plutot que sur le
+# cout total du compte : un budget par cluster/environnement, pertinent
+# si un jour live/prod/ partage le meme compte AWS que live/dev/. Alerte
+# seulement (aws-sdk:budgets, pas d'action automatique) : complementaire
+# au filet reactif d'auto-pause.tf, pas un remplacement.
+
+variable "budget_enabled" {
+  description = "Active un AWS Budget scope sur les ressources taguees atelier.dev/cluster=var.cluster_name, avec alerte email au-dela d'un seuil."
+  type        = bool
+  default     = true
+}
+
+variable "budget_limit_usd" {
+  description = "Plafond mensuel (USD) du budget, sert de reference pour le seuil d'alerte (voir budget_alert_threshold_percent)."
+  type        = number
+  default     = 50
+}
+
+variable "budget_alert_threshold_percent" {
+  description = "Pourcentage du budget declenchant l'alerte email (sur le cout reel, pas previsionnel)."
+  type        = number
+  default     = 80
+}
+
+variable "budget_alert_email" {
+  description = "Adresse email notifiee au depassement du seuil. Requis si budget_enabled = true."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.budget_enabled || var.budget_alert_email != null
+    error_message = "budget_alert_email est requis quand budget_enabled = true."
+  }
 }
 
 # --- IRSA -----------------------------------------------------------------

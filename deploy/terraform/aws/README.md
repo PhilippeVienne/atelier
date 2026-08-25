@@ -359,6 +359,49 @@ fourchette ci-dessus qui suppose un usage test intermittent). Ce poste
 est **independant des 3 paliers** ci-dessus (voir section "Base de
 donnees").
 
+## Securite
+
+Audit realise le 2026-08-25 (Well-Architected, manuellement — le skill
+`aws-security` de l'Agent Toolkit AWS n'etait pas encore charge dans la
+session). Corrections appliquees :
+
+- **API server EKS** : `public_access_cidrs` restreint a
+  `var.admin_access_cidrs` (voir `terraform.tfvars`) au lieu du
+  `0.0.0.0/0` par defaut du module. A mettre a jour si l'IP admin change
+  (box residentielle) : `curl -s https://checkip.amazonaws.com`.
+- **Volumes EBS des noeuds** : chiffres (`encrypted = true`, cle geree AWS
+  `aws/ebs`) — voir `modules/cluster/eks.tf`.
+- **Audit du control plane EKS** : `cluster_enabled_log_types` (api,
+  audit, authenticator, controllerManager, scheduler) vers CloudWatch
+  Logs, retention `var.cluster_log_retention_days` (14 jours par defaut).
+- **VPC Flow Logs** : trafic `REJECT` uniquement (detection de scans/regles
+  mal configurees sans payer le volume du trafic normal), retention
+  `var.flow_log_retention_days`.
+- **Security group Aurora** : plus d'egress `0.0.0.0/0` (aucune regle
+  egress = tout bloque en sortie, Aurora n'a besoin d'aucun flux sortant).
+- **Sauvegardes Aurora** : `backup_retention_period` porte a
+  `var.db_backup_retention_days` (7 jours par defaut, contre 1 jour par
+  defaut AWS), fenetres de maintenance/backup explicites.
+- **Suppression accidentelle Aurora** : `deletion_protection` actif par
+  defaut (`var.db_deletion_protection`). Pour une destruction volontaire :
+  `terraform apply -var="db_deletion_protection=false"` avant
+  `terraform destroy`.
+- **Rotation du secret Aurora** : rotation native RDS (pas de Lambda a
+  fournir) tous les `var.db_secret_rotation_days` (90 jours par defaut).
+- **Alerte de cout** (`modules/cluster/budgets.tf`) : `aws_budgets_budget`
+  scope par tag `atelier.dev/cluster`, alerte email
+  (`var.budget_alert_email`) au-dela de `var.budget_alert_threshold_percent`
+  (80% par defaut) de `var.budget_limit_usd` (50$ par defaut). Complementaire
+  au filet reactif d'auto-pause (voir "Filet de securite" ci-dessus) —
+  celui-ci alerte, l'auto-pause agit.
+
+**Decision annulee : cle KMS dediee (CMK)** pour S3/Aurora/EBS a la place
+des cles gerees AWS par defaut (`aws/s3`, `aws/rds`, `aws/ebs`). Ecarte
+car cout operationnel (gestion de la politique de cle, rotation, IAM
+supplementaire) sans benefice fonctionnel pour un compte de test sans
+exigence de conformite (SOC2, HDS, etc.). A reconsiderer si une telle
+exigence apparait.
+
 ## Destruction
 
 ```bash

@@ -24,6 +24,10 @@ module "cluster" {
   availability_zones = var.availability_zones
   single_nat_gateway = var.single_nat_gateway
 
+  admin_access_cidrs         = var.admin_access_cidrs
+  cluster_log_retention_days = var.cluster_log_retention_days
+  flow_log_retention_days    = var.flow_log_retention_days
+
   enable_cluster = var.enable_cluster
 
   node_instance_type = var.node_instance_type
@@ -36,15 +40,23 @@ module "cluster" {
   auto_pause_schedule = var.auto_pause_schedule
   auto_pause_timezone = var.auto_pause_timezone
 
-  db_engine_version     = var.db_engine_version
-  db_master_database    = var.db_master_database
-  db_master_username    = var.db_master_username
-  db_min_acu            = var.db_min_acu
-  db_max_acu            = var.db_max_acu
-  db_auto_pause_seconds = var.db_auto_pause_seconds
+  db_engine_version        = var.db_engine_version
+  db_master_database       = var.db_master_database
+  db_master_username       = var.db_master_username
+  db_min_acu               = var.db_min_acu
+  db_max_acu               = var.db_max_acu
+  db_auto_pause_seconds    = var.db_auto_pause_seconds
+  db_backup_retention_days = var.db_backup_retention_days
+  db_deletion_protection   = var.db_deletion_protection
+  db_secret_rotation_days  = var.db_secret_rotation_days
 
   s3_bucket_prefix = var.s3_bucket_prefix
   irsa_namespace   = var.irsa_namespace
+
+  budget_enabled                 = var.budget_enabled
+  budget_limit_usd               = var.budget_limit_usd
+  budget_alert_threshold_percent = var.budget_alert_threshold_percent
+  budget_alert_email             = var.budget_alert_email
 
   # module.dns.domain_name / module.ecr.registry plutot que des var.*
   # directement : memes valeurs, mais rend explicite que modules/cluster ne

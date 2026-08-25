@@ -30,6 +30,18 @@ module "vpc" {
     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
   }
 
+  # REJECT seulement (pas ALL) : detecte les tentatives bloquees (scans,
+  # regles de securite mal configurees) sans payer/stocker le volume du
+  # trafic normal (mirroring d'images, S3, Aurora) qu'ACCEPT loggerait en
+  # continu. Voir README.md "Securite".
+  enable_flow_log                      = true
+  flow_log_traffic_type                = "REJECT"
+  flow_log_destination_type            = "cloud-watch-logs"
+  create_flow_log_cloudwatch_log_group = true
+  create_flow_log_cloudwatch_iam_role  = true
+  flow_log_max_aggregation_interval    = 600
+  flow_log_cloudwatch_log_group_retention_in_days = var.flow_log_retention_days
+
   tags = {
     "atelier.dev/cluster" = var.cluster_name
   }

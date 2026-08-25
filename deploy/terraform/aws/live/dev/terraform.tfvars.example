@@ -16,6 +16,18 @@ node_desired_size  = 2
 node_min_size      = 1
 node_max_size      = 4
 
+# IP(s) autorisees a atteindre l'API server EKS publique - trouver la
+# sienne avec `curl -s https://checkip.amazonaws.com`. Aucune valeur par
+# defaut dans le code (voir modules/cluster/variables.tf) : sans ceci,
+# terraform plan/apply echoue plutot que d'heriter silencieusement du
+# 0.0.0.0/0 par defaut du module EKS.
+admin_access_cidrs = ["203.0.113.42/32"]
+
+# Alerte budget mensuelle (garde-fou cout complementaire a l'auto-pause,
+# voir modules/cluster/budgets.tf) - requis si budget_enabled = true
+# (defaut).
+budget_alert_email = "toi@exemple.com"
+
 # Domaine reel + zone Cloudflare PARENTE (pas de valeur par defaut dans le
 # code, volontairement - voir modules/dns/variables.tf). Trouver l'ID de
 # zone via `curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
