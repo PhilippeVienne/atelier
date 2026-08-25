@@ -473,3 +473,14 @@ initJobs:
   # automatique des Jobs completes.
   backoffLimit: 3
   ttlSecondsAfterFinished: 600
+
+# ---------------------------------------------------------------------------
+# Observabilite
+# ---------------------------------------------------------------------------
+observability:
+  grafanaDashboards:
+    # Deploie un ConfigMap avec label `grafana_dashboard: "1"` portant les
+    # dashboards JSON pre-configures pour api-server, controller et net-proxy.
+    # Active seulement si Grafana est configure pour lire les ConfigMaps du
+    # namespace (sidecar dashboard-provider ou Grafana Operator).
+    enabled: false

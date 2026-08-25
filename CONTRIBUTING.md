@@ -23,6 +23,9 @@ Ce document détaille les standards de contribution, l'environnement de dévelop
 - **Node.js** 22+ & **npm**
 - **Docker** ou **Kind** (Kubernetes in Docker)
 - **OpenSSL** & utilitaires Linux de base (`ip`, `iptables`, `mke2fs` pour les tests Firecracker)
+- **protobuf-compiler** (`protoc`) : requis par `crates/kvm-device-plugin` (génération gRPC depuis le proto kubelet Device Plugin v1beta1).
+  - Linux : `sudo apt-get install -y protobuf-compiler`
+  - macOS : `brew install protobuf`
 
 ### Configuration du Workspace Rust
 ```bash

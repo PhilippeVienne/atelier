@@ -106,6 +106,12 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         // `.layer()` ci-dessous (s'applique a toutes les routes/services
         // ajoutes avant lui).
         .nest_service("/v1/mcp", mcp_service)
+        // Transport WebSocket (tache 4.1.3) : complementaire du Streamable
+        // HTTP, pour les clients MCP qui preferent `ws://` a `http://`.
+        // L'identite JWT est extraite avant l'upgrade WebSocket (par le meme
+        // middleware `require_auth`) et ancree dans le `WorkshopMcpServer`
+        // via `with_user` — voir `crate::mcp_server::mcp_ws_handler`.
+        .route("/v1/mcp/ws", get(crate::mcp_server::mcp_ws_handler))
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(auth),
             require_auth,

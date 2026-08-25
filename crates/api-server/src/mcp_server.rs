@@ -37,19 +37,28 @@ use crate::routes::{
 use atelier_common::{
     DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopResources, WorkshopSpec,
 };
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, State};
+use axum::response::Response;
+use futures_util::{SinkExt, StreamExt};
 use http::request::Parts;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::tool::Extension;
+use rmcp::handler::server::tool::Extension as McpExtension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
 
 #[derive(Clone)]
 pub struct WorkshopMcpServer {
     tool_router: ToolRouter<Self>,
     state: AppState,
+    /// Identite pre-fixee pour le transport WebSocket (`async_rw`). Nul pour
+    /// le transport Streamable HTTP, ou l'identite est lue depuis les
+    /// `http::request::Parts` propagees par `StreamableHttpService` a chaque
+    /// appel d'outil.
+    pinned_user: Option<AuthenticatedUser>,
 }
 
 impl WorkshopMcpServer {
@@ -57,16 +66,33 @@ impl WorkshopMcpServer {
         Self {
             tool_router: Self::tool_router(),
             state,
+            pinned_user: None,
+        }
+    }
+
+    /// Constructeur pour le transport WebSocket : pre-fixe l'identite
+    /// authentifiee (extraite avant l'upgrade WebSocket) plutot que de la
+    /// relire depuis des `Parts` HTTP inexistantes dans un flux `async_rw`.
+    pub fn with_user(state: AppState, user: AuthenticatedUser) -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+            state,
+            pinned_user: Some(user),
         }
     }
 }
 
 /// Relit le sujet JWT authentifie depuis les `http::request::Parts`
-/// propagees par `StreamableHttpService` — jamais absent en pratique
-/// puisque toutes les routes `/v1/mcp*` sont derriere
-/// `crate::auth::require_auth`, mais reste un `Result` pour ne jamais
-/// paniquer si ce module etait un jour monte hors de ce middleware.
-fn authenticated_user(parts: &Parts) -> Result<AuthenticatedUser, ErrorData> {
+/// propagees par `StreamableHttpService`, ou depuis l'identite pre-fixee
+/// dans le serveur pour le transport WebSocket. Reste un `Result` pour ne
+/// jamais paniquer si ce module etait un jour monte hors de ce middleware.
+fn authenticated_user(
+    pinned: Option<&AuthenticatedUser>,
+    parts: &Parts,
+) -> Result<AuthenticatedUser, ErrorData> {
+    if let Some(user) = pinned {
+        return Ok(user.clone());
+    }
     parts
         .extensions
         .get::<AuthenticatedUser>()
@@ -196,10 +222,10 @@ impl WorkshopMcpServer {
     )]
     async fn create_workshop(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(params): Parameters<CreateWorkshopParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         ensure_state_creating_dependencies_reachable(&self.state).await?;
         validate_name(&params.name).map_err(api_error_to_mcp)?;
 
@@ -240,9 +266,9 @@ impl WorkshopMcpServer {
     #[tool(description = "Liste les Workshops appartenant a l'utilisateur authentifie.")]
     async fn list_workshops(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         let all = workshops_api(&self.state)
             .list(&Default::default())
             .await
@@ -261,10 +287,10 @@ impl WorkshopMcpServer {
     )]
     async fn get_workshop_status(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(WorkshopNameParams { name }): Parameters<WorkshopNameParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         let workshop = workshops_api(&self.state)
             .get(&name)
             .await
@@ -279,10 +305,10 @@ impl WorkshopMcpServer {
     )]
     async fn suspend_workshop(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(WorkshopNameParams { name }): Parameters<WorkshopNameParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         let updated =
             patch_desired_state(&self.state, &user, &name, WorkshopDesiredState::Suspended)
                 .await
@@ -296,10 +322,10 @@ impl WorkshopMcpServer {
     )]
     async fn resume_workshop(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(WorkshopNameParams { name }): Parameters<WorkshopNameParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         let updated = patch_desired_state(&self.state, &user, &name, WorkshopDesiredState::Running)
             .await
             .map_err(api_error_to_mcp)?;
@@ -312,10 +338,10 @@ impl WorkshopMcpServer {
     )]
     async fn delete_workshop(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(WorkshopNameParams { name }): Parameters<WorkshopNameParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         let workshop = workshops_api(&self.state)
             .get(&name)
             .await
@@ -333,10 +359,10 @@ impl WorkshopMcpServer {
     )]
     async fn exec_in_workshop(
         &self,
-        Extension(parts): Extension<Parts>,
+        McpExtension(parts): McpExtension<Parts>,
         Parameters(ExecInWorkshopParams { name, command }): Parameters<ExecInWorkshopParams>,
     ) -> Result<String, ErrorData> {
-        let user = authenticated_user(&parts)?;
+        let user = authenticated_user(self.pinned_user.as_ref(), &parts)?;
         // Meme garantie que create_workshop (tache 4.1.2) : exec_in_workshop
         // est elle aussi listee comme "creatrice d'etat" par
         // docs/specs/04-external-mcp-server.md (elle demarre un processus
@@ -418,4 +444,103 @@ pub fn streamable_http_service(
         Default::default(),
         http_config,
     )
+}
+
+/// Handler WebSocket pour `/v1/mcp/ws` (tache 4.1.3 — complement du
+/// transport Streamable HTTP).
+///
+/// La difficulte du transport WebSocket avec `rmcp` est que
+/// `StreamableHttpService` propage les `http::request::Parts` jusqu'aux
+/// handlers d'outils via le mecanisme `Extension<Parts>` de la crate, ce
+/// qui n'est pas disponible dans le transport `async_rw` (flux brut sans
+/// contexte HTTP). Solution : extraire l'identite authentifiee **avant**
+/// l'upgrade WebSocket (le middleware `require_auth` l'a deja positionnee
+/// dans les extensions Axum de la requete d'upgrade), et la stocker dans
+/// `WorkshopMcpServer::with_user` pour que les outils y accedent
+/// directement plutot que via `Parts`.
+///
+/// Protocole de framing : chaque frame WebSocket texte contient un message
+/// JSON-RPC 2.0 complet. `rmcp::ServiceExt::serve` attend du NDJSON
+/// (JSON-RPC termine par `\n` sur un flux continu) — la fonction
+/// [`bridge_ws_ndjson`] assure la conversion bidirectionnelle.
+pub async fn mcp_ws_handler(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| async move {
+        let server = WorkshopMcpServer::with_user(state, user);
+        // Cree une paire de canaux duplex en memoire :
+        //   - server_side : passe a rmcp (AsyncRead + AsyncWrite), qui y ecrit
+        //     ses reponses JSON-RPC et y lit les requetes.
+        //   - client_side : lie a la WebSocket par le bridge ci-dessous.
+        let (server_side, client_side) = tokio::io::duplex(65_536);
+        tokio::spawn(bridge_ws_ndjson(socket, client_side));
+        match server.serve(server_side).await {
+            Ok(running) => {
+                if let Err(err) = running.waiting().await {
+                    tracing::debug!(%err, "session MCP WebSocket terminee");
+                }
+            }
+            Err(err) => tracing::warn!(%err, "echec d'initialisation d'une session MCP WebSocket"),
+        }
+    })
+}
+
+/// Relaie les messages JSON-RPC entre une WebSocket (framing par message)
+/// et un flux NDJSON (framing par ligne `\n`) consomme par rmcp.
+///
+/// - WS → duplex : chaque frame texte recue → `message + "\n"` ecrit dans
+///   la moitie ecriture du canal.
+/// - duplex → WS : chaque ligne lue depuis la moitie lecture du canal →
+///   frame texte WebSocket (sans le `\n`).
+async fn bridge_ws_ndjson(socket: WebSocket, duplex: tokio::io::DuplexStream) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let (ws_sink, mut ws_stream) = socket.split();
+    let (duplex_reader, duplex_writer) = tokio::io::split(duplex);
+    let ws_sink = std::sync::Arc::new(tokio::sync::Mutex::new(ws_sink));
+
+    // WS → duplex : chaque frame texte → ligne NDJSON
+    let ws_to_ndjson = {
+        let mut duplex_writer = duplex_writer;
+        async move {
+            while let Some(msg) = ws_stream.next().await {
+                match msg {
+                    Ok(WsMessage::Text(text)) => {
+                        if duplex_writer.write_all(text.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        if duplex_writer.write_all(b"\n").await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(WsMessage::Close(_)) | Err(_) => break,
+                    _ => {} // Ping/Pong/Binary ignores
+                }
+            }
+        }
+    };
+
+    // duplex → WS : chaque ligne NDJSON → frame texte
+    let ndjson_to_ws = {
+        let ws_sink = std::sync::Arc::clone(&ws_sink);
+        async move {
+            let mut lines = BufReader::new(duplex_reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.is_empty() {
+                    continue;
+                }
+                let mut sink = ws_sink.lock().await;
+                if sink.send(WsMessage::Text(line.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = ws_to_ndjson => {}
+        _ = ndjson_to_ws => {}
+    }
 }
