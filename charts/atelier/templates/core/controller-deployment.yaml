@@ -69,6 +69,12 @@ spec:
                   name: {{ .Values.openbao.rootTokenSecretName }}
                   key: token
             {{- end }}
+            {{- if .Values.registry.enabled }}
+            - name: ATELIER_REGISTRY_ADDR
+              value: {{ if .Values.registry.external.enabled }}{{ .Values.registry.external.addr | quote }}{{ else }}{{ printf "%s:%v" (include "atelier.componentName" (dict "root" $ "component" "registry")) .Values.registry.service.port | quote }}{{ end }}
+            - name: ATELIER_REGISTRY_INSECURE
+              value: {{ .Values.registry.insecure | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.controller.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

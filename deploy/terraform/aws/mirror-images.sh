@@ -66,6 +66,7 @@ mirror "openbao/openbao:2.0.0" "mirror/openbao:2.0.0"
 mirror "ghcr.io/berriai/litellm:main-latest" "mirror/litellm:main-latest"
 mirror "redis:7.2-alpine" "mirror/redis:7.2-alpine"
 mirror "minio/mc:latest" "mirror/minio-mc:latest"
+mirror "registry:2" "mirror/registry:2"
 
 echo "--- Images Atelier gerees par le chart (tag inchange: latest) ---"
 for component in controller api-server dashboard pm-engine kvm-device-plugin; do

@@ -169,6 +169,9 @@ output "helm_values_snippet" {
     redis:
       image:
         repository: "${var.ecr_registry}/mirror/redis"
+    registry:
+      image:
+        repository: "${var.ecr_registry}/mirror/registry"
     initJobs:
       dbInit:
         # Sans ce flag, db-init-job ne tourne JAMAIS quand

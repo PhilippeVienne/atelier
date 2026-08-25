@@ -346,6 +346,42 @@ forgejo:
     enabled: false
     url: ""
 
+# Registre OCI local, cible de `ATELIER_REGISTRY_ADDR` (controller +
+# image-builder + net-proxy, voir crates/controller/src/reconcile.rs) : le
+# controller y pousse l'image construite par le microVM builder pour chaque
+# Workshop (cache d'image, "<name>-image-cache" PVC distinct) avant de la
+# referencer dans le pod du Workshop. Sans ce composant, image-builder
+# echoue systematiquement ("connection refused" sur localhost:5000, jamais
+# teste avant faute de cluster reel - `deploy/dev/` a son propre registre
+# local hors de ce chart).
+registry:
+  enabled: true
+  image:
+    repository: registry
+    tag: "2"
+    pullPolicy: IfNotPresent
+  service:
+    port: 5000
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # Pousse vers un registre externe deja gere (ex: ECR) plutot que le
+  # Deployment ci-dessus - non recommande pour l'instant (jetons ECR
+  # expirant, non geres par image-builder/crane), voir README.md.
+  external:
+    enabled: false
+    addr: ""
+  # HTTP simple (pas de certificat) : registre interne au cluster,
+  # jamais expose hors du réseau pod-a-pod.
+  insecure: true
+
 openbao:
   enabled: true
   image:

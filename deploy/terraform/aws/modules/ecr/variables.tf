@@ -44,6 +44,7 @@ variable "repository_names" {
     "mirror/redis",
     "mirror/rustfs",
     "mirror/minio-mc",
+    "mirror/registry",
   ]
 }
 
