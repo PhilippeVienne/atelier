@@ -52,6 +52,9 @@ jobs:
           - name: atelier-dashboard
             context: dashboard
             dockerfile: dashboard/Dockerfile
+          - name: atelier-pm-engine
+            context: services/pm-engine
+            dockerfile: services/pm-engine/Dockerfile
 
     steps:
       - name: Checkout repository
