@@ -416,6 +416,15 @@ s3Storage:
 initJobs:
   dbInit:
     enabled: true
+    # Par defaut, ce Job ne tourne JAMAIS contre postgresql.external.enabled
+    # (garde-fou : ne pas presumer le droit de CREATE DATABASE sur une base
+    # geree en dehors de ce chart, potentiellement partagee/en production).
+    # Mettre a `true` uniquement quand cette base externe est ELLE-MEME
+    # provisionnee et possedee par la meme automatisation que ce chart (ex:
+    # Aurora cree par deploy/terraform/aws/modules/cluster/database.tf,
+    # jamais partage avec un autre usage) - voir helm_values_snippet dans
+    # ce module, qui positionne ce flag a true pour exactement cette raison.
+    runAgainstExternal: false
     image:
       repository: postgres
       tag: "16-alpine"

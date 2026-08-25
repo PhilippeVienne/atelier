@@ -1,4 +1,4 @@
-{{- if and .Values.postgresql.enabled .Values.initJobs.dbInit.enabled (not .Values.postgresql.external.enabled) }}
+{{- if and .Values.postgresql.enabled .Values.initJobs.dbInit.enabled (or (not .Values.postgresql.external.enabled) .Values.initJobs.dbInit.runAgainstExternal) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
