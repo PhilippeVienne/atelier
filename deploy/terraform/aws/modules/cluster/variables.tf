@@ -17,9 +17,9 @@ variable "cluster_name" {
 }
 
 variable "kubernetes_version" {
-  description = "Version Kubernetes du cluster EKS (\"<major>.<minor>\"). Choisir une version encore en EXTENDED_SUPPORT (voir `aws eks describe-cluster-versions`) coute significativement plus cher ($0.60/h en plus du control plane standard, ~$438/mois) - 1.33 y est passe le 2026-07-29, 1.34 reste en support standard jusqu'a 2026-12."
+  description = "Version Kubernetes du cluster EKS (\"<major>.<minor>\"). Choisir une version encore en EXTENDED_SUPPORT (voir `aws eks describe-cluster-versions`) coute significativement plus cher ($0.60/h en plus du control plane standard, ~$438/mois) - 1.33 y est passe le 2026-07-29, 1.34 le 2026-12-02. EKS n'autorise qu'un saut de version mineure par apply (1.34->1.35->1.36, jamais 1.34->1.36 directement)."
   type        = string
-  default     = "1.34"
+  default     = "1.36"
 }
 
 variable "vpc_cidr" {
