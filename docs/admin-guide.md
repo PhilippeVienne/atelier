@@ -280,10 +280,32 @@ memoire).
 ### 7.2. Mode production (`openbao.devMode: false`)
 
 OpenBao demarre **scelle** avec un stockage Raft persistant
-(`templates/infra/openbao-statefulset.yaml`). Deux operations
-**deliberement manuelles**, hors du cycle de vie Helm (elles ne doivent
-JAMAIS etre automatisees dans un hook — un `helm upgrade` ne doit pas
-pouvoir re-initialiser silencieusement un coffre de secrets existant) :
+(`templates/infra/openbao-statefulset.yaml`). `bao operator init` reste
+**deliberement manuel**, hors du cycle de vie Helm (ne doit JAMAIS etre
+automatise dans un hook — un `helm upgrade` ne doit pas pouvoir
+re-initialiser silencieusement un coffre de secrets existant), mais le
+**descellement** peut etre automatique via KMS (`openbao.seal.type: awskms`,
+voir `deploy/terraform/aws/modules/cluster/openbao-unseal.tf`) - fortement
+recommande sur AWS : sans lui, chaque redemarrage du pod (upgrade EKS,
+scale-down/up du node group, reschedule) exige de redescelle manuellement,
+constate a plusieurs reprises en pratique comme source de panne (controller
+et api-server bloques tant qu'OpenBao reste scelle).
+
+**Avec `openbao.seal.type: awskms` (recommande sur AWS)** :
+
+```sh
+# Une seule fois, juste apres le premier demarrage du pod OpenBao :
+kubectl exec -it <pod-openbao> -n <namespace> -- bao operator init \
+  -recovery-shares=5 -recovery-threshold=3
+# Descelle IMMEDIATEMENT (Sealed: false des la fin de la commande, verifier
+# avec `bao status`) - pas d'etape "bao operator unseal" a faire. Conserver
+# les 5 "Recovery Key" et le "Initial Root Token" dans un coffre externe
+# (jamais dans ce depot Git, jamais dans un ConfigMap) : les recovery keys
+# ne servent qu'a des operations d'urgence (rotation de cle, generation
+# d'un nouveau root token), jamais au demarrage normal.
+```
+
+**Sans auto-unseal (`openbao.seal.type: shamir`, defaut)** :
 
 ```sh
 # Une seule fois, juste apres le premier demarrage du pod OpenBao :
@@ -297,6 +319,18 @@ kubectl exec -it <pod-openbao> -n <namespace> -- bao operator unseal <cle-1>
 kubectl exec -it <pod-openbao> -n <namespace> -- bao operator unseal <cle-2>
 kubectl exec -it <pod-openbao> -n <namespace> -- bao operator unseal <cle-3>
 ```
+
+**Piege IRSA vs Pod Identity** (`openbao.seal.awskms.roleArn`) : le SDK AWS
+embarque dans l'image `openbao/openbao:2.0.0` rejette l'endpoint EKS Pod
+Identity (`169.254.170.23`, "only loopback hosts are allowed" - constate
+empiriquement) - contrairement aux autres composants AWS de ce projet
+(aws-ebs-csi-driver, aws-load-balancer-controller), OpenBao a besoin
+d'IRSA (federation OIDC classique), pas de Pod Identity. Apres tout
+changement d'annotation `eks.amazonaws.com/role-arn` sur sa
+ServiceAccount, le pod OpenBao doit etre redemarre manuellement
+(`kubectl delete pod`) : le webhook mutant qui injecte
+`AWS_ROLE_ARN`/`AWS_WEB_IDENTITY_TOKEN_FILE` n'agit qu'a la creation du
+pod, jamais sur un pod deja demarre.
 
 Une fois descelle, creer le Secret Kubernetes attendu par
 `openbao.rootTokenSecretName` (cle `token`) avec un jeton ayant les droits

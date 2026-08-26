@@ -13,11 +13,11 @@ module "vpc" {
   private_subnets = [for i, az in var.availability_zones : cidrsubnet(var.vpc_cidr, 4, i)]
   public_subnets  = [for i, az in var.availability_zones : cidrsubnet(var.vpc_cidr, 4, i + length(var.availability_zones))]
 
-  # Coupee en mode "down" (var.enable_cluster = false) : sans noeud EKS a
-  # faire sortir vers Internet, la NAT Gateway ($0.048/h eu-west-3, facturee
-  # meme inactive) ne sert plus a rien - voir variables.tf/README.md.
-  enable_nat_gateway   = var.enable_cluster
-  single_nat_gateway   = var.single_nat_gateway
+  # Geree hors module (voir nat-gateway.tf) : NAT Gateway en mode "regional"
+  # (voir README.md "Reseau") plutot que le NAT zonal que ce module sait
+  # creer nativement (pas encore expose par terraform-aws-modules/vpc a la
+  # version utilisee ici).
+  enable_nat_gateway   = false
   enable_dns_hostnames = true
   enable_dns_support   = true
 
@@ -45,4 +45,12 @@ module "vpc" {
   tags = {
     "atelier.dev/cluster" = var.cluster_name
   }
+}
+
+# Sous-reseau prive de var.node_availability_zone (voir variables.tf) : le
+# node group (eks.tf) y est exclusivement lance, contrairement au control
+# plane/DB subnet group qui, eux, couvrent var.availability_zones en
+# entier (contrainte AWS, pas un choix).
+locals {
+  node_subnet_ids = [module.vpc.private_subnets[index(var.availability_zones, var.node_availability_zone)]]
 }

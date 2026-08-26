@@ -81,6 +81,12 @@ module "eks" {
       instance_types = [var.node_instance_type]
       ami_type       = "AL2023_x86_64_STANDARD"
 
+      # Une seule AZ (voir var.node_availability_zone/vpc.tf local.node_subnet_ids),
+      # different de var.subnet_ids par defaut du module (toutes les AZ du
+      # cluster) : affinite des volumes EBS des composants avec etat, voir
+      # variables.tf pour le detail du compromis.
+      subnet_ids = local.node_subnet_ids
+
       min_size     = var.node_min_size
       max_size     = var.node_max_size
       desired_size = var.node_desired_size

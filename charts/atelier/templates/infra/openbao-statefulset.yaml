@@ -26,6 +26,16 @@ data:
     api_addr     = "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:{{ .Values.openbao.service.port }}"
     cluster_addr = "http://{{ include "atelier.componentName" (dict "root" $ "component" "openbao") }}:8201"
     disable_mlock = true
+    {{- if eq .Values.openbao.seal.type "awskms" }}
+    # Auto-unseal (voir values.yaml, openbao.seal) : le role IAM associe au
+    # ServiceAccount de ce pod via EKS Pod Identity (pas d'access
+    # key/secret ici) doit avoir kms:Encrypt/Decrypt/DescribeKey sur cette
+    # cle - voir deploy/terraform/aws/modules/cluster/openbao-unseal.tf.
+    seal "awskms" {
+      region     = "{{ .Values.openbao.seal.awskms.region }}"
+      kms_key_id = "{{ .Values.openbao.seal.awskms.kmsKeyId }}"
+    }
+    {{- end }}
 ---
 {{- end }}
 apiVersion: apps/v1
@@ -145,6 +155,13 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "atelier.labels" $ | nindent 4 }}
+  {{- with .Values.openbao.seal.awskms.roleArn }}
+  annotations:
+    # IRSA (pas Pod Identity) : voir deploy/terraform/aws/modules/cluster/openbao-unseal.tf
+    # pour la raison (SDK AWS embarque dans l'image openbao/openbao trop
+    # ancien pour l'endpoint EKS Pod Identity).
+    eks.amazonaws.com/role-arn: {{ . | quote }}
+  {{- end }}
 ---
 # OpenBao a besoin de pouvoir verifier les tokens de ServiceAccount des
 # clients (Workshops) via l'API `TokenReview` pour sa methode d'auth

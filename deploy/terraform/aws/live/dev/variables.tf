@@ -34,10 +34,11 @@ variable "availability_zones" {
   default = ["eu-west-3a", "eu-west-3b", "eu-west-3c"]
 }
 
-variable "single_nat_gateway" {
-  type    = bool
-  default = true
+variable "node_availability_zone" {
+  type    = string
+  default = "eu-west-3a"
 }
+
 
 # Pas de valeur par defaut (voir modules/cluster/variables.tf) : force a
 # fournir son IP admin explicitement via terraform.tfvars.

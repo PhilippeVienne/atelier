@@ -29,15 +29,28 @@ variable "vpc_cidr" {
 }
 
 variable "availability_zones" {
-  description = "Zones de disponibilite utilisees pour les sous-reseaux publics/prives (2 minimum recommande pour la haute disponibilite du control plane EKS)."
+  description = "Zones de disponibilite utilisees pour les sous-reseaux publics/prives - 2 minimum OBLIGATOIRE (pas juste recommande) : EKS refuse un control plane dont les subnets ne couvrent qu'une seule AZ (\"Subnets specified must be in at least two different AZs\"), meme contrainte pour le DB subnet group Aurora (database.tf). Pour restreindre les NOEUDS a une seule AZ (probleme differe : affinite des volumes EBS), voir var.node_availability_zone plutot que de reduire cette liste a un seul element."
   type        = list(string)
   default     = ["eu-west-3a", "eu-west-3b", "eu-west-3c"]
+
+  validation {
+    condition     = length(var.availability_zones) >= 2
+    error_message = "availability_zones doit contenir au moins 2 AZ (contrainte EKS/RDS, voir description)."
+  }
 }
 
-variable "single_nat_gateway" {
-  description = "true : une seule NAT Gateway partagee (moins couteux, single point of failure reseau sortant). false : une NAT Gateway par AZ (haute disponibilite, cout multiplie)."
-  type        = bool
-  default     = true
+# --- Node group : AZ unique -------------------------------------------
+#
+# Contrairement au VPC/control plane/DB subnet group (var.availability_zones,
+# 2 AZ minimum imposees par AWS), le node group EC2 n'a pas cette
+# contrainte : le pinner sur une seule AZ evite la classe de bug "volume
+# EBS zonal, aucun noeud dans son AZ apres un remplacement de node group"
+# (upgrade EKS, scale-down/up post-pause) constatee empiriquement a
+# plusieurs reprises sur ce cluster de test.
+variable "node_availability_zone" {
+  description = "AZ unique dans laquelle tous les noeuds EC2 du node group sont lances (doit faire partie de var.availability_zones). Les volumes EBS des composants avec etat (openbao/redis/forgejo/registry) doivent donc aussi vivre dans cette AZ - recreer leur PVC si ce n'est pas deja le cas apres un changement de cette variable."
+  type        = string
+  default     = "eu-west-3a"
 }
 
 # --- Securite reseau/audit --------------------------------------------

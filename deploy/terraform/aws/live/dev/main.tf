@@ -20,9 +20,9 @@ module "cluster" {
   cluster_name       = var.cluster_name
   kubernetes_version = var.kubernetes_version
 
-  vpc_cidr           = var.vpc_cidr
-  availability_zones = var.availability_zones
-  single_nat_gateway = var.single_nat_gateway
+  vpc_cidr               = var.vpc_cidr
+  availability_zones     = var.availability_zones
+  node_availability_zone = var.node_availability_zone
 
   admin_access_cidrs         = var.admin_access_cidrs
   cluster_log_retention_days = var.cluster_log_retention_days

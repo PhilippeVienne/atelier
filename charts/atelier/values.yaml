@@ -403,6 +403,25 @@ openbao:
   # (jamais de succes silencieux) : OpenBao scelle ne peut pas etre configure.
   # Ignore quand `devMode: true` (le token racine est alors "root").
   rootTokenSecretName: ""
+  # Auto-unseal : remplace le split Shamir manuel (`bao operator unseal` a
+  # chaque redemarrage du pod) par un dechiffrement automatique via un
+  # service cloud - "shamir" (defaut) garde le comportement manuel actuel,
+  # "awskms" active le bloc `seal "awskms"` dans config.hcl (necessite le
+  # role IAM/Pod Identity cree par deploy/terraform/aws/modules/cluster/openbao-unseal.tf).
+  # `bao operator init` reste necessaire une seule fois quel que soit le
+  # type (genere alors des "recovery keys" avec awskms, pas des "unseal
+  # keys").
+  seal:
+    type: "shamir"
+    awskms:
+      region: ""
+      kmsKeyId: ""
+      # ARN du role IAM (IRSA, pas Pod Identity - voir
+      # deploy/terraform/aws/modules/cluster/openbao-unseal.tf) pose en
+      # annotation eks.amazonaws.com/role-arn sur la ServiceAccount du pod
+      # OpenBao. Vide : pas d'annotation posee (mode shamir ou role deja
+      # gere autrement).
+      roleArn: ""
   resources:
     requests:
       cpu: 100m

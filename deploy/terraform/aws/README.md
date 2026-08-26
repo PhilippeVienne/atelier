@@ -457,6 +457,44 @@ supplementaire) sans benefice fonctionnel pour un compte de test sans
 exigence de conformite (SOC2, HDS, etc.). A reconsiderer si une telle
 exigence apparait.
 
+## Pieges connus (`helm upgrade`)
+
+- **Hook CRD (`templates/crds/workshop.yaml`) : `customresourcedefinitions.apiextensions.k8s.io "workshops.atelier.dev" already exists`**.
+  Bug recurrent du hook `before-hook-creation` sur ce cluster (cause racine
+  non identifiee - possiblement lie aux multiples `helm rollback`/upgrades
+  manuels de cette session). Contournement : `--set crds.install=false`
+  sur le `helm upgrade` (le CRD ne change pas entre deux upgrades de toute
+  facon, sauf evolution du schema `Workshop`). **Ne PAS faire
+  `kubectl delete crd workshops.atelier.dev`** : supprime en cascade TOUTES
+  les ressources `Workshop` existantes (constate empiriquement - perte
+  d'un Workshop de test dans cette session, sans consequence car il
+  n'avait encore rien provisionne, mais destructeur sur un cluster avec
+  de vrais Workshops actifs). Si le CRD doit vraiment etre supprime/recree
+  et qu'un Workshop bloque la suppression (finalizer `atelier.dev/cleanup`
+  jamais leve car le controller est down) :
+  `kubectl patch workshop <nom> -n <namespace> --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'`
+  avant de reessayer - saute le nettoyage normal du controller (pods/jobs/RBAC
+  du Workshop), acceptable seulement si ce Workshop n'a de toute facon plus
+  rien a nettoyer.
+
+- **Node group EKS et AZ** : `var.availability_zones` (VPC/control
+  plane/DB subnet group) ne peut PAS etre reduit sur un cluster deja cree -
+  EKS refuse ("Provided subnets belong to the AZs '...'. But they should
+  belong to the exact set of AZs '...' in which subnets were provided
+  during cluster creation"), meme contrainte pour le DB subnet group Aurora.
+  Seul `var.node_availability_zone` (une seule AZ, distincte de
+  `var.availability_zones`) doit etre utilise pour epingler les NOEUDS
+  EC2 - jamais reduire la liste `availability_zones` elle-meme.
+
+- **`aws-load-balancer-controller` et destruction de subnets publics** :
+  un ALB cree par ce controller (hors Terraform) laisse des ENI attachees
+  aux subnets publics qu'il utilise. Si un `terraform apply` tente de
+  detruire un de ces subnets (ex: changement d'AZ), il echoue en boucle
+  avec `DependencyViolation` - Terraform n'a aucune visibilite sur ces ENI
+  gerees par Kubernetes. Ne jamais modifier `var.availability_zones` sans
+  d'abord verifier `aws ec2 describe-network-interfaces` sur les subnets
+  concernes.
+
 ## Destruction
 
 ```bash

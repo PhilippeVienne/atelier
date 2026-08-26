@@ -170,6 +170,16 @@ output "helm_values_snippet" {
       # OpenBao refuse" en boucle, VS Code/terminal des Workshops jamais
       # authentifies).
       rootTokenSecretName: "atelier-openbao-token"
+      # Auto-unseal KMS (voir openbao-unseal.tf) : plus de descellement
+      # manuel a chaque redemarrage du pod (upgrade EKS, scale-down/up du
+      # node group, reschedule) - seul `bao operator init` reste manuel,
+      # une fois.
+      seal:
+        type: "awskms"
+        awskms:
+          region: "${var.region}"
+          kmsKeyId: "${try(aws_kms_key.openbao_unseal[0].id, "")}"
+          roleArn: "${try(aws_iam_role.openbao_unseal[0].arn, "")}"
       image:
         repository: "${var.ecr_registry}/mirror/openbao"
     litellm:
