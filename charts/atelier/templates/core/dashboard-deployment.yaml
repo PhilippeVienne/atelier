@@ -37,6 +37,10 @@ spec:
             - name: ATELIER_API_SERVER_URL
               value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "apiserver") }}:{{ .Values.apiServer.service.port }}"
             {{- end }}
+            {{- if .Values.pmEngine.enabled }}
+            - name: ATELIER_PM_ENGINE_URL
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "pm-engine") }}:{{ .Values.pmEngine.service.port }}"
+            {{- end }}
             - name: ATELIER_OAUTH2_CLIENT_ID
               value: "atelier-dashboard"
             - name: ATELIER_OAUTH2_REDIRECT_URI
