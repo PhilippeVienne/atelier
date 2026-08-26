@@ -52,7 +52,7 @@ export default async function WorkshopDetailPage({
       <main className="flex-1 max-w-2xl w-full mx-auto p-6 sm:p-8 flex flex-col gap-6">
         <div className="flex items-center justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <Link href="/" className="text-sm text-muted hover:text-accent transition-colors">
+            <Link href="/workshops" className="text-sm text-muted hover:text-accent transition-colors">
               ← Workshops
             </Link>
             <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>

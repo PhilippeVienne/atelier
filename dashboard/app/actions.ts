@@ -19,17 +19,17 @@ export async function logout() {
 
 export async function suspend(name: string) {
   await suspendWorkshop(name);
-  revalidatePath("/");
+  revalidatePath("/workshops");
 }
 
 export async function resume(name: string) {
   await resumeWorkshop(name);
-  revalidatePath("/");
+  revalidatePath("/workshops");
 }
 
 export async function remove(name: string) {
   await deleteWorkshop(name);
-  revalidatePath("/");
+  revalidatePath("/workshops");
 }
 
 export async function decideReviewAction(threadId: string, decision: "approved" | "rejected") {
@@ -73,6 +73,6 @@ export async function createWorkshopAction(
     return { error: message };
   }
 
-  revalidatePath("/");
-  redirect("/");
+  revalidatePath("/workshops");
+  redirect("/workshops");
 }
