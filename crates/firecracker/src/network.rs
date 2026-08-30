@@ -193,17 +193,28 @@ impl NetworkSetup {
     /// `net_proxy_port` reste accepte explicitement (usage volontaire,
     /// ex. `mcp-gateway`) ; `transparent_http_port`/`transparent_tls_port`
     /// sont les ports d'ecoute locaux de `net-proxy` cibles par les
-    /// redirections 80/443 ; le port 53 (DNS) est toujours redirige vers
-    /// le port DNS de `net-proxy` (meme port que celui deja accepte en
-    /// `INPUT`, puisque `net-proxy` sert deja de resolveur).
+    /// redirections 80/443 ; `metadata_port` est le serveur metadata du
+    /// guest (mot de passe de session + cle publique SSH recuperes au boot
+    /// par le devcontainer, voir `crates/net-proxy/src/metadata.rs` et le
+    /// depot `atelier-workspace`), a accepter explicitement lui aussi
+    /// puisqu'il est adresse directement par le guest (pas de redirection
+    /// transparente) — `None` pour une microVM qui n'en a pas besoin (la VM
+    /// "builder" d'`image-builder` execute `envbuilder`, jamais les scripts
+    /// de recuperation de credentials : son acces reste donc ferme,
+    /// conformement au principe de surface minimale du projet) ; le port 53
+    /// (DNS) est toujours redirige vers le port DNS de `net-proxy` (meme
+    /// port que celui deja accepte en `INPUT`, puisque `net-proxy` sert
+    /// deja de resolveur).
     pub async fn enable_transparent_gateway(
         &self,
         net_proxy_port: u16,
         transparent_http_port: u16,
         transparent_tls_port: u16,
+        metadata_port: Option<u16>,
     ) -> Result<()> {
-        self.setup_dedicated_chain(&[net_proxy_port, transparent_http_port, transparent_tls_port])
-            .await?;
+        let mut ports = vec![net_proxy_port, transparent_http_port, transparent_tls_port];
+        ports.extend(metadata_port);
+        self.setup_dedicated_chain(&ports).await?;
 
         let nat_chain = self.iptables_nat_chain_name();
         run("iptables", &["-t", "nat", "-N", &nat_chain]).await?;

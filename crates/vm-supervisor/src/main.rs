@@ -70,6 +70,30 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3181);
+    // Serveur metadata de `net-proxy` (`DEFAULT_METADATA_ADDR`,
+    // crates/net-proxy/src/main.rs) : c'est par la que le guest recupere son
+    // mot de passe de session (ttyd/code-server) et sa cle publique SSH
+    // autorisee, au boot, via `atelier-fetch-session-auth.sh` /
+    // `atelier-fetch-ssh-authorized-key.sh` (depot atelier-workspace).
+    //
+    // Bug reel trouve en testant (2026-08-30, premier vrai Workshop
+    // Firecracker de ce depot) : ce port n'etait PAS transmis a
+    // `enable_transparent_gateway`, donc jamais accepte par la chaine
+    // dediee, dont la derniere regle est un `DROP` — tout le trafic
+    // guest -> 169.254.0.1:3132 etait silencieusement jete. Les deux
+    // scripts du guest epuisaient alors systematiquement leur budget de
+    // retry puis basculaient sur leur repli (mot de passe aleatoire / pas
+    // d'`authorized_keys`), rendant ttyd/code-server (401) et sshd
+    // (`Permission denied (publickey)`) definitivement inaccessibles,
+    // alors meme que net-proxy servait deja la bonne valeur et que le
+    // Workshop atteignait `Running`. `DROP` (et non `REJECT`) rendait le
+    // symptome trompeur : chaque tentative expirait sur le timeout de
+    // `curl` au lieu d'echouer immediatement, ce qui ressemblait a une
+    // lenteur de boot plutot qu'a un blocage franc.
+    let net_proxy_metadata_port: u16 = std::env::var("ATELIER_NET_PROXY_METADATA_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3132);
 
     // TAP link-local, net-proxy (dans le meme pod, meme netns) comme seule
     // passerelle joignable — verrouille au niveau paquet par
@@ -89,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
             net_proxy_port,
             net_proxy_transparent_http_port,
             net_proxy_transparent_tls_port,
+            Some(net_proxy_metadata_port),
         )
         .await
         .context("pose des regles iptables de la passerelle transparente")?;
