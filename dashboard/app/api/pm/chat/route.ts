@@ -9,11 +9,13 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as
     | { repo?: string; query?: string; history?: ChatMessage[] }
     | null;
-  if (!body?.repo || !body?.query) {
-    return NextResponse.json({ message: "repo et query requis" }, { status: 400 });
+  // `repo` optionnel : une question generale (fonctionnement, import d'un
+  // projet) n'a pas a cibler un depot — voir `PmChat`.
+  if (!body?.query) {
+    return NextResponse.json({ message: "query requis" }, { status: 400 });
   }
   try {
-    return await proxyChat(body.repo, body.query, body.history ?? []);
+    return await proxyChat(body.repo ?? "", body.query, body.history ?? []);
   } catch (err) {
     if (err instanceof PmEngineError) {
       return NextResponse.json({ message: err.message }, { status: err.status });

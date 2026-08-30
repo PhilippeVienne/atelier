@@ -45,15 +45,23 @@ async function call(path: string, init: RequestInit = {}): Promise<Response> {
   return res;
 }
 
-export interface MirrorProject {
+export interface Project {
   name: string;
   fullName: string;
   owner: string;
   cloneUrl: string;
+  /** Depot d'origine si ce projet est un miroir, `null` sinon. */
   originalUrl: string | null;
+  /** `true` si le projet est un miroir d'un depot externe (GitHub/GitLab),
+   * `false` s'il vit nativement dans la forge interne. Les deux sont des
+   * projets a part entiere pour le PM : la distinction n'est qu'indicative. */
+  isMirror: boolean;
   private: boolean;
   updatedAt: string;
 }
+
+/** @deprecated Alias historique, garde le temps de la transition. */
+export type MirrorProject = Project;
 
 interface ForgejoRepo {
   name: string;
@@ -66,25 +74,28 @@ interface ForgejoRepo {
   mirror: boolean;
 }
 
-// Liste les depots de `FORGEJO_OWNER` marques `mirror: true` : ce sont
-// exclusivement les "Projets" crees via `createMirrorProject` ci-dessous
-// (les Workshops eux-memes ne creent jamais de depot Forgejo).
-export async function listMirrorProjects(): Promise<MirrorProject[]> {
+// Tous les depots de `FORGEJO_OWNER`, miroirs ou non.
+//
+// Un "projet" au sens du PM, c'est n'importe quel depot de la forge interne
+// sur lequel il peut agir : lire des tickets, ouvrir des PR, provisionner des
+// Workshops. Ne lister que les miroirs (`mirror: true`) masquait les depots
+// crees directement dans Forgejo — le chat proposait alors une liste
+// incomplete, sans que rien n'explique l'absence.
+export async function listProjects(): Promise<Project[]> {
   const res = await call(
     `/repos/search?owner=${encodeURIComponent(FORGEJO_OWNER)}&limit=50&sort=updated&order=desc`,
   );
   const { data } = (await res.json()) as { data: ForgejoRepo[] };
-  return data
-    .filter((repo) => repo.mirror)
-    .map((repo) => ({
-      name: repo.name,
-      fullName: repo.full_name,
-      owner: repo.owner.login,
-      cloneUrl: repo.clone_url,
-      originalUrl: repo.original_url,
-      private: repo.private,
-      updatedAt: repo.updated_at,
-    }));
+  return data.map((repo) => ({
+    name: repo.name,
+    fullName: repo.full_name,
+    owner: repo.owner.login,
+    cloneUrl: repo.clone_url,
+    originalUrl: repo.original_url,
+    isMirror: repo.mirror,
+    private: repo.private,
+    updatedAt: repo.updated_at,
+  }));
 }
 
 // Determine le `service`/mode d'authentification Forgejo attendu par
@@ -125,7 +136,7 @@ export interface CreateMirrorProjectInput {
   token?: string;
 }
 
-export async function createMirrorProject(input: CreateMirrorProjectInput): Promise<MirrorProject> {
+export async function createMirrorProject(input: CreateMirrorProjectInput): Promise<Project> {
   const res = await call("/repos/migrate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -149,6 +160,7 @@ export async function createMirrorProject(input: CreateMirrorProjectInput): Prom
     owner: repo.owner.login,
     cloneUrl: repo.clone_url,
     originalUrl: repo.original_url,
+    isMirror: repo.mirror,
     private: repo.private,
     updatedAt: repo.updated_at,
   };

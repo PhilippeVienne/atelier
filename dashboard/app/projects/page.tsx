@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { TopNav } from "@/app/components/top-nav";
-import { forgejoMirrorEnabled, listMirrorProjects } from "@/lib/forgejo";
+import { forgejoMirrorEnabled, listProjects } from "@/lib/forgejo";
 
 export default async function ProjectsPage() {
   const enabled = forgejoMirrorEnabled();
-  const projects = enabled ? await listMirrorProjects() : [];
+  const projects = enabled ? await listProjects() : [];
 
   return (
     <>
@@ -20,9 +20,11 @@ export default async function ProjectsPage() {
           </Link>
         </div>
         <p className="text-sm text-muted max-w-2xl">
-          Un projet mire un depot GitHub/GitLab (prive ou public) vers la forge Forgejo interne
-          (resynchronisation automatique) : le PM Engine et les Workshops travaillent ensuite
-          uniquement sur ce miroir, jamais directement sur le depot source.
+          Un projet est un depot de la forge interne sur lequel le PM peut agir : lire des
+          tickets, ouvrir des PR, provisionner des Workshops. Il peut etre <strong>natif</strong>
+          (cree directement dans la forge) ou <strong>miroir</strong> d&apos;un depot
+          GitHub/GitLab, resynchronise automatiquement — dans ce cas le PM et les Workshops
+          travaillent sur le miroir, jamais sur le depot source.
         </p>
 
         {!enabled ? (
@@ -33,7 +35,7 @@ export default async function ProjectsPage() {
           </div>
         ) : projects.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted">
-            Aucun projet importe pour le moment.
+            Aucun projet pour le moment.
           </div>
         ) : (
           <ul className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -44,11 +46,16 @@ export default async function ProjectsPage() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <span className="font-medium truncate">{project.fullName}</span>
-                  {project.private && (
-                    <span className="text-xs rounded-full border border-border px-2 py-0.5 text-muted shrink-0">
-                      prive
+                  <span className="flex gap-1.5 shrink-0">
+                    <span className="text-xs rounded-full border border-border px-2 py-0.5 text-muted">
+                      {project.isMirror ? "miroir" : "natif"}
                     </span>
-                  )}
+                    {project.private && (
+                      <span className="text-xs rounded-full border border-border px-2 py-0.5 text-muted">
+                        prive
+                      </span>
+                    )}
+                  </span>
                 </div>
                 {project.originalUrl && (
                   <p className="text-sm text-muted truncate">Source : {project.originalUrl}</p>

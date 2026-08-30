@@ -2,6 +2,7 @@ import Link from "next/link";
 import { TopNav } from "@/app/components/top-nav";
 import { logout } from "@/app/actions";
 import { listPendingReviews, PmEngineError } from "@/lib/pm-engine";
+import { forgejoMirrorEnabled, listProjects } from "@/lib/forgejo";
 import { PmChat } from "./pm/pm-chat";
 
 // Page d'accueil du Dashboard : le chat PM Engine (Jalon M5, tache 5.5.1)
@@ -17,6 +18,19 @@ export default async function HomePage() {
     // Non bloquant pour le chat lui-meme : le badge de revues disparait
     // juste si le PM Engine est injoignable au chargement de la page.
     if (!(err instanceof PmEngineError)) throw err;
+  }
+
+  // Projets reellement importes (miroirs Forgejo, voir /projects) : le chat
+  // en propose la liste plutot que d'attendre un identifiant saisi a la
+  // main. Non bloquant lui aussi — sans miroir configure, le chat reste
+  // utilisable pour des questions generales.
+  let projects: string[] = [];
+  if (forgejoMirrorEnabled()) {
+    try {
+      projects = (await listProjects()).map((p) => p.fullName);
+    } catch {
+      projects = [];
+    }
   }
 
   return (
@@ -39,7 +53,7 @@ export default async function HomePage() {
           </button>
         </form>
       </TopNav>
-      <PmChat />
+      <PmChat projects={projects} />
     </div>
   );
 }

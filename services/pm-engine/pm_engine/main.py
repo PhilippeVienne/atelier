@@ -180,7 +180,11 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    repo: str
+    # Optionnel : le Dashboard laisse poser une question sans cibler de
+    # projet (fonctionnement general, "importe tel depot"...). Exiger un
+    # depot rendait le bouton d'envoi inerte sans rien expliquer, alors que
+    # beaucoup de questions n'en dependent pas.
+    repo: str = ""
     query: str
     # Tour(s) precedents de CETTE conversation, tels qu'affiches par le
     # Dashboard (`dashboard/app/pm/pm-chat.tsx`) : sans ca, chaque appel est
@@ -307,8 +311,10 @@ async def chat(
             {
                 "role": "system",
                 "content": (
-                    "Tu es le Project Manager autonome d'Atelier pour le depot "
-                    f"{body.repo}. Reponds en te basant sur ces memoires passees "
+                    "Tu es le Project Manager autonome d'Atelier"
+                    + (f" pour le depot {body.repo}." if body.repo else
+                       ", aucun projet n'est cible par cette conversation.")
+                    + " Reponds en te basant sur ces memoires passees "
                     f"si elles sont pertinentes :\n\n{context or '(aucune memoire pertinente)'}"
                     "\n\nTu disposes de l'outil setup_mirror_project pour importer "
                     "un nouveau projet GitHub/GitLab comme miroir interne, sur "

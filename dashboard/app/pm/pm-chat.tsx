@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { MarkdownLite } from "@/app/components/markdown-lite";
 
@@ -20,8 +21,9 @@ const EXAMPLE_PROMPTS = [
 // `services/pm-engine`) : `fetch` + lecture manuelle du `ReadableStream`,
 // pas `EventSource` (qui ne supporte que GET, alors que la requete porte
 // un corps JSON).
-export function PmChat() {
-  const [repo, setRepo] = useState("");
+export function PmChat({ projects }: { projects: string[] }) {
+  // Un seul projet importe : pas de choix a faire, on le preselectionne.
+  const [repo, setRepo] = useState(projects.length === 1 ? projects[0] : "");
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [pending, setPending] = useState(false);
@@ -36,7 +38,7 @@ export function PmChat() {
 
   async function send(overrideQuery?: string) {
     const userQuery = (overrideQuery ?? query).trim();
-    if (!repo.trim() || !userQuery || pending) return;
+    if (!userQuery || pending) return;
     setError(null);
     // Tours precedents affiches AVANT d'ajouter celui-ci : le PM Engine
     // n'a sinon aucune memoire d'un message a l'autre (bug constate en
@@ -108,21 +110,48 @@ export function PmChat() {
     }
   }
 
-  const canSend = repo.trim().length > 0 && query.trim().length > 0 && !pending;
+  // Le projet n'est PAS requis : sans lui le PM repond sur le general
+  // (roles, fonctionnement, comment importer un projet...). L'exiger rendait
+  // le bouton d'envoi inerte sans que rien n'explique pourquoi.
+  const canSend = query.trim().length > 0 && !pending;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* Barre superieure compacte : le depot cible du PM, pas une bulle
           de conversation - reste visible en permanence pendant que la
           liste de messages defile en dessous. */}
-      <div className="border-b border-border px-4 sm:px-6 py-3 flex items-center gap-3">
-        <label className="text-xs uppercase tracking-wide text-muted shrink-0">Depot</label>
-        <input
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          placeholder="acme/widgets"
-          className="flex-1 max-w-xs rounded-lg border border-border bg-background px-3 py-1.5 text-sm font-mono"
-        />
+      <div className="border-b border-border px-4 sm:px-6 py-3 flex items-center gap-3 flex-wrap">
+        <label htmlFor="pm-project" className="text-xs uppercase tracking-wide text-muted shrink-0">
+          Projet
+        </label>
+        {projects.length > 0 ? (
+          <select
+            id="pm-project"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            className="flex-1 max-w-xs rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
+          >
+            <option value="">Aucun — question generale</option>
+            {projects.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-sm text-muted">
+            Aucun projet importe —{" "}
+            <Link href="/projects/new" className="underline hover:no-underline">
+              en importer un
+            </Link>{" "}
+            pour que le PM puisse travailler dessus.
+          </span>
+        )}
+        <span className="text-xs text-muted">
+          {repo
+            ? "Les questions et actions portent sur ce projet."
+            : "Reponses generales : choisis un projet pour cibler ses tickets et PR."}
+        </span>
       </div>
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
@@ -135,12 +164,13 @@ export function PmChat() {
               <div className="flex flex-col gap-1">
                 <h1 className="text-xl font-semibold tracking-tight">Project Manager</h1>
                 <p className="text-sm text-muted max-w-sm">
-                  Renseigne un depot ci-dessus, puis pose une question sur les tickets et PR
-                  qu&apos;il a traites.
+                  {projects.length === 0
+                    ? "Importe un projet pour que le PM puisse analyser ses tickets, ouvrir des PR et piloter des Workshops. Tu peux aussi lui poser une question des maintenant."
+                    : "Pose une question sur les tickets et PR d'un projet, ou demande-lui d'en importer un nouveau."}
                 </p>
               </div>
               <div className="flex flex-col gap-2 w-full max-w-md">
-                {EXAMPLE_PROMPTS.map((prompt) => (
+                {(projects.length === 0 ? EXAMPLE_PROMPTS.slice(-1) : EXAMPLE_PROMPTS).map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
@@ -208,7 +238,7 @@ export function PmChat() {
               }
             }}
             rows={1}
-            placeholder={repo.trim() ? "Ta question..." : "Renseigne d'abord un depot ci-dessus"}
+            placeholder={repo ? `Ta question sur ${repo}...` : "Ta question..."}
             disabled={pending}
             className="flex-1 resize-none rounded-2xl border border-border bg-background px-4 py-2.5 text-sm leading-relaxed max-h-40 disabled:opacity-60"
           />
