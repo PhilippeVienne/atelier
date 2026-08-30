@@ -26,6 +26,7 @@ export function TopNav({ children, className }: { children?: ReactNode; classNam
           </Link>
           <nav className="flex items-center gap-1">
             <NavLink href="/">Chat</NavLink>
+            <NavLink href="/projects">Projets</NavLink>
             <NavLink href="/workshops">Workshops</NavLink>
           </nav>
         </div>

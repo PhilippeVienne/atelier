@@ -19,6 +19,17 @@ export const API_SERVER_URL =
 export const PM_ENGINE_URL =
   process.env.ATELIER_PM_ENGINE_URL ?? "http://127.0.0.1:8100";
 
+// `deploy/dev/forgejo/` : forge Git interne, utilisee comme miroir isolant
+// pour les projets GitHub/GitLab prives (voir `lib/forgejo.ts`) — jamais de
+// credential externe stocke cote dashboard, seulement transmis une fois a
+// Forgejo qui le persiste lui-meme pour la resynchronisation periodique du
+// miroir. Pas de defaut pour le token (secret genere par
+// `deploy/dev/local-stack.sh`, absent = fonctionnalite de miroir
+// desactivee, meme convention que `ATELIER_LLM_PROXY_ADDR`).
+export const FORGEJO_URL = process.env.ATELIER_FORGEJO_URL ?? "http://git.atelier.local";
+
+export const FORGEJO_ADMIN_TOKEN = process.env.ATELIER_FORGEJO_ADMIN_TOKEN;
+
 // Base OIDC generique — pour Keycloak c'est l'URL du realm (ex:
 // `http://auth.atelier.local/realms/atelier`), PAS la racine du
 // serveur : les endpoints standards

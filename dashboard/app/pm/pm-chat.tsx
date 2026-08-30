@@ -12,6 +12,7 @@ const EXAMPLE_PROMPTS = [
   "Resume les tickets ouverts cette semaine",
   "Quelles PR attendent une revue humaine ?",
   "Explique la derniere decision prise sur ce depot",
+  "Importe https://github.com/acme/widgets comme nouveau projet",
 ];
 
 // Consomme directement le flux SSE relaye par `/api/pm/chat`
@@ -37,6 +38,13 @@ export function PmChat() {
     const userQuery = (overrideQuery ?? query).trim();
     if (!repo.trim() || !userQuery || pending) return;
     setError(null);
+    // Tours precedents affiches AVANT d'ajouter celui-ci : le PM Engine
+    // n'a sinon aucune memoire d'un message a l'autre (bug constate en
+    // pratique — voir `services/pm-engine/pm_engine/main.py::ChatRequest`).
+    // Un message assistant encore vide (reponse en cours d'un tour
+    // precedent jamais arrivee, ex: onglet ferme puis rouvert) est exclu :
+    // un tour "vide" ne veut rien dire pour le LLM.
+    const history = entries.filter((e) => e.text);
     setEntries((prev) => [...prev, { role: "user", text: userQuery }, { role: "assistant", text: "" }]);
     setQuery("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -48,7 +56,11 @@ export function PmChat() {
       const res = await fetch("/api/pm/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo, query: userQuery }),
+        body: JSON.stringify({
+          repo,
+          query: userQuery,
+          history: history.map((e) => ({ role: e.role, content: e.text })),
+        }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -212,7 +224,13 @@ export function PmChat() {
           </button>
         </div>
         <p className="text-[11px] text-muted text-center mt-2">
-          Entree pour envoyer, Maj+Entree pour un saut de ligne.
+          Entree pour envoyer, Maj+Entree pour un saut de ligne. Pour un depot
+          prive, le jeton d&apos;acces transite par ce chat (donc par le
+          modele) : prefere{" "}
+          <a href="/projects/new" className="underline hover:no-underline">
+            le formulaire dedie
+          </a>{" "}
+          si tu preferes l&apos;eviter.
         </p>
       </div>
     </div>
