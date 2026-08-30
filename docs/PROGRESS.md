@@ -37,6 +37,8 @@ choix delibere du projet : les bugs decouverts en cours de route (voir
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock, 3 tools) | Serveur MCP reel (SDK officiel `rmcp`) exposant `request_credential` (lecture OpenBao), `request_egress` (elargissement a chaud de l'allowlist `net-proxy`) et `enable_simulator` (active le sidecar LocalStack), deux transports actifs en parallele (streamable HTTP via `net-proxy`, et `AF_VSOCK` natif), tous verifies de bout en bout contre de la vraie infra (OpenBao, net-proxy, LocalStack officiel). Reste a faire : verification depuis l'interieur d'une vraie microVM agent, voir section dediee ci-dessous |
 | `dashboard` | Fonctionnel (CRUD + page de gestion + VS Code + terminal) | Next.js 16 (App Router), pattern backend-for-frontend : `/api/auth/login` (PKCE) redirige vers l'UI Kanidm, `/api/auth/callback` echange le code et stocke l'`access_token` dans un cookie httpOnly, jamais expose au JS navigateur. Liste/creation/suspend/resume/suppression de Workshops via Server Components + Server Actions, chaque appel relaie le token a `atelier-api-server` qui le revalide integralement. Page de detail par Workshop + boutons "Ouvrir VS Code" et "Terminal" (`code-server` et `ttyd` via le pont HTTP+WS de `api-server`, voir sections dediees), terminal egalement en iframe sur la page ; serveur Next custom (`server.ts`) pour le WebSocket propre de ces deux services, et refresh token OAuth2 transparent pour que l'expiration du JWT (900s) ne coupe plus une session ouverte. `code-server` et le terminal verifies dans un vrai navigateur pilote contre une vraie microVM (commande interactive executee dans le guest), six bugs reels corriges au passage. Verifie reellement : flux complet login (scripte cote Kanidm comme `get-oauth2-token.sh`) → callback → session → creation d'un vrai Workshop → affichage dans la liste → suppression, contre un vrai Kanidm/api-server/kind |
 | `llm-proxy` (LiteLLM, service global du cluster) | Fonctionnel (base) | `deploy/dev/llm-proxy/` (Deployment/Service, meme niveau qu'OpenBao, pas un sidecar par pod) traduit les appels Anthropic Messages API de Claude Code vers DeepSeek par defaut (alias `sonnet-premium` vers le vrai Anthropic). Alias `net-proxy` `llm-proxy` + injection `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` dans `/etc/environment` (`image-builder`), toujours actifs des que configures cote `controller`. Verifie reellement contre kind : `/health/readiness` 200, `/v1/models` et `/v1/messages` traduits et routes jusqu'a DeepSeek a travers l'alias `net-proxy` (401 reel de DeepSeek avec une cle factice, preuve du pipeline complet). Voir section dediee "LLM Proxy" ci-dessous |
+| Claude Code dans le Workshop (via LiteLLM/DeepSeek) | Fonctionnel | Verifie dans une vraie microVM Firecracker : `claude --model claude-3-5-sonnet-20241022 --print` cree reellement le fichier demande, avec le contenu attendu. Chaine complete Claude Code -> `ANTHROPIC_BASE_URL=http://llm-proxy` -> alias `net-proxy` -> LiteLLM -> DeepSeek. Le modele doit etre epingle par l'appelant (le defaut du CLI change a chaque version et fait echouer Claude Code sans qu'il ecrive quoi que ce soit) — voir section du 2026-08-30 |
+| `pm-engine` — graphe LangGraph complet | Partiel (PR vide) | Tous les noeuds traverses de bout en bout sur un vrai ticket Forgejo : analyse, decoupage en sous-taches paralleles, provisioning de vraies microVM, `exec_in_workshop`, tests, boucle de correction, PR ouverte, suspension et revue HITL enregistree. **La PR produite est vide** : le correctif du modele epingle n'a pas ete valide par un run complet — voir "Points ouverts" |
 | Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
 | Repo GitHub `atelier` | Publie (public) | Controller/api-server/dashboard/etc — CI GitHub Actions, images GHCR, site de doc MkDocs, licence AGPLv3 |
 | Repo GitHub `atelier-workspace` | Publie (public) | Devcontainer de demo `ministack-workshop` (docker-in-docker, ministack, Claude Code, code-server), depot dedie separe pour que `image-builder` le clone sans identifiants git |
@@ -1230,7 +1232,242 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   de securite dans un premier temps (double mecanisme), a retirer dans un
   lot ulterieur une fois confirme inutile.
 
+## Premiere execution complete du PM autonome : sept bugs, tous invisibles sans faire tourner la chaine entiere
+
+Session du 2026-08-30. Objectif initial : derouler un vrai scenario de
+developpement (API de todo-list + UI, specifiee et implementee par le PM) et
+verifier au passage que les Workshops disposent bien d'un Claude Code
+adosse a LiteLLM/DeepSeek.
+
+Aucun de ces sept defauts n'est detectable par un test unitaire ou par la
+lecture du code : ils n'apparaissent qu'en faisant tourner, ensemble et pour
+de vrai, `controller` + `image-builder` + microVM Firecracker + `net-proxy`
++ `api-server`/MCP + `pm-engine`. Le graphe LangGraph complet
+(`AnalyzeIssue` -> ... -> `AwaitHitlApproval`) n'avait jamais ete execute de
+bout en bout jusqu'ici — `services/pm-engine/README.md` le signalait
+explicitement.
+
+### 1. Port du serveur metadata jete par la chaine iptables (cause racine)
+
+**Le bug le plus couteux de la session, et le plus trompeur.** Le port du
+serveur metadata de `net-proxy` (3132) n'etait pas transmis a
+`NetworkSetup::enable_transparent_gateway` : il n'etait donc jamais accepte
+par la chaine `filter` dediee, dont la derniere regle est un `DROP`. Tout le
+trafic guest -> `169.254.0.1:3132` etait silencieusement jete.
+
+Consequence : `atelier-fetch-session-auth.sh` et
+`atelier-fetch-ssh-authorized-key.sh` (depot `atelier-workspace`) ne
+pouvaient JAMAIS aboutir. Ils epuisaient leur budget de retry puis
+basculaient sur leur repli — mot de passe aleatoire connu de personne, pas
+d'`authorized_keys`. Resultat : `ttyd`/`code-server` repondaient `401` et
+`sshd` refusait toute connexion (`Permission denied (publickey)`), alors
+meme que le Workshop atteignait la phase `Running`, que `net-proxy` servait
+deja les bonnes valeurs et qu'OpenBao contenait bien le bon secret.
+
+Deux details ont rendu ce bug tres difficile a lire :
+
+- `DROP` (et non `REJECT`) : chaque tentative expirait sur le timeout de
+  `curl` au lieu d'echouer franchement. Le symptome ressemblait donc a une
+  **lenteur de boot**, pas a un blocage reseau.
+- Les deux scripts sortent en `exit 0` que le fetch ait reussi ou echoue :
+  `systemctl` affichait `OK Finished` sur un repli, indiscernable d'un
+  succes.
+
+**Diagnostic initial errone, a ne pas refaire** : la premiere conclusion a
+ete "le lien TAP met plusieurs minutes a monter, le budget de retry de 60s
+est trop court". Deux commits ont ete pousses sur `atelier-workspace` pour
+allonger ce budget (jusqu'a 20 min) — ils ne faisaient que **retarder le
+meme echec**, ce qui a produit des boots apparents de 3, puis 12, puis 29+
+minutes et a donne l'illusion d'une variance liee a la charge machine. Ces
+commits ont ete annules (`c2f6b41`) une fois la vraie cause trouvee.
+
+**Ce qui a permis de trancher** : mettre `RUST_LOG=atelier_firecracker=debug`
+sur le conteneur `vm-supervisor` pour capturer la **console serie du guest**
+(`drain_console_pipes`). C'est le seul moyen d'observer un guest dont ni
+`ttyd` ni `sshd` ne sont accessibles — a reutiliser systematiquement pour
+tout probleme de boot de microVM.
+
+Mesure apres correction : Workshop `Running` en **~60 s** (contre 12 a 29+
+minutes, ou jamais), `sshd` accepte la cle du Workshop, `ttyd` repond `200`.
+
+### 2. `OPENBAO_ADDR` injecte dans les pods : adresse de l'hote, pas du cluster
+
+`OpenBaoConfig.addr` servait a la fois aux appels du controller **et** a la
+valeur injectee dans les pods Workshop. En developpement, le controller
+tourne hors cluster et pointe sur un port-forward (`127.0.0.1:8200`) :
+`net-proxy`, dans son pod, recevait donc `127.0.0.1:8200` et son login
+Kubernetes-auth echouait indefiniment. Champ `pod_addr` distinct introduit
+(`ATELIER_OPENBAO_POD_ADDR`), egal a `addr` par defaut — sans effet en
+production ou le controller tourne dans le cluster.
+
+**Classe de bug a surveiller** : toute valeur qu'un composant utilise pour
+lui-meme ET propage a un pod doit etre dedoublee des lors que ce composant
+peut tourner hors cluster. `ATELIER_LLM_PROXY_ADDR` souffre exactement du
+meme probleme aujourd'hui (voir "Points ouverts").
+
+### 3. Injection de commande shell dans `DelegateToClaudeCode`
+
+Le prompt etait passe au shell du Workshop via `json.dumps(prompt)`, qui
+produit une chaine entre guillemets **doubles** — ou `bash` interprete
+encore les backticks, `$(...)` et `$VAR`. Or ce prompt contient du texte
+genere par un LLM a partir du **corps du ticket**, c'est-a-dire une entree
+non fiable, et des chemins entoures de backticks.
+
+Verifie empiriquement : avec `json.dumps`, `bash` executait reellement
+`api/` et `web/` comme des commandes (`api/: not found` dans `stderr`) et
+Claude Code recevait un prompt **tronque** (`"Modifie  et "`). Au-dela du
+dysfonctionnement, c'est une injection de commande dans la microVM depuis le
+contenu d'un ticket.
+
+Corrige avec `shlex.quote` (guillemets simples, rien n'est interprete).
+`services/pm-engine/tests/test_delegate_command_quoting.py` execute la
+commande produite dans un **vrai** `bash`, avec un faux `claude` sur le
+`PATH` qui recopie son argument, et verifie qu'il arrive intact.
+
+### 4. Workshops crees par le PM avec une allowlist egress VIDE
+
+`create_workshop` (MCP) laisse `egress_allowlist` vide par defaut et
+`ProvisionWorkshop` ne la renseignait pas : les Workshops du PM naissaient
+donc incapables de construire leur image (`net-proxy` bloque l'acces au
+registre de l'image de base, aux features, a apt/npm). Desormais fournie par
+le PM (`PM_ENGINE_WORKSHOP_EGRESS_ALLOWLIST`) puisqu'elle depend entierement
+du devcontainer du depot cible.
+
+### 5. Aucune attente de disponibilite entre provisioning et delegation
+
+`create_workshop` est asynchrone (il cree la ressource Kubernetes et rend la
+main), mais le Workshop met ensuite ~1 min a construire son image puis a
+booter sa microVM. `DelegateToClaudeCode` partait aussitot et echouait
+toujours ("le Workshop n'a pas de pod parent actif"). `ProvisionWorkshop`
+sonde desormais `get_workshop_status` jusqu'a `Running`.
+
+**Piege rencontre en corrigeant** : une premiere version tenait UNE session
+MCP ouverte pendant toute l'attente. Or `atelier_mcp_session` fige son jeton
+OIDC a l'ouverture (invariant documente dans `pm_engine.mcp_client`) : au
+bout de quelques minutes, l'API repondait `ExpiredSignature`. Chaque sondage
+rouvre donc sa propre session courte.
+
+### 6. Claude Code refuse son propre modele par defaut derriere LiteLLM
+
+Claude Code choisit un modele par defaut dont le nom evolue a chaque version
+du CLI (`claude-opus-4-8[1m]` constate ici). LiteLLM ne le connaissant pas,
+Claude Code sortait en erreur **sans ecrire le moindre fichier** — et le PM
+ouvrait donc des PR parfaitement vides (0 fichier modifie), sans que rien
+dans le graphe ne signale l'anomalie.
+
+Deux correctifs complementaires :
+
+- `deploy/dev/llm-proxy/config.yaml` gagne un `model_name: "*"` en repli
+  (place APRES les alias explicites, LiteLLM privilegiant la correspondance
+  exacte). Maintenir un alias par version du CLI serait a refaire
+  indefiniment.
+- Le PM epingle desormais le modele (`--model`,
+  `PM_ENGINE_CLAUDE_CODE_MODEL`), ce qui releve de toute facon de lui
+  (cout, reproductibilite) et non du CLI.
+
+### 7. `PlanParallelTasks` retombait toujours sur une tache unique
+
+Le modele encadre sa reponse JSON dans un bloc de code markdown
+(```` ```json ````) malgre la consigne "UNIQUEMENT du JSON", donc
+`json.loads` echouait et le repli "une seule tache" se declenchait
+systematiquement — annulant tout le decoupage en sous-taches paralleles, qui
+est pourtant le coeur du noeud. Les delimiteurs sont retires avant parsing.
+
+### Ce qui a ete valide reellement
+
+- **Claude Code + LiteLLM/DeepSeek dans une microVM** : `claude --model
+  claude-3-5-sonnet-20241022 --print 'Cree hello.txt contenant BONJOUR'`
+  execute par SSH dans une vraie microVM Firecracker a bien cree le fichier
+  avec exactement `BONJOUR`. Chaine complete verifiee : Claude Code ->
+  `ANTHROPIC_BASE_URL=http://llm-proxy` -> alias `net-proxy` -> LiteLLM ->
+  DeepSeek.
+- **`exec_in_workshop` (MCP)**, le pont PM -> microVM jamais teste jusqu'ici,
+  execute reellement des commandes dans le guest et en remonte la sortie.
+- **Le graphe LangGraph complet** traverse tous ses noeuds sur un vrai
+  ticket Forgejo : analyse DeepSeek, decoupage en 3 sous-taches paralleles,
+  3 branches creees, 3 microVM Firecracker provisionnees, delegation, tests,
+  boucle de correction, **PR ouverte**, suspension des Workshops
+  (`SuspendWhileWaitingReview` libere bien les pods parents) et revue HITL
+  enregistree dans `pm_reviews`.
+
+### Ce qui n'est pas atteint
+
+**La PR produite est vide.** Le correctif du modele epingle (point 6) n'a
+pas ete valide par un run complet : c'est l'etape suivante evidente pour
+boucler la demo. Note connexe : rien dans le graphe ne verifie qu'une PR
+contient effectivement des changements — un garde-fou (`OpenPullRequest`
+echoue ou avertit si le diff est vide) eviterait de reproduire une journee
+de diagnostic pour un symptome aussi silencieux.
+
+### Environnement de dev : ce qu'il faut savoir avant de recommencer
+
+- **Le registre OCI n'est pas cree par `local-stack.sh`** : le script fait
+  `docker start atelier-registry-dev || true`, ce qui echoue silencieusement
+  si le conteneur n'a jamais existe. Le creer une fois :
+  `docker run -d --name atelier-registry-dev -p 5000:5000 registry:2` puis
+  `docker network connect kind atelier-registry-dev --alias atelier-registry-dev`.
+- **`kvm-device-plugin` et Redis ne sont pas deployes par `local-stack.sh`**
+  (voir leurs README respectifs). Sans le premier, aucun Workshop ne peut
+  booter.
+- **Le controller lance hors cluster ne joint pas les pods** : ajouter une
+  route `sudo ip route add 10.244.0.0/24 via <IP du node kind>`, sans quoi
+  `guest_probe` ne confirme jamais la phase `Running`.
+- **`env.sh` survit a la recreation du cluster kind** : le jeton admin
+  Forgejo qu'il contient devient invalide en silence (l'utilisateur n'existe
+  plus). Le supprimer avant de relancer `local-stack.sh`.
+- **Une microVM ne peut sortir que sur 80 et 443** (le reste est `DROP`).
+  Pour qu'un guest clone depuis le Forgejo interne, exposer son Service sur
+  le port 80 et utiliser son nom DNS cluster — le mecanisme d'alias git
+  (`ATELIER_GIT_HOST_SERVICE`) sert a injecter des credentials, pas a
+  ouvrir un port.
+- La feature devcontainer `node` telecharge depuis `nodejs.org` et
+  `iojs.org` : a ajouter a l'allowlist (absents de `DEV_EGRESS_ALLOWLIST`).
+
 ## Lecons retenues (a ne pas re-decouvrir)
+
+- Toute regle `iptables` de la microVM se termine par un `DROP` : un port
+  ouvert cote hote mais absent de la liste passee a
+  `enable_transparent_gateway` est jete **silencieusement**. Comme c'est un
+  `DROP` et non un `REJECT`, le client expire sur son timeout — le symptome
+  ressemble a de la lenteur, jamais a un blocage. Devant un guest lent au
+  boot, verifier la chaine AVANT de soupconner une latence.
+- Pour observer un guest dont ni `ttyd` ni `sshd` ne repondent, mettre
+  `RUST_LOG=atelier_firecracker=debug` sur `vm-supervisor` : la console
+  serie du guest est deja drainee dans ses logs (`drain_console_pipes`).
+  C'est le seul canal d'observation qui ne depend d'aucun service du guest.
+- Les scripts de recuperation de credentials du devcontainer sortent en
+  `exit 0` en cas d'echec comme en cas de succes (repli deliberement
+  silencieux, pour ne jamais demarrer un service sans authentification) :
+  `systemctl status` affiche donc `OK Finished` sur un repli. Ne jamais en
+  deduire que le fetch a reussi — verifier le marqueur `stderr`.
+- Une valeur qu'un composant utilise pour lui-meme ET propage a un pod doit
+  etre dedoublee des lors que ce composant peut tourner hors cluster : en
+  dev, le controller pointe sur un port-forward (`127.0.0.1:...`) qui ne
+  designe rien depuis un pod. Corrige pour OpenBao (`pod_addr`) ; le meme
+  probleme subsiste pour `ATELIER_LLM_PROXY_ADDR`.
+- Ne JAMAIS construire une commande shell avec `json.dumps` : les guillemets
+  doubles laissent `bash` interpreter backticks, `$(...)` et `$VAR`.
+  `shlex.quote` (guillemets simples) est la seule forme sure — d'autant que
+  les prompts du PM contiennent du texte issu du corps d'un ticket, entree
+  non fiable.
+- `atelier_mcp_session` fige son jeton OIDC a l'ouverture : une session MCP
+  tenue plus de quelques minutes finit en `ExpiredSignature`. Toute boucle
+  d'attente doit rouvrir une session courte a chaque iteration.
+- `create_workshop` (MCP) est asynchrone et laisse `egressAllowlist` vide
+  par defaut. Un appelant qui cree des Workshops doit donc (a) fournir
+  l'allowlist, sans quoi le build d'image ne peut jamais aboutir, et
+  (b) attendre la phase `Running` avant tout `exec_in_workshop`.
+- Le nom du modele par defaut de Claude Code change a chaque version du CLI
+  et LiteLLM ne le connait pas : Claude Code sort alors en erreur **sans
+  ecrire aucun fichier**, ce qui se traduit par des PR vides et aucun
+  message explicite. Epingler le modele cote appelant (`--model`) et garder
+  le wildcard LiteLLM en repli.
+- Un LLM encadre frequemment sa reponse JSON dans un bloc markdown malgre
+  une consigne "UNIQUEMENT du JSON" : retirer les delimiteurs avant
+  `json.loads` plutot que durcir le prompt.
+- Une microVM ne peut sortir que sur les ports 80 et 443 (redirection
+  transparente) ; tout autre port de destination est jete. Pour joindre un
+  service interne au cluster depuis un guest, l'exposer sur le port 80.
 
 - `fctools` 0.6.0/0.7.0-alpha.2 ne compilent pas avec seulement les
   features `vm` + `jailed-vmm-executor` + `tokio-runtime` +
@@ -1545,6 +1782,38 @@ racine a ete trouve, plus profond qu'un simple oubli de domaine dans
   Résolu en utilisant `(app as any).upgradeHandler(req, socket, head)`.
 
 ## Prochaines etapes (par priorite)
+
+> **Points ouverts laisses par la session du 2026-08-30** (voir "Premiere
+> execution complete du PM autonome" ci-dessus pour le contexte complet) :
+>
+> 0a. **Course sur `status.imageDigest`** — le plus important, et
+>     independant du PM. `image-builder` patche `status.imageDigest` a la fin
+>     du build, mais le controller ecrit ensuite un statut complet calcule
+>     depuis une copie en memoire anterieure, ce qui **efface le digest**. Le
+>     Workshop reste alors bloque en `BuildingImage` pour toujours, avec un
+>     Job `Completed` et une image bel et bien publiee dans le cache.
+>     Observe 1 fois sur 3 Workshops crees simultanement. Contournement
+>     manuel utilise : re-patcher `status` avec le digest lu dans les logs du
+>     Job. Correction a envisager : patch JSON merge cible sur les seuls
+>     champs calcules, ou relecture du Workshop juste avant `update_status`.
+>
+> 0b. **La PR ouverte par le PM est vide** — le correctif "modele epingle"
+>     n'a pas ete valide par un run complet. Ajouter au passage un garde-fou
+>     dans `OpenPullRequest` : ouvrir une PR sans aucun changement devrait
+>     echouer ou avertir, pas passer silencieusement.
+>
+> 0c. **`apply_wires_the_llm_virtual_key_injection_rule_when_configured`
+>     echoue** (`crates/controller/tests/reconcile.rs`) : la regle
+>     d'injection `llm-proxy` est absente (`[]`). Verifie comme
+>     **preexistant** — l'echec se reproduit a l'identique sur un arbre
+>     propre, sans les changements de cette session.
+>
+> 0d. **`ATELIER_LLM_PROXY_ADDR` souffre du meme defaut que
+>     `OPENBAO_ADDR`** (corrige, lui, par `pod_addr`) : la meme valeur sert
+>     aux appels du controller et a ce qui est injecte dans les pods. En dev,
+>     la generation de Virtual Key echoue donc toujours et retombe sur le
+>     jeton statique partage — degradation silencieuse mais fonctionnelle.
+
 
 1. ~~Brancher la microVM "builder" dans `image-builder`/`reconcile.rs`~~ —
    **fait cette session**, voir "Builder microVM" ci-dessus. Le pipeline
