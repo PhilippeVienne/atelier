@@ -334,9 +334,22 @@ pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<
     // finalizer pour une cle deja absente.
     if let Some(litellm_config) = &ctx.litellm {
         let client = litellm::LiteLlmClient::new(litellm_config.clone());
-        client
+        // Ne fait jamais echouer le finalizer sur une erreur RESEAU (LiteLLM
+        // injoignable — ex: DNS interne au cluster non resolvable depuis un
+        // controller lance hors cluster, cas de dev documente) : seul le 404
+        // etait deja tolere par `delete_virtual_key` lui-meme (`?` propage
+        // toute autre erreur, y compris une simple indisponibilite
+        // reseau) — sans ce garde, un Workshop devient indefiniment
+        // impossible a supprimer des que LiteLLM est injoignable au moment
+        // du nettoyage, constate en pratique (finalizer bloque en boucle).
+        // Meme tolerance, en miroir, que la generation de la cle a la
+        // creation (`ensure_image_build_job`, repli sur le jeton statique).
+        if let Err(err) = client
             .delete_virtual_key(&litellm::workshop_key_alias(&name))
-            .await?;
+            .await
+        {
+            tracing::warn!(%err, "revocation de la Virtual Key LiteLLM (cleanup) echouee, finalizer non bloque");
+        }
     }
 
     Ok(())
@@ -720,7 +733,7 @@ async fn ensure_image_build_job(
     .chain(
         ctx.openbao
             .as_ref()
-            .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+            .map(|c| env_var("OPENBAO_ADDR", &c.pod_addr)),
     )
     // Necessaire au moment du build pour ecrire ANTHROPIC_AUTH_TOKEN dans
     // `/etc/environment` (`inject_net_proxy_config`, crates/image-builder) —
@@ -1339,7 +1352,7 @@ async fn ensure_parent_pod(
                         .chain(
                             ctx.openbao
                                 .as_ref()
-                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+                                .map(|c| env_var("OPENBAO_ADDR", &c.pod_addr)),
                         )
                         .collect::<Vec<_>>(),
                     ),
@@ -1364,7 +1377,7 @@ async fn ensure_parent_pod(
                         .chain(
                             ctx.openbao
                                 .as_ref()
-                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+                                .map(|c| env_var("OPENBAO_ADDR", &c.pod_addr)),
                         )
                         .collect::<Vec<_>>(),
                     ),
@@ -1391,7 +1404,7 @@ async fn ensure_parent_pod(
                         .chain(
                             ctx.openbao
                                 .as_ref()
-                                .map(|c| env_var("OPENBAO_ADDR", &c.addr)),
+                                .map(|c| env_var("OPENBAO_ADDR", &c.pod_addr)),
                         )
                         .collect::<Vec<_>>(),
                     ),

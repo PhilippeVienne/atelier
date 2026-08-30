@@ -74,13 +74,25 @@ export async function decideReview(
   return { threadId: body.thread_id, status: body.status };
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 /**
  * Relaie le flux SSE de `POST /chat` tel quel vers le navigateur (meme
  * principe que `lib/guest-proxy.ts` : le corps de la reponse `fetch` est
  * un `ReadableStream`, retourne directement sans le bufferiser). Le token
  * de session (httpOnly) est ajoute ici, jamais visible cote navigateur.
+ * `history` : tours precedents de cette conversation (voir
+ * `pm_engine.main::ChatRequest.history` — sans ca, le PM Engine traite
+ * chaque message comme une toute premiere conversation).
  */
-export async function proxyChat(repo: string, query: string): Promise<Response> {
+export async function proxyChat(
+  repo: string,
+  query: string,
+  history: ChatMessage[] = [],
+): Promise<Response> {
   const token = await requireAccessToken();
   const upstream = await fetch(`${PM_ENGINE_URL}/chat`, {
     method: "POST",
@@ -88,7 +100,7 @@ export async function proxyChat(repo: string, query: string): Promise<Response> 
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ repo, query }),
+    body: JSON.stringify({ repo, query, history }),
     cache: "no-store",
   });
   if (!upstream.ok || !upstream.body) {

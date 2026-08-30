@@ -11,6 +11,7 @@ import {
 } from "@/lib/api-server";
 import { decideReview } from "@/lib/pm-engine";
 import { destroySession } from "@/lib/session";
+import { createMirrorProject, ForgejoError } from "@/lib/forgejo";
 
 export async function logout() {
   await destroySession();
@@ -75,4 +76,35 @@ export async function createWorkshopAction(
 
   revalidatePath("/workshops");
   redirect("/workshops");
+}
+
+export interface CreateMirrorProjectState {
+  error?: string;
+}
+
+export async function createMirrorProjectAction(
+  _prevState: CreateMirrorProjectState,
+  formData: FormData,
+): Promise<CreateMirrorProjectState> {
+  const name = String(formData.get("name") ?? "").trim();
+  const sourceUrl = String(formData.get("sourceUrl") ?? "").trim();
+  const isPrivate = formData.get("private") === "on";
+  const token = String(formData.get("token") ?? "").trim() || undefined;
+
+  if (!name || !sourceUrl) {
+    return { error: "nom et URL source requis" };
+  }
+  if (isPrivate && !token) {
+    return { error: "un jeton d'acces est requis pour un depot prive" };
+  }
+
+  try {
+    await createMirrorProject({ name, sourceUrl, private: isPrivate, token });
+  } catch (err) {
+    const message = err instanceof ForgejoError ? err.message : "erreur inattendue";
+    return { error: message };
+  }
+
+  revalidatePath("/projects");
+  redirect("/projects");
 }

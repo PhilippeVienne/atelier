@@ -19,8 +19,27 @@
 //! jamais acces directement.
 
 pub struct OpenBaoConfig {
+    /// Adresse utilisee par CE controller pour ses propres appels
+    /// (provisioning de policy/role) — en dev, un port-forward host
+    /// (`http://127.0.0.1:8200`, le controller tournant hors cluster, voir
+    /// `deploy/dev/local-stack.sh`).
     pub addr: String,
     pub token: String,
+    /// Adresse injectee dans `OPENBAO_ADDR` des pods Workshop
+    /// (`net-proxy`, qui s'authentifie lui-meme via son ServiceAccount,
+    /// jamais avec `token` ci-dessus) : DOIT etre joignable depuis
+    /// l'interieur du cluster, contrairement a `addr` — bug reel constate
+    /// en pratique (session de debug 2026-08-30, premier vrai Workshop
+    /// Firecracker de ce depot) : reutiliser `addr` telle quelle faisait
+    /// echouer indefiniment le login Kubernetes de `net-proxy`
+    /// ("127.0.0.1" a l'interieur d'un pod ne designe jamais OpenBao),
+    /// bloquant `atelier-terminal.service`/`atelier-code-server.service`
+    /// (mot de passe de session jamais recupere). Distinct de `addr` en
+    /// dev (`ATELIER_OPENBAO_POD_ADDR`, Service K8s
+    /// `atelier-openbao-dev`) ; identique a `addr` par defaut si absent
+    /// (cas de production ou le controller tourne lui-meme dans le
+    /// cluster).
+    pub pod_addr: String,
 }
 
 /// Renvoie `Ok(None)` si `OPENBAO_ADDR` est absent (fonctionnalite
@@ -32,7 +51,12 @@ pub fn config_from_env() -> anyhow::Result<Option<OpenBaoConfig>> {
     };
     let token = std::env::var("OPENBAO_TOKEN")
         .map_err(|_| anyhow::anyhow!("OPENBAO_ADDR est defini mais OPENBAO_TOKEN est absent"))?;
-    Ok(Some(OpenBaoConfig { addr, token }))
+    let pod_addr = std::env::var("ATELIER_OPENBAO_POD_ADDR").unwrap_or_else(|_| addr.clone());
+    Ok(Some(OpenBaoConfig {
+        addr,
+        token,
+        pod_addr,
+    }))
 }
 
 /// Chemins KV (v2) sous lesquels vivent les secrets d'un Workshop. KV v2

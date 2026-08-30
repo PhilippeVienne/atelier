@@ -260,6 +260,10 @@ async fn build_via_microvm(
                 .context("ATELIER_BUILDER_NET_PROXY_PORT invalide")?,
             net_proxy_transparent_http_port,
             net_proxy_transparent_tls_port,
+            // Pas d'acces au serveur metadata : la VM builder execute
+            // `envbuilder`, jamais les scripts de recuperation de
+            // credentials du devcontainer (voir `enable_transparent_gateway`).
+            None,
         )
         .await
         .context("pose des regles iptables de la passerelle transparente (VM builder)")?;

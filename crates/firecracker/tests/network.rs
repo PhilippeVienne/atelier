@@ -145,7 +145,7 @@ async fn enables_transparent_redirect_without_touching_forward() {
     };
 
     network
-        .enable_transparent_gateway(3128, 3180, 3181)
+        .enable_transparent_gateway(3128, 3180, 3181, Some(3132))
         .await
         .expect("la pose des regles de redirection doit reussir sous CAP_NET_ADMIN");
 
@@ -166,6 +166,27 @@ async fn enables_transparent_redirect_without_touching_forward() {
     assert!(
         nat_rules.contains("--dport 53") && nat_rules.contains("--to-ports 53"),
         "redirection DNS manquante: {nat_rules}"
+    );
+
+    // Regression (bug reel, 2026-08-30) : le port du serveur metadata de
+    // `net-proxy` (3132) doit etre ACCEPTE dans la chaine `filter` dediee.
+    // Il n'y etait pas : le guest ne pouvait donc jamais recuperer son mot
+    // de passe de session ni sa cle publique SSH au boot (trafic jete par
+    // le `DROP` final de la chaine), rendant ttyd/code-server et sshd
+    // definitivement inaccessibles — voir
+    // `crates/vm-supervisor/src/main.rs` pour le detail du symptome.
+    // Contrairement a 80/443/53, ce port est adresse DIRECTEMENT par le
+    // guest (pas de redirection `nat`), d'ou la verification sur la chaine
+    // `filter` et non `nat`.
+    let filter_chain = format!("atelier-vm-{tap_name}");
+    let filter_output = Command::new("iptables")
+        .args(["-S", &filter_chain])
+        .output()
+        .expect("lancement de `iptables -S <chaine dediee>`");
+    let filter_rules = String::from_utf8_lossy(&filter_output.stdout);
+    assert!(
+        filter_rules.contains("--dport 3132") && filter_rules.contains("-j ACCEPT"),
+        "le port du serveur metadata (3132) doit etre accepte: {filter_rules}"
     );
 
     let prerouting_output = Command::new("iptables")
