@@ -39,6 +39,42 @@ async def test_chat_returns_the_mock_response_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_with_tools_returns_the_full_assistant_message() -> None:
+    """Le modele mock (`mock_response`) ne genere jamais de `tool_calls`
+    reel (LiteLLM court-circuite l'appel avant tout raisonnement) : ce test
+    couvre donc uniquement que `chat_with_tools` renvoie bien le message
+    assistant complet (pas seulement `content`, contrairement a `chat()`),
+    forme consommee par `pm_engine.main::chat`. Le vrai chemin `tool_calls`
+    est couvert cote execution par `test_run_tool_call_*`
+    (`tests/test_main_chat_tools.py`), avec un `tool_call` construit a la
+    main plutot qu'un vrai aller-retour LLM."""
+    _skip_if_unavailable()
+    client = LlmClient(LITELLM_URL, LITELLM_MASTER_KEY)
+    try:
+        message = await client.chat_with_tools(
+            "atelier-budget-test",
+            [{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "noop",
+                        "description": "outil factice, jamais reellement invoque ici",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+    except httpx.HTTPError as exc:
+        pytest.skip(f"LiteLLM injoignable pour ce test: {exc}")
+    else:
+        assert message["content"] == "ok"
+        assert message.get("tool_calls") in (None, [])
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_embed_returns_a_real_384_dim_vector() -> None:
     _skip_if_unavailable()
     client = LlmClient(LITELLM_URL, LITELLM_MASTER_KEY)

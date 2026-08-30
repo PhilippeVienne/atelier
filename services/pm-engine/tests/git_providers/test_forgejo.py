@@ -118,3 +118,33 @@ async def test_forgejo_provider_full_issue_to_merged_pr_lifecycle(test_repo: str
         await provider.merge_pr(test_repo, pr.number)
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_forgejo_provider_create_mirror() -> None:
+    """`create_mirror` (Jalon M5, "Projets" — outil `setup_mirror_project`
+    du chat PM) contre un vrai depot public GitHub, sans jeton : couvre la
+    resolution dynamique du proprietaire (`_whoami`) et la detection du
+    `service` (`_migration_auth`)."""
+    _skip_if_unavailable()
+    provider = ForgejoProvider(FORGEJO_URL, FORGEJO_TOKEN)
+    repo_name = f"pm-engine-mirror-test-{uuid.uuid4().hex[:8]}"
+    try:
+        project = await provider.create_mirror(
+            name=repo_name,
+            source_url="https://github.com/octocat/Hello-World.git",
+            private=False,
+        )
+        assert project.name == repo_name
+        assert project.owner == FORGEJO_OWNER
+        assert project.original_url == "https://github.com/octocat/Hello-World.git"
+        assert project.private is False
+        assert project.clone_url.endswith(f"/{FORGEJO_OWNER}/{repo_name}.git")
+    finally:
+        await provider.aclose()
+        async with httpx.AsyncClient(
+            base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+            headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+            timeout=30.0,
+        ) as admin_client:
+            await admin_client.delete(f"/repos/{FORGEJO_OWNER}/{repo_name}")

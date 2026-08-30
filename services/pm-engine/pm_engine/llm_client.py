@@ -37,6 +37,26 @@ class LlmClient:
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
+    async def chat_with_tools(
+        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any
+    ) -> dict[str, Any]:
+        """Comme `chat()`, mais renvoie le message assistant complet
+        (`content` + eventuel `tool_calls`), pas seulement le texte : le
+        chat PM (`pm_engine.main::chat`) l'utilise pour decider d'appeler un
+        outil (ex: `setup_mirror_project`) avant de streamer la reponse
+        finale. Non-streamant deliberement : reassembler des fragments de
+        `tool_calls.arguments` a travers des chunks SSE (index + JSON
+        partiel a concatener) ajouterait une complexite non negligeable pour
+        un gain UX marginal sur un aller-retour de decision, generalement
+        rapide."""
+        response = await self._client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": messages, "tools": tools, **kwargs},
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]
+
     async def chat_stream(
         self, model: str, messages: list[dict[str, str]], **kwargs: Any
     ) -> AsyncIterator[str]:
