@@ -97,6 +97,13 @@ impl InternalRoutes {
         Ok(Self { routes })
     }
 
+    /// Enregistre un alias a la main — reserve aux tests, qui n'ont pas a
+    /// passer par des variables d'environnement pour verifier le routage.
+    #[cfg(test)]
+    pub fn insert_for_test(&mut self, alias: &'static str, addr: (String, u16)) {
+        self.routes.insert(alias, addr);
+    }
+
     /// Adresse reelle vers laquelle relayer si `host` est un alias interne
     /// configure — comparaison insensible a la casse, pas de wildcard (ce
     /// sont des noms fixes, pas des domaines).

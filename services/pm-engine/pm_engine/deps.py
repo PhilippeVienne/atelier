@@ -42,12 +42,16 @@ class PmEngineDeps:
     """Modele passe explicitement a Claude Code (`--model`) dans les
     Workshops.
 
-    Ne PAS dependre du modele par defaut du CLI : son nom evolue a chaque
-    version (`claude-opus-4-8[1m]` constate le 2026-08-30) et Claude Code
-    refuse alors de demarrer derriere LiteLLM ("issue with the selected
-    model"), sortant en erreur sans ecrire le moindre fichier — le PM
-    ouvrait des PR vides. Epingler le modele releve de toute facon du PM
-    (cout, reproductibilite), pas du CLI.
+    Choisir le modele releve du PM (cout, reproductibilite d'un run a
+    l'autre) plutot que du defaut d'un CLI, dont le nom change a chaque
+    version.
+
+    Note : Claude Code affiche un avertissement au demarrage sur le modele
+    ("issue with the selected model") meme quand tout fonctionne. Ce message
+    n'est PAS revelateur du probleme qu'il decrit — il apparaissait aussi
+    quand la vraie panne etait que l'alias `llm-proxy` n'etait pas resolvable
+    par DNS. Ne pas partir en chasse au modele sur la foi de ce seul message,
+    voir `docs/architecture/pieges.md`.
 
     Renseigne depuis `PM_ENGINE_CLAUDE_CODE_MODEL` (voir `pm_engine.main`)."""
 

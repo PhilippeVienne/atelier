@@ -14,6 +14,32 @@
 
 ---
 
+- **Un alias interne de `net-proxy` (`llm-proxy`, `mcp-gateway`, `registry`,
+  `git.atelier.internal`) n'existe dans aucun DNS reel.** Il n'etait joignable
+  que par un client honorant `HTTP_PROXY` — le proxy resout alors l'alias sur
+  l'en-tete `Host`. Tout client qui resout lui-meme son nom d'hote echouait :
+  c'est le cas de Node.js, qui ignore `HTTP_PROXY` par defaut, donc de Claude
+  Code. Le resolveur de `net-proxy` repond desormais lui-meme pour ces alias
+  (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
+  service interne alors que `curl` y arrive depuis le meme guest, verifier
+  `getent hosts <alias>` avant toute autre piste.
+- **Le message de Claude Code "There's an issue with the selected model … it
+  may not exist or you may not have access to it" ne dit pas ce qu'il pretend.**
+  Il s'affiche aussi quand le modele est parfaitement valide et que la panne
+  reelle est ailleurs (API injoignable, DNS). Il apparait meme lors des
+  executions qui reussissent. Ne jamais l'utiliser comme diagnostic : verifier
+  d'abord qu'un appel HTTP direct a `$ANTHROPIC_BASE_URL` aboutit depuis le
+  guest.
+- **Un `curl` qui reussit ne prouve pas qu'un autre client reussira** dans la
+  meme microVM : `curl` honore `HTTP_PROXY`, la plupart des runtimes
+  applicatifs non. C'est precisement ce qui a masque le piege ci-dessus
+  pendant toute une session — l'appel de verification passait, l'application
+  echouait.
+- **Un `suspend`/`resume` restaure le filesystem du guest depuis le
+  snapshot** : toute modification faite a la main dans la microVM (y compris
+  un `/etc/hosts` bidouille pour un test) survit au cycle et **contamine les
+  mesures suivantes**. Repartir d'un Workshop neuf, ou nettoyer explicitement,
+  avant de conclure qu'un correctif fonctionne.
 - Toute regle `iptables` de la microVM se termine par un `DROP` : un port
   ouvert cote hote mais absent de la liste passee a
   `enable_transparent_gateway` est jete **silencieusement**. Comme c'est un

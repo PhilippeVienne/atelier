@@ -37,6 +37,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::RwLock;
 
 use crate::allowlist;
+use crate::internal::InternalRoutes;
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_MESSAGE_SIZE: usize = 4096;
@@ -56,6 +57,12 @@ pub struct DnsConfig {
     /// Mutable a chaud (voir `crate::admin`) : `request_egress` de
     /// `mcp-gateway` peut elargir cette liste sans redemarrer le process.
     pub allowlist: Arc<RwLock<Vec<String>>>,
+    /// Alias internes (`llm-proxy`, `mcp-gateway`, `registry`...) : ce
+    /// resolveur y repond lui-meme, avec [`DnsConfig::alias_ip`].
+    pub internal_routes: Arc<InternalRoutes>,
+    /// Adresse annoncee pour un alias interne — l'IP hote du lien
+    /// point-a-point, ou `net-proxy` ecoute.
+    pub alias_ip: std::net::Ipv4Addr,
 }
 
 pub async fn run(config: DnsConfig) -> anyhow::Result<()> {
@@ -98,9 +105,19 @@ async fn run_udp(config: DnsConfig) -> anyhow::Result<()> {
         let listen = Arc::clone(&listen);
         let allowlist = Arc::clone(&config.allowlist);
         let upstream = config.upstream.clone();
+        let internal_routes = Arc::clone(&config.internal_routes);
+        let alias_ip = config.alias_ip;
         tokio::spawn(async move {
             let snapshot = allowlist.read().await.clone();
-            if let Some(response) = handle_query(&message, &snapshot, &upstream, client_addr).await
+            if let Some(response) = handle_query(
+                &message,
+                &snapshot,
+                &upstream,
+                client_addr,
+                &internal_routes,
+                alias_ip,
+            )
+            .await
             {
                 let _ = listen.send_to(&response, client_addr).await;
             }
@@ -114,8 +131,13 @@ async fn run_tcp(config: DnsConfig) -> anyhow::Result<()> {
         let (socket, peer) = listener.accept().await?;
         let allowlist = Arc::clone(&config.allowlist);
         let upstream = config.upstream.clone();
+        let internal_routes = Arc::clone(&config.internal_routes);
+        let alias_ip = config.alias_ip;
         tokio::spawn(async move {
-            if let Err(err) = handle_tcp_connection(socket, allowlist, upstream, peer).await {
+            if let Err(err) =
+                handle_tcp_connection(socket, allowlist, upstream, peer, internal_routes, alias_ip)
+                    .await
+            {
                 tracing::debug!(%peer, %err, "connexion DNS (TCP) terminee");
             }
         });
@@ -127,6 +149,8 @@ async fn handle_tcp_connection(
     allowlist: Arc<RwLock<Vec<String>>>,
     upstream: String,
     peer: SocketAddr,
+    internal_routes: Arc<InternalRoutes>,
+    alias_ip: std::net::Ipv4Addr,
 ) -> anyhow::Result<()> {
     loop {
         let mut len_buf = [0u8; 2];
@@ -138,9 +162,16 @@ async fn handle_tcp_connection(
         socket.read_exact(&mut message).await?;
 
         let snapshot = allowlist.read().await.clone();
-        let response = handle_query(&message, &snapshot, &upstream, peer)
-            .await
-            .unwrap_or_else(|| refusal(&message));
+        let response = handle_query(
+            &message,
+            &snapshot,
+            &upstream,
+            peer,
+            &internal_routes,
+            alias_ip,
+        )
+        .await
+        .unwrap_or_else(|| refusal(&message));
 
         socket
             .write_all(&(response.len() as u16).to_be_bytes())
@@ -158,6 +189,8 @@ async fn handle_query(
     allowlist: &[String],
     upstream: &str,
     peer: SocketAddr,
+    internal_routes: &InternalRoutes,
+    alias_ip: std::net::Ipv4Addr,
 ) -> Option<Vec<u8>> {
     let question = match parse_question(message) {
         Ok(question) => question,
@@ -176,6 +209,24 @@ async fn handle_query(
             "DNS refuse (type de requete interdit)"
         );
         return Some(refusal(message));
+    }
+
+    // Alias interne (`llm-proxy`, `mcp-gateway`, `registry`...) : ces noms
+    // n'existent dans aucun DNS reel, ils ne sont connus que de `net-proxy`.
+    // Jusqu'ici seul un client honorant `HTTP_PROXY` pouvait les joindre (le
+    // proxy resout l'alias sur l'en-tete `Host`) ; tout client qui resout
+    // lui-meme son nom d'hote — Node.js, donc Claude Code, ne lit pas
+    // `HTTP_PROXY` par defaut — echouait avec une erreur sans rapport
+    // apparent ("issue with the selected model"), voir
+    // docs/architecture/pieges.md. On repond donc ici l'IP hote : la
+    // redirection transparente (port 80/443) rattrape ensuite la connexion
+    // et `net-proxy` route sur l'en-tete `Host` comme d'habitude.
+    //
+    // Volontairement place AVANT l'allowlist : un alias interne n'est jamais
+    // une destination Internet, il n'a pas a y figurer.
+    if internal_routes.resolve(&question.name).is_some() {
+        tracing::info!(%peer, name = question.name, "DNS : alias interne resolu localement");
+        return Some(alias_answer(message, &question, alias_ip));
     }
 
     if !allowlist::is_allowed(&question.name, allowlist) {
@@ -216,6 +267,39 @@ async fn query_upstream(upstream: &str, message: &[u8]) -> anyhow::Result<Vec<u8
 
 /// Construit une reponse `REFUSED` (RCODE 5) en reutilisant tel quel
 /// l'en-tete et la question de la requete d'origine.
+/// Reponse A synthetique pour un alias interne : recopie la question puis
+/// ajoute un unique enregistrement A pointant sur `ip`.
+///
+/// Un QTYPE autre que A (AAAA notamment, systematiquement demande en
+/// parallele par la libc) recoit une reponse NOERROR **sans** section
+/// Answer : c'est la forme correcte pour "ce nom existe, mais pas dans cette
+/// famille d'adresses" — un `REFUSED` ou un `NXDOMAIN` ferait au contraire
+/// echouer la resolution entiere chez la plupart des clients.
+fn alias_answer(message: &[u8], question: &Question, ip: std::net::Ipv4Addr) -> Vec<u8> {
+    const QTYPE_A: u16 = 1;
+    const TTL_SECONDS: u32 = 30;
+
+    // En-tete + section Question, recopies tels quels depuis la requete.
+    let question_end = 12 + question.wire_len;
+    let mut response = message[..question_end].to_vec();
+    response[2] |= 0b1000_0100; // QR = 1, AA = 1 (nous faisons autorite ici)
+    response[3] = 0b1000_0000; // RA = 1, RCODE = 0 (NOERROR)
+
+    if question.qtype != QTYPE_A {
+        response[6..8].copy_from_slice(&0u16.to_be_bytes()); // ANCOUNT = 0
+        return response;
+    }
+    response[6..8].copy_from_slice(&1u16.to_be_bytes()); // ANCOUNT = 1
+
+    response.extend_from_slice(&[0xC0, 0x0C]); // NAME : pointeur de compression vers le QNAME
+    response.extend_from_slice(&QTYPE_A.to_be_bytes());
+    response.extend_from_slice(&1u16.to_be_bytes()); // CLASS = IN
+    response.extend_from_slice(&TTL_SECONDS.to_be_bytes());
+    response.extend_from_slice(&4u16.to_be_bytes()); // RDLENGTH
+    response.extend_from_slice(&ip.octets());
+    response
+}
+
 fn refusal(message: &[u8]) -> Vec<u8> {
     let mut response = message.to_vec();
     if response.len() >= 4 {
@@ -228,6 +312,9 @@ fn refusal(message: &[u8]) -> Vec<u8> {
 struct Question {
     name: String,
     qtype: u16,
+    /// Longueur en octets de la section Question (QNAME + QTYPE + QCLASS),
+    /// pour pouvoir la recopier telle quelle dans une reponse synthetique.
+    wire_len: usize,
 }
 
 /// Extrait le nom (en minuscules, notation pointee) et le type de l'unique
@@ -275,6 +362,9 @@ fn parse_question(message: &[u8]) -> anyhow::Result<Question> {
     Ok(Question {
         name: labels.join("."),
         qtype,
+        // `offset` pointe sur le QTYPE ; +4 pour QTYPE et QCLASS. La
+        // longueur est comptee depuis la fin de l'en-tete (12 octets).
+        wire_len: offset + 4 - 12,
     })
 }
 
@@ -378,6 +468,8 @@ mod tests {
             &allowlist,
             &upstream_addr.to_string(),
             "127.0.0.1:1".parse().unwrap(),
+            &InternalRoutes::default(),
+            std::net::Ipv4Addr::new(169, 254, 0, 1),
         )
         .await
         .expect("reponse relayee");
@@ -405,6 +497,8 @@ mod tests {
             &allowlist,
             &upstream_addr.to_string(),
             "127.0.0.1:1".parse().unwrap(),
+            &InternalRoutes::default(),
+            std::net::Ipv4Addr::new(169, 254, 0, 1),
         )
         .await
         .expect("reponse REFUSED locale");
@@ -414,6 +508,77 @@ mod tests {
         assert!(
             !touched.load(std::sync::atomic::Ordering::SeqCst),
             "l'upstream ne doit jamais recevoir une requete hors allowlist"
+        );
+    }
+
+    /// Regression (2026-08-30) : un alias interne doit etre resolu par CE
+    /// serveur, sans upstream ni allowlist.
+    ///
+    /// Ces noms (`llm-proxy`, `mcp-gateway`...) n'existent dans aucun DNS
+    /// reel. Tant qu'ils n'etaient joignables que via `HTTP_PROXY`, tout
+    /// client resolvant lui-meme son nom d'hote echouait — Claude Code
+    /// (Node.js, qui ne lit pas `HTTP_PROXY` par defaut) n'atteignait donc
+    /// jamais LiteLLM et se plaignait d'un modele inexistant, symptome sans
+    /// rapport apparent avec du DNS.
+    #[tokio::test]
+    async fn resolves_internal_alias_locally_without_upstream() {
+        let mut routes = InternalRoutes::default();
+        routes.insert_for_test("llm-proxy", ("10.0.0.1".to_string(), 4000));
+
+        let query = build_query(7, "llm-proxy");
+        let response = handle_query(
+            &query,
+            // Allowlist vide ET upstream injoignable : la reponse ne peut
+            // venir que de la resolution locale.
+            &[],
+            "127.0.0.1:1",
+            "127.0.0.1:1".parse().unwrap(),
+            &routes,
+            std::net::Ipv4Addr::new(169, 254, 0, 1),
+        )
+        .await
+        .expect("un alias interne doit toujours obtenir une reponse");
+
+        assert_eq!(response[3] & 0x0F, 0, "RCODE doit etre NOERROR");
+        assert_eq!(
+            u16::from_be_bytes([response[6], response[7]]),
+            1,
+            "une reponse A attendue"
+        );
+        assert_eq!(
+            &response[response.len() - 4..],
+            &[169, 254, 0, 1],
+            "l'alias doit pointer sur l'IP hote du lien point-a-point"
+        );
+    }
+
+    /// Une requete AAAA sur un alias doit repondre NOERROR sans reponse (le
+    /// nom existe, mais pas en IPv6) : un REFUSED ou un NXDOMAIN ferait
+    /// echouer la resolution entiere chez la plupart des clients, alors que
+    /// la libc interroge systematiquement A et AAAA en parallele.
+    #[tokio::test]
+    async fn internal_alias_answers_noerror_empty_for_aaaa() {
+        let mut routes = InternalRoutes::default();
+        routes.insert_for_test("llm-proxy", ("10.0.0.1".to_string(), 4000));
+
+        const QTYPE_AAAA: u16 = 28;
+        let query = build_query_with_type(8, "llm-proxy", QTYPE_AAAA);
+        let response = handle_query(
+            &query,
+            &[],
+            "127.0.0.1:1",
+            "127.0.0.1:1".parse().unwrap(),
+            &routes,
+            std::net::Ipv4Addr::new(169, 254, 0, 1),
+        )
+        .await
+        .expect("reponse attendue");
+
+        assert_eq!(response[3] & 0x0F, 0, "RCODE doit etre NOERROR");
+        assert_eq!(
+            u16::from_be_bytes([response[6], response[7]]),
+            0,
+            "aucune reponse A ne doit etre servie pour une question AAAA"
         );
     }
 
@@ -438,6 +603,8 @@ mod tests {
                 &allowlist,
                 &upstream_addr.to_string(),
                 "127.0.0.1:1".parse().unwrap(),
+                &InternalRoutes::default(),
+                std::net::Ipv4Addr::new(169, 254, 0, 1),
             )
             .await
             .unwrap_or_else(|| panic!("reponse REFUSED locale attendue pour qtype={qtype}"));

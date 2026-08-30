@@ -159,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         allowlist,
         upstream: upstream_proxy,
         no_proxy,
-        internal: internal_routes,
+        internal: Arc::clone(&internal_routes),
         identity_proxy,
         simulator: Arc::clone(&simulator),
     };
@@ -250,10 +250,21 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| DEFAULT_DNS_LISTEN_ADDR.to_string());
     let dns_upstream =
         std::env::var("ATELIER_DNS_UPSTREAM").unwrap_or_else(|_| dns::default_upstream());
+    // IP annoncee par le resolveur pour les alias internes : celle de
+    // l'hote sur le lien point-a-point avec la microVM, ou `net-proxy`
+    // ecoute (`crates/firecracker::network`, sous-reseau `/30` d'index 0 ->
+    // hote `169.254.0.1`). Surchargeable pour un banc de test qui n'aurait
+    // pas ce plan d'adressage.
+    let alias_ip: std::net::Ipv4Addr = std::env::var("ATELIER_NET_PROXY_ALIAS_IP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(std::net::Ipv4Addr::new(169, 254, 0, 1));
     let dns_config = dns::DnsConfig {
         listen_addr: dns_listen_addr,
         upstream: dns_upstream,
         allowlist: Arc::clone(&egress_config.allowlist),
+        internal_routes: Arc::clone(&internal_routes),
+        alias_ip,
     };
     tokio::spawn(async move {
         if let Err(err) = dns::run(dns_config).await {

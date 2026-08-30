@@ -18,10 +18,13 @@ model_list:
   # 2026-08-30 dans une microVM de Workshop). Maintenir un alias exact par
   # version serait a refaire indefiniment : ce wildcard capte donc tout nom
   # de modele non explicitement liste au-dessus et le route vers DeepSeek.
-  # Sans lui, Claude Code echoue immediatement dans les Workshops ("issue
-  # with the selected model ... It may not exist or you may not have access
-  # to it") et n'ecrit jamais aucun fichier — le PM ouvrait alors des PR
-  # vides sans que rien ne signale la cause.
+  #
+  # A ne pas confondre avec la panne qui a motive son ajout : Claude Code
+  # affiche un avertissement sur le modele meme quand il fonctionne, et la
+  # vraie cause des PR vides du PM etait ailleurs (alias `llm-proxy` non
+  # resolvable par DNS, voir docs/architecture/pieges.md). Ce wildcard reste
+  # utile — un modele inconnu de LiteLLM echouerait pour de bon — mais il ne
+  # remplace pas ce correctif.
   #
   # Place APRES les alias explicites : LiteLLM privilegie une correspondance
   # exacte, le wildcard ne sert que de repli.
