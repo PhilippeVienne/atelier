@@ -54,7 +54,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       e2fsprogs tar ca-certificates libcap2-bin iproute2 iptables \
+       e2fsprogs tar ca-certificates libcap2-bin iproute2 iptables git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deploy/dev/crane/crane /usr/local/bin/crane

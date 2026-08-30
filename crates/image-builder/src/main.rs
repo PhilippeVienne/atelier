@@ -91,8 +91,11 @@ async fn main() -> Result<()> {
     tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
     inject_net_proxy_config(&rootfs_dir).await?;
 
-    tracing::info!("ensuring workspace directory exists and is owned by vscode");
-    ensure_workspace_directory(&rootfs_dir, &source).await?;
+    tracing::info!("cloning target repository into the workspace");
+    ensure_workspace_clone(&rootfs_dir, &source, git_credentials.as_ref()).await?;
+
+    tracing::info!("installing the boot-time workspace refresh service");
+    inject_workspace_refresh(&rootfs_dir, &source).await?;
 
     tracing::info!("packaging rootfs as ext4");
     let ext4_path = work_dir.join("rootfs.ext4");
@@ -634,29 +637,225 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
 /// uid 1000) dans le rootfs final, pour que `ttyd` et `code-server`
 /// demarrent directement dans le bon workspace sans dependre d'un `mkdir`
 /// prealable.
-async fn ensure_workspace_directory(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
-    let repo_name = source
+/// Place dans le rootfs un vrai clone du depot cible, a la revision
+/// demandee, plus le necessaire pour le rafraichir a chaque demarrage de la
+/// microVM.
+///
+/// Jusqu'ici ce repertoire n'etait qu'un dossier vide avec un `.keep` :
+/// `envbuilder` clone bien le depot pour CONSTRUIRE l'image, mais ce clone
+/// vit dans la microVM "builder" et ne se retrouve pas dans l'image poussee.
+/// L'agent bootait donc dans un workspace vide, sans code ni depot git — il
+/// ne pouvait ni travailler sur les sources, ni commiter, ni pousser. Cause
+/// racine des "PR vides" du PM (constate le 2026-08-30).
+///
+/// Le clone est fait ici, cote hote, et embarque dans le rootfs : la microVM
+/// demarre donc avec les sources immediatement disponibles, sans dependre du
+/// reseau au boot. Un service systemd (voir `inject_workspace_refresh`) le
+/// remet ensuite a jour a chaque demarrage, pour qu'un Workshop repris
+/// apres une longue veille ne reparte pas d'un etat perime.
+async fn ensure_workspace_clone(
+    rootfs_dir: &Path,
+    source: &DevcontainerSource,
+    credentials: Option<&GitCredentials>,
+) -> Result<()> {
+    let ws_dir = rootfs_dir.join("workspaces").join(workspace_name(source));
+    tokio::fs::create_dir_all(&ws_dir).await?;
+
+    // L'URL peut porter les identifiants d'un depot prive : jamais
+    // journalisee, contrairement a `source.repo`.
+    let clone_url = authenticated_url(&source.repo, credentials);
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "--no-single-branch",
+            &clone_url,
+            &ws_dir.to_string_lossy(),
+        ])
+        // `net-proxy` tourne en sidecar du meme pod, donc dans le meme
+        // netns : joignable en loopback, comme pour la microVM builder.
+        .env("HTTP_PROXY", net_proxy_local_url())
+        .env("HTTPS_PROXY", net_proxy_local_url())
+        .status()
+        .await
+        .context("lancement de `git clone`")?;
+
+    if !status.success() {
+        // Non bloquant : un depot injoignable ou prive sans identifiants ne
+        // doit pas faire echouer tout le build d'image. Le workspace reste
+        // alors vide, et le service de rafraichissement retentera au boot.
+        tracing::warn!(
+            repo = %source.repo,
+            "clone du depot dans le workspace echoue, workspace laisse vide"
+        );
+    } else {
+        let revision = source.revision.trim();
+        if !revision.is_empty() && revision != "HEAD" {
+            let checkout = Command::new("git")
+                .args(["-C", &ws_dir.to_string_lossy(), "checkout", revision])
+                .status()
+                .await
+                .context("lancement de `git checkout`")?;
+            if !checkout.success() {
+                tracing::warn!(%revision, "revision introuvable, clone laisse sur la branche par defaut");
+            }
+        }
+        tracing::info!(repo = %source.repo, revision = %source.revision, "depot clone dans le workspace");
+    }
+
+    // Un `.keep` reste utile quand le clone a echoue : sans lui, `mke2fs -d`
+    // ne materialise pas un repertoire vide.
+    if !ws_dir.join(".git").exists() {
+        tokio::fs::write(ws_dir.join(".keep"), "atelier workspace\n")
+            .await
+            .ok();
+    }
+
+    chown_recursive(&rootfs_dir.join("workspaces"));
+    Ok(())
+}
+
+/// Installe dans le rootfs un service systemd qui remet le clone du
+/// workspace a jour a chaque demarrage de la microVM.
+///
+/// Le clone embarque dans l'image (voir `ensure_workspace_clone`) fige les
+/// sources a l'instant du build. Un Workshop repris apres plusieurs jours de
+/// veille, ou dont la branche a avance entre-temps, repartirait sinon d'un
+/// etat perime. Ce service rattrape l'ecart au boot.
+///
+/// Best-effort par conception (`|| true`, jamais `Restart=`) : sans reseau,
+/// sans identifiants pour un depot prive, ou sur un depot dont la branche a
+/// disparu, la microVM doit demarrer quand meme avec les sources telles
+/// qu'elles etaient au build. Un workspace legerement en retard vaut mieux
+/// qu'un Workshop qui ne demarre pas.
+///
+/// `git reset --hard` et non `pull` : le travail local d'un agent n'a pas a
+/// survivre a un redemarrage — il est cense avoir ete commite et pousse.
+/// Les modifications non commitees sont donc volontairement ecrasees, ce que
+/// le message du service annonce explicitement.
+async fn inject_workspace_refresh(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
+    let ws_path = format!("/workspaces/{}", workspace_name(source));
+    let revision = {
+        let r = source.revision.trim();
+        if r.is_empty() || r == "HEAD" {
+            "HEAD".to_string()
+        } else {
+            r.to_string()
+        }
+    };
+
+    let script = format!(
+        r#"#!/usr/bin/env bash
+# Remet le clone du workspace a jour au demarrage de la microVM (installe
+# par atelier-image-builder). Best-effort : ne fait jamais echouer le boot.
+set -u
+WS="{ws_path}"
+REV="{revision}"
+
+[ -d "$WS/.git" ] || {{ echo "atelier: $WS n'est pas un depot git, rien a rafraichir" >&2; exit 0; }}
+cd "$WS" || exit 0
+
+# `git fetch` sort en erreur sans reseau ni identifiants : c'est un cas
+# normal (Workshop hors ligne, depot prive), on garde alors les sources
+# embarquees dans l'image.
+if ! git fetch --prune origin 2>/dev/null; then
+    echo "atelier: fetch impossible, sources du build conservees" >&2
+    exit 0
+fi
+
+if [ "$REV" = "HEAD" ]; then
+    TARGET="origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo main)"
+else
+    TARGET="origin/$REV"
+fi
+
+if git rev-parse --verify --quiet "$TARGET" >/dev/null; then
+    echo "atelier: mise a jour du workspace sur $TARGET (les modifications non commitees sont ecrasees)" >&2
+    git reset --hard "$TARGET" >/dev/null 2>&1 || true
+else
+    echo "atelier: $TARGET introuvable, sources du build conservees" >&2
+fi
+exit 0
+"#
+    );
+
+    let bin_dir = rootfs_dir.join("usr/local/bin");
+    tokio::fs::create_dir_all(&bin_dir).await?;
+    let script_path = bin_dir.join("atelier-refresh-workspace.sh");
+    tokio::fs::write(&script_path, script).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+
+    // `User=vscode` : le clone appartient a l'uid 1000, un `git` lance en
+    // root y refuserait de travailler ("dubious ownership") et laisserait
+    // en plus des fichiers root dans le workspace.
+    let unit = "[Unit]\nDescription=Rafraichit le clone du workspace (atelier)\nAfter=network.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nUser=vscode\nGroup=vscode\nExecStart=/usr/local/bin/atelier-refresh-workspace.sh\n\n[Install]\nWantedBy=multi-user.target\n";
+
+    let unit_dir = rootfs_dir.join("etc/systemd/system");
+    tokio::fs::create_dir_all(&unit_dir).await?;
+    tokio::fs::write(unit_dir.join("atelier-refresh-workspace.service"), unit).await?;
+
+    // `systemctl enable` est inoperant sur un rootfs hors ligne (et l'image
+    // de base intercepte parfois `systemctl`) : on cree le lien du
+    // `multi-user.target.wants` a la main, meme methode que le devcontainer
+    // de demo pour ses propres unites.
+    let wants_dir = unit_dir.join("multi-user.target.wants");
+    tokio::fs::create_dir_all(&wants_dir).await?;
+    let link = wants_dir.join("atelier-refresh-workspace.service");
+    if !link.exists() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            "/etc/systemd/system/atelier-refresh-workspace.service",
+            &link,
+        )
+        .ok();
+    }
+    Ok(())
+}
+
+/// Nom du repertoire de travail dans `/workspaces`, derive du depot.
+fn workspace_name(source: &DevcontainerSource) -> String {
+    source
         .repo
         .rsplit('/')
         .next()
         .unwrap_or("workspace")
-        .trim_end_matches(".git");
-    let ws_dir = rootfs_dir.join("workspaces").join(repo_name);
-    tokio::fs::create_dir_all(&ws_dir).await?;
-    let keep_file = ws_dir.join(".keep");
-    if !keep_file.exists() {
-        tokio::fs::write(&keep_file, "atelier workspace\n")
-            .await
-            .ok();
+        .trim_end_matches(".git")
+        .to_string()
+}
+
+fn net_proxy_local_url() -> String {
+    let port =
+        std::env::var("ATELIER_BUILDER_NET_PROXY_PORT").unwrap_or_else(|_| "3128".to_string());
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Insere les identifiants dans l'URL quand le depot en exige — forme
+/// acceptee par git pour HTTP(S), et le seul moyen de les passer a un
+/// `git clone` non interactif sans ecrire de fichier de credentials.
+fn authenticated_url(repo: &str, credentials: Option<&GitCredentials>) -> String {
+    let Some(creds) = credentials else {
+        return repo.to_string();
+    };
+    match repo.split_once("://") {
+        Some((scheme, rest)) if !rest.contains('@') => {
+            format!("{scheme}://{}:{}@{rest}", creds.username, creds.password)
+        }
+        _ => repo.to_string(),
     }
+}
+
+fn chown_recursive(path: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::chown;
-        let _ = chown(rootfs_dir.join("workspaces"), Some(1000), Some(1000));
-        let _ = chown(&ws_dir, Some(1000), Some(1000));
-        let _ = chown(&keep_file, Some(1000), Some(1000));
+        let _ = std::process::Command::new("chown")
+            .args(["-R", "1000:1000", &path.to_string_lossy()])
+            .status();
     }
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Empaquette un repertoire en image ext4 (`mke2fs -d`), dimensionnee sur le
