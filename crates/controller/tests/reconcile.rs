@@ -1094,8 +1094,22 @@ async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else
         .await
         .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
 
-    let ns = "atelier-system-test";
-    let sa_name = "atelier-api-server-test";
+    // Namespace/ServiceAccount REELS, pas des variantes "-test" : le nom du
+    // role OpenBao provisionne par `ensure_api_server_role` est une
+    // constante partagee (`openbao::API_SERVER_ROLE`), pas un derive de ces
+    // deux valeurs. Un test qui croit s'isoler en les suffixant reecrit donc
+    // en realite les bindings du role dont depend l'`api-server` reel, qui
+    // se met alors a echouer sur "service account name not authorized"
+    // jusqu'au prochain demarrage du controller — pollution constatee en
+    // pratique le 2026-08-30, sur un cluster de dev partage.
+    //
+    // Provisionner le role avec ses valeurs de production est idempotent et
+    // laisse le cluster exactement dans l'etat attendu (memes valeurs par
+    // defaut que `crates/controller/src/main.rs`), tout en exercant la meme
+    // fonction — c'est deja le parti pris du test equivalent cote
+    // `api-server` (`crates/api-server/tests/routes.rs`).
+    let ns = "atelier-system";
+    let sa_name = "atelier-api-server";
     let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(client.clone());
     let _ = namespaces
         .create(

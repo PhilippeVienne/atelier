@@ -14,6 +14,25 @@
 
 ---
 
+- **Un `Option<String>` de `status` sans `skip_serializing_if` est EFFACE par
+  un JSON merge patch.** `image_digest`/`snapshot_digest` sont ecrits par
+  `image-builder`/`vm-supervisor`, mais le controller patche `status` en
+  entier : un `None` de son cote partait en `"imageDigest": null`, ce que
+  l'API Kubernetes interprete comme une suppression. Le Workshop restait
+  alors bloque en `BuildingImage` alors que son image existait dans le cache
+  (environ une fois sur trois builds simultanes). Regle generale : tout champ
+  de `status` ecrit par un AUTRE composant doit porter
+  `skip_serializing_if = "Option::is_none"`, et les chemins de reconciliation
+  qui ne le calculent pas doivent le reporter tel quel.
+- **Un test qui suffixe son namespace/ServiceAccount en `-test` ne s'isole pas
+  forcement.** `ensure_api_server_role` ecrit sur un nom de role OpenBao
+  CONSTANT (`API_SERVER_ROLE`), pas derive de ses arguments : un test croyant
+  s'isoler reecrivait en fait les bindings du role dont depend l'`api-server`
+  reel, qui echouait ensuite sur "service account name not authorized"
+  jusqu'au redemarrage du controller — et le symptome apparaissait des heures
+  plus tard, sans lien apparent avec le test. Sur une ressource partagee dont
+  le nom est fixe, provisionner les valeurs de PRODUCTION (idempotent) plutot
+  que des variantes de test.
 - **Un alias interne de `net-proxy` (`llm-proxy`, `mcp-gateway`, `registry`,
   `git.atelier.internal`) n'existe dans aucun DNS reel.** Il n'etait joignable
   que par un client honorant `HTTP_PROXY` — le proxy resout alors l'alias sur

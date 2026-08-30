@@ -1561,7 +1561,16 @@ fn carry_forward_status(
     WorkshopStatus {
         phase,
         pod_name: None,
-        image_digest,
+        // Report de la derniere valeur connue quand l'appelant n'en a pas :
+        // le digest appartient a `image-builder`, un chemin de
+        // reconciliation qui ne l'a pas lu n'a aucune raison de l'effacer
+        // (meme logique que `snapshot_digest`/`upgrade_state` ci-dessous).
+        image_digest: image_digest.or_else(|| {
+            workshop
+                .status
+                .as_ref()
+                .and_then(|s| s.image_digest.clone())
+        }),
         snapshot_digest: workshop
             .status
             .as_ref()

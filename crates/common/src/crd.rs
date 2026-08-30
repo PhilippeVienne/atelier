@@ -134,13 +134,27 @@ pub struct WorkshopStatus {
     pub pod_name: Option<String>,
     /// Digest de l'image rootfs construite par `image-builder` a partir du
     /// devcontainer, une fois le build termine (cache content-addressed).
-    #[serde(default)]
+    ///
+    /// `skip_serializing_if` est ESSENTIEL ici : ce champ est ecrit par
+    /// `image-builder` (depuis son Job), pas par le controller, alors que
+    /// les deux patchent `status`. Sans lui, un `None` cote controller part
+    /// en `"imageDigest": null` dans le JSON merge patch, ce que l'API
+    /// Kubernetes interprete comme une SUPPRESSION du champ — le digest tout
+    /// juste publie par `image-builder` etait alors efface, et le Workshop
+    /// restait bloque en `BuildingImage` indefiniment alors que son image
+    /// existait bel et bien dans le cache. Bug reel, observe environ une
+    /// fois sur trois builds simultanes (2026-08-30).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_digest: Option<String>,
     /// Reference du dernier snapshot Firecracker (etat VM + memoire) pris
     /// par `vm-supervisor` lors d'une mise en veille, dans le meme cache
     /// content-addressed que `image_digest`. Absent si le Workshop n'a
     /// jamais ete suspendu.
-    #[serde(default)]
+    ///
+    /// Meme `skip_serializing_if` que `image_digest`, et pour la meme
+    /// raison : ecrit par `vm-supervisor` via le controller, il ne doit
+    /// jamais etre efface par un patch qui ne le renseigne simplement pas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_digest: Option<String>,
     /// Positionne par le controller (jamais par l'utilisateur) quand le hash
     /// du template de pod parent observe differe de celui utilise pour
