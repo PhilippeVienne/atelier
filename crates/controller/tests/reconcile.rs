@@ -751,6 +751,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         openbao: Some(atelier_controller::openbao::OpenBaoConfig {
             addr: openbao_addr.clone(),
             token: openbao_token,
+            pod_addr: openbao_addr.clone(),
         }),
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
@@ -887,6 +888,7 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         openbao: Some(atelier_controller::openbao::OpenBaoConfig {
             addr: openbao_addr.clone(),
             token: openbao_token.clone(),
+            pod_addr: openbao_addr.clone(),
         }),
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
@@ -1008,6 +1010,59 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         .ok();
 }
 
+/// Bug reel constate en pratique (session de debug 2026-08-30, controller
+/// lance hors cluster — cas de dev documente, `deploy/dev/README.md`) :
+/// `cleanup()` propageait toute erreur `delete_virtual_key` via `?`, y
+/// compris une simple indisponibilite reseau (DNS interne au cluster non
+/// resolvable depuis l'hote), pas seulement les echecs HTTP explicites deja
+/// tolere par `delete_virtual_key` lui-meme (404). Consequence : un
+/// Workshop devenait indefiniment impossible a supprimer (finalizer bloque
+/// en boucle par `error_policy`) des que LiteLLM etait injoignable au
+/// moment du nettoyage. `cleanup()` ne doit donc jamais faire echouer sur
+/// CETTE erreur precise — verifie ici avec une adresse LiteLLM qui ne
+/// repond simplement pas (pas besoin d'un vrai LiteLLM pour ce test).
+#[tokio::test]
+async fn cleanup_tolerates_an_unreachable_litellm() {
+    atelier_common::telemetry::ensure_crypto_provider();
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name = unique_name("test-workshop-litellm-unreachable");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+
+    let ctx = ReconcileCtx {
+        client: client.clone(),
+        openbao: None,
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_auth_token: None,
+        git_identity: None,
+        // Port 1 : jamais un service reel en ecoute, echoue vite
+        // ("connection refused") plutot que d'attendre un vrai timeout DNS.
+        litellm: Some(atelier_controller::litellm::LiteLlmConfig {
+            addr: "127.0.0.1:1".to_string(),
+            master_key: "unused".to_string(),
+        }),
+        component_image_registry: None,
+    };
+
+    workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+    let workshop = workshops.get(&name).await.expect("get workshop");
+
+    atelier_controller::reconcile::cleanup(&ctx, &workshop)
+        .await
+        .expect("cleanup() ne doit pas echouer sur un LiteLLM injoignable");
+
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
 /// Necessite OPENBAO_ADDR/OPENBAO_TOKEN (voir deploy/dev/openbao/README.md),
 /// silencieusement ignore sans ces variables.
 ///
@@ -1072,6 +1127,7 @@ async fn ensure_api_server_role_reads_any_workshop_session_auth_but_nothing_else
     let openbao_config = atelier_controller::openbao::OpenBaoConfig {
         addr: openbao_addr.clone(),
         token: openbao_token.clone(),
+        pod_addr: openbao_addr.clone(),
     };
     atelier_controller::openbao::ensure_api_server_role(&openbao_config, ns, sa_name)
         .await
@@ -1239,6 +1295,7 @@ async fn ensure_ssh_key_generates_a_valid_openssh_keypair_and_preserves_it() {
     let openbao_config = atelier_controller::openbao::OpenBaoConfig {
         addr: openbao_addr.clone(),
         token: openbao_token.clone(),
+        pod_addr: openbao_addr.clone(),
     };
     let name = unique_name("test-ssh-key");
 
