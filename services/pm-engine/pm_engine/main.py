@@ -28,7 +28,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -107,12 +107,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         mcp_token_provider=token_provider,
         db_pool=pool,
         pm_bot_subject=pm_bot_subject,
+        # Allowlist egress des Workshops crees par le PM
+        # (`ProvisionWorkshop`) : liste de domaines separee par des
+        # virgules. Sans elle, ces Workshops naissent avec une allowlist
+        # vide et leur build d'image echoue systematiquement — voir
+        # `PmEngineDeps.workshop_egress_allowlist`.
+        workshop_egress_allowlist=[
+            d.strip()
+            for d in os.environ.get("PM_ENGINE_WORKSHOP_EGRESS_ALLOWLIST", "").split(",")
+            if d.strip()
+        ],
         # `PM_ENGINE_CHAT_MODEL` : aucune cle payante reelle n'est
         # provisionnee dans cet environnement de dev (voir
         # docs/PROGRESS.md) — permet de pointer `/chat` vers un modele
         # `mock_response` LiteLLM (`atelier-budget-test`) pour les tests,
         # sans toucher au code. Defaut de production inchange.
         chat_model=os.environ.get("PM_ENGINE_CHAT_MODEL", "sonnet-premium"),
+        claude_code_model=os.environ.get(
+            "PM_ENGINE_CLAUDE_CODE_MODEL", "claude-3-5-sonnet-20241022"
+        ),
     )
 
     async with build_checkpointer(database_url) as checkpointer:
@@ -161,9 +174,110 @@ def _require_deps(request: Request) -> PmEngineDeps:
     return deps
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ChatRequest(BaseModel):
     repo: str
     query: str
+    # Tour(s) precedents de CETTE conversation, tels qu'affiches par le
+    # Dashboard (`dashboard/app/pm/pm-chat.tsx`) : sans ca, chaque appel est
+    # traite comme une toute premiere conversation (bug constate en
+    # pratique — l'agent repond "je n'ai aucune memoire de nos echanges
+    # passes" des le deuxieme message). Seul le texte final est rejoue, pas
+    # les `tool_calls` intermediaires d'un tour precedent (le Dashboard ne
+    # les stocke pas non plus) : un `setup_mirror_project` deja execute
+    # reste donc visible dans le texte de la reponse assistante qui suit,
+    # ce qui suffit au LLM pour ne pas le refaire si on le lui redemande.
+    history: list[ChatMessage] = []
+
+
+# Outil expose au LLM (Jalon M5, "Projets") : importer un depot GitHub/GitLab
+# (prive ou public) comme miroir Forgejo interne, directement depuis une
+# demande en langage naturel ("importe github.com/acme/widgets"). Le jeton
+# d'acces d'un depot prive, s'il est fourni, transite alors par le message
+# utilisateur puis par ce meme appel LLM avant d'atteindre cet outil —
+# compromis assume du choix "conversationnel" plutot qu'un formulaire dedie
+# (`dashboard/app/projects/new`, toujours disponible pour eviter ce transit
+# quand ce n'est pas souhaite). Jamais journalise ni persiste par ce module.
+SETUP_MIRROR_PROJECT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "setup_mirror_project",
+        "description": (
+            "Importe un depot GitHub ou GitLab (prive ou public) comme miroir "
+            "Forgejo interne, resynchronise automatiquement toutes les 10 "
+            "minutes. A appeler uniquement quand l'utilisateur demande "
+            "explicitement d'importer/mirrorer/configurer un nouveau projet "
+            "depuis une URL externe — jamais pour une simple question sur un "
+            "projet deja configure."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "nom court du projet (slug Forgejo), ex: widgets",
+                },
+                "source_url": {
+                    "type": "string",
+                    "description": "URL HTTPS du depot source, ex: https://github.com/acme/widgets",
+                },
+                "private": {
+                    "type": "boolean",
+                    "description": "vrai si le depot source est prive",
+                },
+                "token": {
+                    "type": "string",
+                    "description": (
+                        "jeton d'acces personnel (PAT) pour un depot prive ; "
+                        "omis pour un depot public. Ne jamais inventer de "
+                        "valeur : demander a l'utilisateur de le fournir si "
+                        "private=true et qu'aucun jeton n'a ete donne."
+                    ),
+                },
+            },
+            "required": ["name", "source_url", "private"],
+        },
+    },
+}
+
+
+async def _run_tool_call(deps: PmEngineDeps, call: dict) -> str:
+    """Execute un `tool_call` renvoye par le LLM et renvoie le contenu JSON
+    du message `role: tool` correspondant — jamais d'exception qui
+    remonterait jusqu'au flux SSE : un echec (nom de projet deja pris, URL
+    invalide, jeton refuse...) doit rester une reponse que le LLM peut lire
+    et reformuler pour l'utilisateur, pas une coupure brutale du chat."""
+    name = call["function"]["name"]
+    if name != "setup_mirror_project":
+        return json.dumps({"status": "error", "message": f"outil inconnu: {name}"})
+    try:
+        args = json.loads(call["function"]["arguments"])
+    except json.JSONDecodeError as exc:
+        return json.dumps({"status": "error", "message": f"arguments invalides: {exc}"})
+    if not isinstance(deps.git_provider, ForgejoProvider):
+        return json.dumps({"status": "error", "message": "miroir Forgejo non disponible"})
+    try:
+        project = await deps.git_provider.create_mirror(
+            name=args["name"],
+            source_url=args["source_url"],
+            private=bool(args.get("private", False)),
+            token=args.get("token"),
+        )
+    except Exception as exc:  # noqa: BLE001 - traduit en resultat d'outil, voir docstring
+        logger.warning("echec setup_mirror_project(%s): %s", args.get("name"), exc)
+        return json.dumps({"status": "error", "message": str(exc)})
+    return json.dumps(
+        {
+            "status": "ok",
+            "full_name": project.full_name,
+            "clone_url": project.clone_url,
+            "private": project.private,
+        }
+    )
 
 
 @app.post("/chat")
@@ -177,7 +291,10 @@ async def chat(
     LLM en streaming SSE — le Dashboard consomme ce flux directement
     (`EventSource`/`fetch` + `ReadableStream`, voir
     `dashboard/app/workshops/[name]/events/route.ts` pour le pattern SSE
-    deja etabli cote BFF)."""
+    deja etabli cote BFF). Le LLM dispose aussi de l'outil
+    `setup_mirror_project` ci-dessus ("Projets") : un premier appel
+    non-streamant decide s'il l'invoque, seule la reponse finale en langage
+    naturel est ensuite streamee — voir `LlmClient.chat_with_tools`."""
     deps: PmEngineDeps = _require_deps(request)
 
     async def event_stream() -> AsyncIterator[bytes]:
@@ -193,13 +310,32 @@ async def chat(
                     "Tu es le Project Manager autonome d'Atelier pour le depot "
                     f"{body.repo}. Reponds en te basant sur ces memoires passees "
                     f"si elles sont pertinentes :\n\n{context or '(aucune memoire pertinente)'}"
+                    "\n\nTu disposes de l'outil setup_mirror_project pour importer "
+                    "un nouveau projet GitHub/GitLab comme miroir interne, sur "
+                    "demande explicite de l'utilisateur uniquement."
                 ),
             },
+            *[{"role": m.role, "content": m.content} for m in body.history],
             {"role": "user", "content": body.query},
         ]
         try:
-            async for delta in deps.llm_client.chat_stream(deps.chat_model, messages):
-                yield f"data: {json.dumps({'delta': delta})}\n\n".encode()
+            message = await deps.llm_client.chat_with_tools(
+                deps.chat_model, messages, tools=[SETUP_MIRROR_PROJECT_TOOL]
+            )
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                content = message.get("content") or ""
+                if content:
+                    yield f"data: {json.dumps({'delta': content})}\n\n".encode()
+            else:
+                messages.append(message)
+                for call in tool_calls:
+                    result = await _run_tool_call(deps, call)
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": result}
+                    )
+                async for delta in deps.llm_client.chat_stream(deps.chat_model, messages):
+                    yield f"data: {json.dumps({'delta': delta})}\n\n".encode()
         except Exception as exc:  # noqa: BLE001 - traduit en evenement SSE d'erreur
             logger.warning("erreur pendant le streaming du chat PM: %s", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n".encode()

@@ -13,6 +13,23 @@ model_list:
       model: deepseek/deepseek-chat
       api_key: os.environ/DEEPSEEK_API_KEY
 
+  # Claude Code choisit lui-meme son modele par defaut, et ce nom evolue a
+  # chaque version du CLI (`claude-opus-4-8[1m]` constate en pratique le
+  # 2026-08-30 dans une microVM de Workshop). Maintenir un alias exact par
+  # version serait a refaire indefiniment : ce wildcard capte donc tout nom
+  # de modele non explicitement liste au-dessus et le route vers DeepSeek.
+  # Sans lui, Claude Code echoue immediatement dans les Workshops ("issue
+  # with the selected model ... It may not exist or you may not have access
+  # to it") et n'ecrit jamais aucun fichier — le PM ouvrait alors des PR
+  # vides sans que rien ne signale la cause.
+  #
+  # Place APRES les alias explicites : LiteLLM privilegie une correspondance
+  # exacte, le wildcard ne sert que de repli.
+  - model_name: "*"
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
   # Meme cible, alias explicite pour un `claude --model deepseek-dev`
   # delibere plutot qu'implicite.
   - model_name: deepseek-dev
