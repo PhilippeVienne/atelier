@@ -42,6 +42,22 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **Un proxy HTTP ne doit pas reecrire que la PREMIERE requete d'une
+  connexion.** Un client configure avec `HTTP_PROXY` (tous les Workshops)
+  garde sa connexion ouverte et envoie toutes ses requetes suivantes en forme
+  absolue sur la meme socket. `net-proxy` reecrivait la premiere en forme
+  origine puis basculait en `copy_bidirectional` : les suivantes arrivaient
+  telles quelles a `uvicorn`/LiteLLM, qui repondait `404` a partir du 2e
+  echange. Symptome : Claude Code repond au premier tour puis echoue **sans
+  ecrire aucun fichier** (`api_error_status: 404`, `num_turns: 2` dans
+  `--output-format json`) — le PM ouvrait donc des PR vides alors que le
+  Workshop etait sain. Corrige par `forward_rewriting`
+  (`crates/net-proxy/src/proxy.rs`), qui boucle sur les requetes et suit le
+  cadrage des corps (`Content-Length`/`chunked`).
+  **Deux reflexes qui auraient fait gagner la journee** : `curl` ne reproduit
+  pas le bug (une seule requete par connexion, donc toujours reecrite) — il
+  faut un client qui enchaine ; et `claude --output-format json` donne le code
+  d'erreur HTTP reel, la ou la sortie texte ne montre qu'un message trompeur.
 - **Le message de Claude Code "There's an issue with the selected model … it
   may not exist or you may not have access to it" ne dit pas ce qu'il pretend.**
   Il s'affiche aussi quand le modele est parfaitement valide et que la panne

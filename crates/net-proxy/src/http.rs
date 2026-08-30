@@ -7,7 +7,7 @@
 //! destination puis un relai d'octets brut.
 
 use anyhow::{bail, Context};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 
 pub struct RequestHead {
     pub method: String,
@@ -102,6 +102,86 @@ pub fn destination(head: &RequestHead) -> anyhow::Result<(String, u16)> {
         .header("Host")
         .context("requete HTTP en forme origine sans en-tete Host")?;
     split_host_port(host_header, 80)
+}
+
+/// Comment se delimite le corps d'une requete — necessaire des lors qu'on
+/// relaie plus d'une requete par connexion (keep-alive) : il faut savoir ou
+/// finit l'une pour reconnaitre la ligne de requete de la suivante.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BodyFraming {
+    /// Pas de corps (`GET` sans `Content-Length`, `Content-Length: 0`).
+    None,
+    Length(u64),
+    Chunked,
+}
+
+/// `Transfer-Encoding: chunked` prime sur `Content-Length` (RFC 9112 §6.1).
+pub fn body_framing(head: &RequestHead) -> BodyFraming {
+    if head
+        .header("Transfer-Encoding")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"))
+    {
+        return BodyFraming::Chunked;
+    }
+    match head
+        .header("Content-Length")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        Some(len) if len > 0 => BodyFraming::Length(len),
+        _ => BodyFraming::None,
+    }
+}
+
+/// Recopie le corps de la requete du client vers la destination, en
+/// s'arretant exactement a sa fin pour laisser le lecteur positionne sur la
+/// requete suivante.
+pub async fn copy_body<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    framing: BodyFraming,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    match framing {
+        BodyFraming::None => {}
+        BodyFraming::Length(len) => {
+            let copied = tokio::io::copy(&mut reader.take(len), writer)
+                .await
+                .context("relai du corps de la requete")?;
+            if copied != len {
+                bail!("corps tronque : {copied} octets relayes sur {len} annonces");
+            }
+        }
+        BodyFraming::Chunked => loop {
+            let mut size_line = String::new();
+            if reader.read_line(&mut size_line).await? == 0 {
+                bail!("connexion fermee au milieu d'un corps chunked");
+            }
+            writer.write_all(size_line.as_bytes()).await?;
+            // La ligne de taille peut porter des extensions (`; nom=valeur`),
+            // qu'on relaie telles quelles mais qui ne font pas partie du
+            // nombre hexadecimal a interpreter.
+            let size_token = size_line.trim_end().split(';').next().unwrap_or_default();
+            let size = u64::from_str_radix(size_token.trim(), 16)
+                .with_context(|| format!("taille de chunk illisible : {size_token:?}"))?;
+            if size > 0 {
+                tokio::io::copy(&mut reader.take(size), writer).await?;
+            }
+            // Le CRLF qui suit chaque chunk (y compris celui de taille 0).
+            let mut crlf = String::new();
+            reader.read_line(&mut crlf).await?;
+            writer.write_all(crlf.as_bytes()).await?;
+            if size == 0 {
+                break;
+            }
+        },
+    }
+    writer.flush().await?;
+    Ok(())
 }
 
 /// Reecrit la ligne de requete en forme origine (`METHODE /chemin HTTP/1.1`,

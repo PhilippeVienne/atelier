@@ -10,7 +10,19 @@ model_list:
   # la reduction de cout.
   - model_name: claude-3-5-sonnet-20241022
     litellm_params:
-      model: deepseek/deepseek-chat
+      # Endpoint nativement compatible Anthropic de DeepSeek
+      # (`api.deepseek.com/anthropic`) plutot que le provider `deepseek/`,
+      # qui impose une traduction Anthropic -> OpenAI -> DeepSeek. Claude
+      # Code parle Anthropic nativement : un aller-retour de traduction en
+      # moins, c'est autant de fidelite preservee sur `tool_use`, qui porte
+      # toute la boucle agentique.
+      #
+      # Ce n'est PAS ce qui expliquait les PR vides du PM (cause reelle :
+      # les requetes suivantes du keep-alive vers `llm-proxy` relayees en
+      # forme absolue par net-proxy, `404` cote uvicorn — voir
+      # docs/architecture/pieges.md). Choix de robustesse, pas correctif.
+      model: anthropic/deepseek-chat
+      api_base: https://api.deepseek.com/anthropic
       api_key: os.environ/DEEPSEEK_API_KEY
 
   # Claude Code choisit lui-meme son modele par defaut, et ce nom evolue a
@@ -30,7 +42,11 @@ model_list:
   # exacte, le wildcard ne sert que de repli.
   - model_name: "*"
     litellm_params:
-      model: deepseek/deepseek-chat
+      # Meme endpoint Anthropic natif que l'alias ci-dessus : ce wildcard
+      # capte le modele par defaut de Claude Code, il doit donc offrir la
+      # meme fidelite sur `tool_use`.
+      model: anthropic/deepseek-chat
+      api_base: https://api.deepseek.com/anthropic
       api_key: os.environ/DEEPSEEK_API_KEY
 
   # Meme cible, alias explicite pour un `claude --model deepseek-dev`

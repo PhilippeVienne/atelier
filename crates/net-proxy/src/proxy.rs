@@ -99,8 +99,7 @@ pub async fn handle_connection(
             // parser une cible en forme absolue et renvoient 404 sur tout
             // — voir `http::to_origin_form`. Sans effet sur les alias deja
             // testes (axum/hyper, qui tolerent les deux formes).
-            let raw = http::to_origin_form(&head);
-            forward(client, &raw, &target_host, target_port, peer, None, &[]).await
+            forward_rewriting(client, head, &target_host, target_port, peer).await
         };
     }
 
@@ -344,6 +343,68 @@ async fn tunnel_inner(
 /// Requete HTTP en clair (proxy explicite, pas de CONNECT) : rejoue la
 /// requete telle que recue vers la destination (ou vers le proxy parent,
 /// via un tunnel `CONNECT`, si configure), puis relaie le reste.
+/// Relai HTTP en clair vers un alias interne, en reecrivant en forme origine
+/// **chaque** requete de la connexion, pas seulement la premiere.
+///
+/// Un client configure avec `HTTP_PROXY` (c'est le cas dans les Workshops,
+/// voir `builder-vm-init`) garde sa connexion ouverte et envoie toutes ses
+/// requetes suivantes en forme absolue sur la meme socket. Un simple
+/// `copy_bidirectional` apres la premiere requete les relaie donc telles
+/// quelles : `uvicorn` repondait `404` a partir du 2e echange, ce qui se
+/// manifestait par un Claude Code qui repond au premier tour puis echoue
+/// (`api_error_status: 404`, `num_turns: 2`) sans ecrire aucun fichier.
+async fn forward_rewriting(
+    client: BufReader<TcpStream>,
+    first: http::RequestHead,
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+) -> anyhow::Result<()> {
+    let upstream = match crate::upstream::connect(host, port, None, &[]).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            let mut client = client;
+            tracing::warn!(%peer, host, port, %err, "connexion a la destination echouee");
+            let _ = client.write_all(BAD_GATEWAY_RESPONSE).await;
+            return Ok(());
+        }
+    };
+
+    let (client_read, mut client_write) = tokio::io::split(client);
+    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let mut client_read = BufReader::new(client_read);
+
+    // Les reponses ne sont pas inspectees : elles repartent telles quelles,
+    // en parallele des requetes (une reponse peut arriver pendant que le
+    // client envoie deja la suivante).
+    let downstream =
+        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut client_write).await });
+
+    let mut pending = Some(first);
+    while let Some(current) = match pending.take() {
+        Some(head) => Some(head),
+        None => http::read_request_head(&mut client_read).await?,
+    } {
+        upstream_write
+            .write_all(&http::to_origin_form(&current))
+            .await
+            .context("envoi de la requete a la destination")?;
+        http::copy_body(
+            &mut client_read,
+            &mut upstream_write,
+            http::body_framing(&current),
+        )
+        .await?;
+    }
+
+    // Fin des requetes : on ferme le sens montant pour que la destination
+    // sache que plus rien n'arrive, et on laisse la reponse en cours finir.
+    let _ = upstream_write.shutdown().await;
+    let _ = downstream.await;
+    tracing::debug!(%peer, host, port, "relai HTTP interne ferme");
+    Ok(())
+}
+
 async fn forward(
     mut client: BufReader<TcpStream>,
     request_bytes: &[u8],
@@ -435,6 +496,78 @@ mod tests {
         assert!(
             received.starts_with("GET http://127.0.0.1:9/foo"),
             "identity-proxy doit recevoir la requete GET telle quelle, pas un CONNECT : {received:?}"
+        );
+    }
+
+    /// Regression : un client derriere `HTTP_PROXY` reutilise sa connexion
+    /// et envoie TOUTES ses requetes en forme absolue. Chacune doit etre
+    /// reecrite en forme origine, pas seulement la premiere — sans quoi
+    /// `uvicorn`/LiteLLM repond `404` a partir du 2e echange (Claude Code
+    /// repondait au 1er tour puis echouait sans ecrire de fichier).
+    #[tokio::test]
+    async fn every_keep_alive_request_to_an_internal_alias_is_rewritten() {
+        let alias_server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alias_addr = alias_server.local_addr().unwrap();
+
+        let captured = tokio::spawn(async move {
+            let (socket, _) = alias_server.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut seen = Vec::new();
+            // Deux requetes successives sur la MEME connexion, corps compris.
+            for _ in 0..2 {
+                let head = crate::http::read_request_head(&mut reader)
+                    .await
+                    .unwrap()
+                    .expect("requete attendue");
+                let framing = crate::http::body_framing(&head);
+                let mut body = Vec::new();
+                crate::http::copy_body(&mut reader, &mut body, framing)
+                    .await
+                    .unwrap();
+                seen.push((
+                    head.target.clone(),
+                    String::from_utf8_lossy(&body).to_string(),
+                ));
+            }
+            seen
+        });
+
+        let mut internal = InternalRoutes::default();
+        internal.insert_for_test(
+            "llm-proxy",
+            (alias_addr.ip().to_string(), alias_addr.port()),
+        );
+        let mut config = base_config(None);
+        config.internal = Arc::new(internal);
+
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, peer) = client_listener.accept().await.unwrap();
+            let _ = handle_connection(socket, peer, config).await;
+        });
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        client
+            .write_all(
+                b"POST http://llm-proxy/v1/messages HTTP/1.1\r\nHost: llm-proxy\r\nContent-Length: 5\r\n\r\nfirst\
+                  POST http://llm-proxy/v1/messages?beta=true HTTP/1.1\r\nHost: llm-proxy\r\nContent-Length: 6\r\n\r\nsecond",
+            )
+            .await
+            .unwrap();
+
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), captured)
+            .await
+            .expect("l'alias doit recevoir les deux requetes avant timeout")
+            .unwrap();
+
+        assert_eq!(
+            seen,
+            vec![
+                ("/v1/messages".to_string(), "first".to_string()),
+                ("/v1/messages?beta=true".to_string(), "second".to_string()),
+            ],
+            "les deux requetes du keep-alive doivent arriver en forme origine, corps intact"
         );
     }
 
