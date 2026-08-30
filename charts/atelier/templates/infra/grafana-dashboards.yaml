@@ -1,0 +1,199 @@
+{{- if .Values.observability.grafanaDashboards.enabled }}
+# Dashboards Grafana pre-configures pour les trois services critiques :
+#   - atelier-api-server  : taux de requetes, latence (p50/p95/p99)
+#   - atelier-controller  : duree de reconciliation, taux d'erreurs
+#   - atelier-net-proxy   : egress autorise vs bloque par Workshop
+#
+# Format : ConfigMap standard cree dans le namespace de release, portant
+# le label `grafana_dashboard: "1"` reconnu par le sidecar de provisioning
+# automatique de Grafana (chart `grafana` community ou Grafana Operator).
+# Chaque cle du ConfigMap est un fichier JSON distinct.
+#
+# Sources de metriques attendues : Prometheus scraping les endpoints
+# `/metrics` des pods (annotations `prometheus.io/scrape: "true"` sur les
+# pods `api-server`, `controller` et `net-proxy`).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "grafana-dashboards") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  atelier-api-server.json: |
+    {
+      "title": "Atelier — API Server",
+      "uid": "atelier-api-server",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Requetes HTTP — taux (req/s)",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(axum_http_requests_total{job=\"atelier-api-server\"}[2m])) by (method, uri)",
+              "legendFormat": "{{ "{{" }}method{{ "}}" }} {{ "{{" }}uri{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Latence HTTP — p50 / p95 / p99 (s)",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(axum_http_request_duration_seconds_bucket{job=\"atelier-api-server\"}[2m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(axum_http_request_duration_seconds_bucket{job=\"atelier-api-server\"}[2m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(axum_http_request_duration_seconds_bucket{job=\"atelier-api-server\"}[2m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Erreurs HTTP 4xx / 5xx",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(axum_http_requests_total{job=\"atelier-api-server\", status=~\"4..\"}[2m]))",
+              "legendFormat": "4xx"
+            },
+            {
+              "expr": "sum(rate(axum_http_requests_total{job=\"atelier-api-server\", status=~\"5..\"}[2m]))",
+              "legendFormat": "5xx"
+            }
+          ]
+        }
+      ]
+    }
+  atelier-controller.json: |
+    {
+      "title": "Atelier — Controller",
+      "uid": "atelier-controller",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Duree de reconciliation Workshop (s)",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(atelier_reconcile_duration_seconds_bucket{job=\"atelier-controller\"}[2m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(atelier_reconcile_duration_seconds_bucket{job=\"atelier-controller\"}[2m])) by (le))",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Taux d'erreurs de reconciliation",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(atelier_reconcile_errors_total{job=\"atelier-controller\"}[2m]))",
+              "legendFormat": "erreurs/s"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Workshops actifs (phase Running)",
+          "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
+          "targets": [
+            {
+              "expr": "sum(atelier_workshop_phase{phase=\"Running\", job=\"atelier-controller\"})",
+              "legendFormat": "Running"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Workshops en erreur",
+          "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
+          "targets": [
+            {
+              "expr": "sum(atelier_workshop_phase{phase=\"Error\", job=\"atelier-controller\"})",
+              "legendFormat": "Error"
+            }
+          ]
+        }
+      ]
+    }
+  atelier-net-proxy.json: |
+    {
+      "title": "Atelier — Net Proxy (Egress)",
+      "uid": "atelier-net-proxy",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Requetes egress — autorisees vs bloquees (req/s)",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(atelier_net_proxy_requests_total{job=\"atelier-net-proxy\", verdict=\"allowed\"}[2m])) by (workshop)",
+              "legendFormat": "autorisees — {{ "{{" }}workshop{{ "}}" }}"
+            },
+            {
+              "expr": "sum(rate(atelier_net_proxy_requests_total{job=\"atelier-net-proxy\", verdict=\"blocked\"}[2m])) by (workshop)",
+              "legendFormat": "bloquees — {{ "{{" }}workshop{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Domaines bloques — top 10",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "topk(10, sum(rate(atelier_net_proxy_blocked_requests_total{job=\"atelier-net-proxy\"}[5m])) by (host))",
+              "legendFormat": "{{ "{{" }}host{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Connexions DNS — autorisees vs REFUSED (req/s)",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(atelier_net_proxy_dns_queries_total{job=\"atelier-net-proxy\", verdict=\"allowed\"}[2m]))",
+              "legendFormat": "DNS autorisees"
+            },
+            {
+              "expr": "sum(rate(atelier_net_proxy_dns_queries_total{job=\"atelier-net-proxy\", verdict=\"refused\"}[2m]))",
+              "legendFormat": "DNS refusees (REFUSED)"
+            }
+          ]
+        }
+      ]
+    }
+{{- end }}

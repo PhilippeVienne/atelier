@@ -13,5 +13,6 @@ keywords:
   - devcontainer
   - kubernetes-operator
 home: https://github.com/PhilippeVienne/atelier
+icon: https://raw.githubusercontent.com/PhilippeVienne/atelier/main/docs/stylesheets/logo.png
 maintainers:
   - name: Equipe Atelier
