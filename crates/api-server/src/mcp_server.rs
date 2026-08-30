@@ -372,6 +372,7 @@ impl WorkshopMcpServer {
             pod_ip,
             private_key,
             command,
+            workshop.spec.devcontainer.repo.clone(),
         )
         .await
         .map_err(|err| {

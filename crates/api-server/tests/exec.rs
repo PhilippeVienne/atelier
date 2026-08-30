@@ -228,6 +228,7 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         "127.0.0.1".to_string(),
         private_key_pem,
         "echo hello".to_string(),
+        "https://example.invalid/repo.git".to_string(),
     )
     .await
     .expect("enregistrement de l'execution");
