@@ -26,9 +26,11 @@ cd dashboard && npm run build
 2. **Verrouillage Nominatif de Tâche (`[-/<agent_family>/<session_id>]`)** :
    - Dès que vous commencez à travailler sur une tâche, **marquez-la immédiatement `[-/claude-code/<session_id>]` dans `PLAN-ACTION-GLOBAL.md`**.
    - Vérifiez systématiquement qu'aucune tâche antérieure n'est restée en cours (`[-/...]`).
+   - Un verrou dont la session est manifestement terminée se **libère** (retour à `[ ]`, signalé dans le message de commit) : il ne doit jamais immobiliser le plan.
 3. **Validation & Documentation (`[x]`)** :
    - Dès qu'une tâche est validée par des tests réels (`cargo test`, `cargo clippy`), remplacez le marqueur par `[x]` dans `PLAN-ACTION-GLOBAL.md`.
-   - Consignez immédiatement une entrée datée avec sa preuve empirique dans [`docs/PROGRESS.md`](docs/PROGRESS.md).
+   - **N'ajoutez pas d'entrée datée par tâche** : le plan d'action et `git log` la portent déjà. Voir la section « Mise à jour de la Documentation » d'`AGENTS.md` pour ce qui doit réellement être écrit, et où.
+   - En pratique : un bug qui a coûté du temps et peut se reproduire va dans [`docs/architecture/pieges.md`](docs/architecture/pieges.md) ; un changement d'état de composant va dans [`docs/PROGRESS.md`](docs/PROGRESS.md), qui reste court.
 4. **Architecture** : Ne déplacez pas la logique métier hors de sa crate dédiée.
 5. **Qualité & Sécurité** : 0 `unsafe` en production, pas de `.unwrap()` dans le code opérationnel.
 6. **Commits Git** : Ne JAMAIS inclure la ligne `Co-authored-by: Claude` dans les messages de commit git.

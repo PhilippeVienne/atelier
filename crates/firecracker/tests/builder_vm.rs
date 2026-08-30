@@ -89,7 +89,7 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
     // la main a l'executeur — observe en pratique comme un blocage total
     // (99.9% CPU, jamais de timeout) sans aucun message d'erreur exploitable
     // avant ce raccourcissement des noms. Meme categorie de piege que
-    // IFNAMSIZ pour les TAP (voir docs/PROGRESS.md, "Lecons retenues").
+    // IFNAMSIZ pour les TAP (voir docs/architecture/pieges.md).
     let work_dir = PathBuf::from("/var/tmp").join(format!("atelier-bvm-{}", std::process::id()));
     tokio::fs::create_dir_all(&work_dir).await.unwrap();
 

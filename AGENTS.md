@@ -20,7 +20,9 @@ Ce document régit les règles de développement et de collaboration applicables
    - **Règle de Verrouillage de Tâche Nominatif (`[-/<family>/<session_id>]`)** :
      - Tout agent qui commence à travailler sur une tâche `[ ]` **DOIT IMMÉDIATEMENT la marquer `[-/<agent_family>/<session_id>]` dans `PLAN-ACTION-GLOBAL.md`** (ex: `[-/antigravity/c192a786]` ou `[-/claude-code/sess-4a8b]`). Cela permet à tout autre agent ou observateur de savoir exactement qui traite la tâche et si la session est toujours active.
      - Il est **STRICTEMENT INTERDIT** d'entamer une tâche si une tâche antérieure est encore marquée en cours sans justification.
-     - Une fois la tâche validée empiriquement, la marquer `[x]` et ajouter une entrée datée dans `docs/PROGRESS.md`.
+     - Une fois la tâche validée empiriquement, la marquer `[x]`.
+     - **Libération des verrous périmés** : un marqueur `[-/…]` désigne une session **vivante**. Avant de démarrer, si une tâche porte un verrou dont la session est manifestement terminée (aucun commit ni modification en cours qui s'y rapporte), la repasser à `[ ]` en le signalant dans le message de commit, plutôt que de se bloquer dessus. Un verrou oublié ne doit jamais immobiliser le plan.
+     - Symétriquement, une session qui s'interrompt en cours de tâche laisse son verrou en place **et** note l'état réel d'avancement — sans quoi la tâche suivante repart d'une hypothèse fausse.
 
 4. **Acceptation du CLA** :
    - Toute contribution produite par ou avec l'assistance d'un agent IA et soumise au dépôt est régie par les termes du [Contributor License Agreement (`CLA.md`)](CLA.md), accordant au mainteneur le droit de re-licencier ou double-licencier le projet.
@@ -108,9 +110,34 @@ cargo test --workspace
 
 ---
 
-## 📝 Mise à jour de la Documentation & Progression
+## 📝 Mise à jour de la Documentation
 
-Chaque modification d'architecture ou ajout de composant doit être documenté dans :
-- [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) (passer de `[-/<family>/<id>]` à `[x]`).
-- [`docs/PROGRESS.md`](docs/PROGRESS.md) (entrée datée dans la section dédiée avec commande de test et preuve empirique).
-- [`README.md`](README.md) et [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) le cas échéant.
+> Révisé fin août 2026, après la première vague de documentation : `docs/PROGRESS.md`
+> avait atteint 2700 lignes, en grande partie du récit de session que plus personne ne
+> relisait. La règle « une entrée datée par tâche » en était la cause directe. Chaque
+> document a désormais **un seul rôle**, et on n'écrit que ce qui sera encore utile dans
+> six mois.
+
+| Document | Rôle | Quand y écrire |
+| :--- | :--- | :--- |
+| [`docs/specs/PLAN-ACTION-GLOBAL.md`](docs/specs/PLAN-ACTION-GLOBAL.md) | **Source unique** du suivi des tâches | À chaque changement d'état d'une tâche (`[ ]` → `[-/…]` → `[x]`) |
+| [`docs/architecture/pieges.md`](docs/architecture/pieges.md) | Pièges durables, à lire avant de coder | Quand un bug a coûté du temps **et** que la cause peut se reproduire |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Point de situation **court** : état des composants, chantiers ouverts | Quand un composant change d'état, ou qu'un chantier s'ouvre/se ferme |
+| [`docs/architecture/`](docs/architecture/) | Décisions de conception et leur justification | Quand une décision structurante est prise |
+| [`README.md`](README.md), [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Documentation utilisateur | Quand une commande ou un prérequis change |
+
+**Ce qu'on n'écrit plus** :
+
+- Pas d'entrée datée par tâche accomplie : le plan d'action et `git log` la portent déjà.
+- Pas de récit chronologique de session dans `docs/PROGRESS.md` : ce qui compte, c'est le
+  piège à retenir (→ `pieges.md`), pas le déroulé.
+- Pas de duplication du suivi de tâches hors du plan d'action : une matrice recopiée
+  devient fausse en silence (c'est arrivé).
+
+Les récits antérieurs à cette révision sont figés dans
+[`docs/archive/PROGRESS-2026-08.md`](docs/archive/PROGRESS-2026-08.md).
+
+**Un bon ajout à `pieges.md`** répond à trois questions en quelques lignes : quel était le
+symptôme observable, quelle en était la cause réelle, et à quoi reconnaître le cas la
+prochaine fois. Un piège dont on ne sait dire que « ça n'a pas marché » n'a pas sa place :
+il vieillit mal et brouille les autres.

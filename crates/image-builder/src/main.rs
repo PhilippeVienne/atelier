@@ -197,9 +197,9 @@ async fn build_via_microvm(
     // Nom de jail/TAP court et deterministe (hash des variables d'identite
     // du build) : `sockaddr_un.sun_path` est limite a 108 octets sur Linux
     // et IFNAMSIZ a 15 caracteres pour un nom d'interface — un nom de jail
-    // trop long fait echouer le boot en silence (voir docs/PROGRESS.md,
-    // "Lecons retenues"). Un Job = un pod = un netns dedie, donc pas besoin
-    // d'unicite globale, seulement de brievete.
+    // trop long fait echouer le boot en silence (voir
+    // docs/architecture/pieges.md). Un Job = un pod = un netns dedie, donc
+    // pas besoin d'unicite globale, seulement de brievete.
     let mut hasher = Sha256::new();
     hasher.update(source.repo.as_bytes());
     hasher.update(source.revision.as_bytes());

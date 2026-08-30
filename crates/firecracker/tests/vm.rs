@@ -150,7 +150,7 @@ async fn snapshot_persist_and_restore_without_source_vm() {
         return;
     };
 
-    // Noms courts deliberement (voir docs/PROGRESS.md, "Lecons retenues") :
+    // Noms courts deliberement (voir docs/architecture/pieges.md) :
     // sockaddr_un.sun_path est limite a 108 octets, et fctools 0.7.0-alpha.2
     // avale silencieusement un ENAMETOOLONG dans une boucle qui ne cede
     // jamais la main a l'executeur (100% CPU, jamais de timeout).

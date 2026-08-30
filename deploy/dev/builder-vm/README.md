@@ -94,11 +94,11 @@ sudo -E env "PATH=$PATH" \
 
 Sans sudo interactif disponible, un conteneur Docker `--privileged
 --network host --device=/dev/kvm --device=/dev/net/tun` est une alternative
-qui fonctionne tout aussi bien (voir `docs/PROGRESS.md`, "Lecons retenues")
+qui fonctionne tout aussi bien (voir `docs/architecture/pieges.md`)
 — `--network host` partage directement le netns de l'hote, donc le TAP cree
 dans le conteneur et `net-proxy` lance sur l'hote se voient mutuellement
 sans configuration supplementaire. Compiler avec un `CARGO_TARGET_DIR`
-dedie au conteneur (piege glibc, voir "Lecons retenues").
+dedie au conteneur (piege glibc, voir `docs/architecture/pieges.md`).
 
 Assertions : la microVM s'eteint d'elle-meme (pas de canal de controle
 vsock dans ce MVP — le succes se lit dans le registre, pas via un message
