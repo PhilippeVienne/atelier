@@ -380,7 +380,7 @@ pub async fn stream_handler(
     ensure_owner(&workshop, &user)?;
 
     let stream = stream::unfold(
-        (state, user.0, name, id, 0usize, 0usize, false),
+        (state, user.subject, name, id, 0usize, 0usize, false),
         |(state, owner_subject, name, id, mut stdout_sent, mut stderr_sent, done)| async move {
             if done {
                 return None;

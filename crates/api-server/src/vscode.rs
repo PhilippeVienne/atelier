@@ -116,7 +116,7 @@ pub(crate) async fn proxy_to_guest_port(
         url_prefix,
         record_session,
     } = target;
-    tracing::debug!(name = %name, path = %path, port, user = %user.0, "proxy_to_guest_port appele");
+    tracing::debug!(name = %name, path = %path, port, user = %user.subject, "proxy_to_guest_port appele");
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
     let pod_ip = resolve_running_pod_ip(&state, &workshop).await?;

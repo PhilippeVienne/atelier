@@ -211,7 +211,19 @@ fn spawn_jwks_refresh_task(trusted: TrustedIssuer, jwks: Arc<RwLock<JwkSet>>) {
 /// client ne peut donc jamais creer ni manipuler un Workshop au nom de
 /// quelqu'un d'autre.
 #[derive(Debug, Clone)]
-pub struct AuthenticatedUser(pub String);
+pub struct AuthenticatedUser {
+    /// Sujet OIDC : qui agit.
+    pub subject: String,
+    /// Groupes du sujet, tels que le jeton les porte. C'est ce qui donne
+    /// acces a un Workshop (`WorkshopSpec.owner_group`, voir
+    /// `docs/specs/07-groupes.md`).
+    ///
+    /// Portes ICI plutot que lus depuis `Claims` a chaque appel : le
+    /// controle d'acces se fait en une dizaine d'endroits, et faire dependre
+    /// chacun d'un `Extension<Claims>` supplementaire multiplie les
+    /// occasions d'en oublier un.
+    pub groups: Vec<String>,
+}
 
 /// Claims JWT standards OIDC extraites du token. Injectees telles quelles
 /// dans les extensions de la requete par [`require_auth`] (voir
@@ -328,8 +340,10 @@ pub async fn require_auth(
 
     match result {
         Ok(claims) => {
-            req.extensions_mut()
-                .insert(AuthenticatedUser(claims.sub.clone()));
+            req.extensions_mut().insert(AuthenticatedUser {
+                subject: claims.sub.clone(),
+                groups: claims.groups.clone().unwrap_or_default(),
+            });
             req.extensions_mut().insert(claims);
             next.run(req).await
         }

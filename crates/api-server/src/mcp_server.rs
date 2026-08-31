@@ -163,6 +163,11 @@ struct CreateWorkshopParams {
     /// Workshop. Optionnel (pas de plafond specifique si absent).
     #[serde(default)]
     max_llm_budget_usd: Option<f64>,
+    /// Groupe proprietaire du Workshop : c'est lui qui donne acces (voir
+    /// docs/specs/07-groupes.md). Facultatif si l'appelant n'appartient qu'a
+    /// un seul groupe, obligatoire sinon.
+    #[serde(default)]
+    owner_group: Option<String>,
     /// Domaines autorises en sortie par net-proxy (correspondance exacte ou
     /// wildcard `*.domaine`).
     #[serde(default)]
@@ -202,6 +207,8 @@ impl WorkshopMcpServer {
         let user = authenticated_user(&parts)?;
         ensure_state_creating_dependencies_reachable(&self.state).await?;
         validate_name(&params.name).map_err(api_error_to_mcp)?;
+        let owner_group = crate::routes::resolve_owner_group(params.owner_group.as_deref(), &user)
+            .map_err(api_error_to_mcp)?;
 
         let workshop = Workshop::new(
             &params.name,
@@ -224,7 +231,8 @@ impl WorkshopMcpServer {
                 egress_allowlist: params.egress_allowlist,
                 tools: params.tools,
                 identity_injection_rules: Vec::new(),
-                owner_subject: user.0,
+                owner_group: Some(owner_group),
+                owner_subject: user.subject,
                 desired_state: WorkshopDesiredState::Running,
             },
         );
@@ -250,7 +258,7 @@ impl WorkshopMcpServer {
         let mine: Vec<Workshop> = all
             .items
             .into_iter()
-            .filter(|w| w.spec.owner_subject == user.0)
+            .filter(|w| w.spec.owner_subject == user.subject)
             .collect();
         serde_json::to_string_pretty(&mine)
             .map_err(|err| ErrorData::internal_error(format!("serialisation: {err}"), None))
@@ -367,7 +375,7 @@ impl WorkshopMcpServer {
 
         let execution_id = crate::exec::spawn(
             self.state.clone(),
-            user.0,
+            user.subject,
             name.clone(),
             pod_ip,
             private_key,

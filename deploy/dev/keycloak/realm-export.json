@@ -38,6 +38,9 @@
       ],
       "realmRoles": [
         "admin"
+      ],
+      "groups": [
+        "/atelier-core"
       ]
     },
     {
@@ -56,6 +59,9 @@
       ],
       "realmRoles": [
         "developer"
+      ],
+      "groups": [
+        "/atelier-demo"
       ]
     },
     {
@@ -64,6 +70,10 @@
       "serviceAccountClientId": "atelier-pm-bot",
       "realmRoles": [
         "developer"
+      ],
+      "groups": [
+        "/atelier-core",
+        "/atelier-demo"
       ]
     }
   ],
@@ -100,6 +110,19 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
         }
       ]
     },
@@ -132,9 +155,40 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
         }
       ],
       "//serviceAccountRoles": "Le compte de service du PM provisionne des Workshops comme un utilisateur : sans le role 'developer', l'api-server lui refuse la creation (403). Voir DEVELOPER_ROLE dans crates/api-server/src/routes.rs."
+    }
+  ],
+  "groups": [
+    {
+      "name": "atelier-core",
+      "path": "/atelier-core",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {},
+      "subGroups": []
+    },
+    {
+      "name": "atelier-demo",
+      "path": "/atelier-demo",
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {},
+      "subGroups": []
     }
   ]
 }

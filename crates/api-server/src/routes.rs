@@ -191,12 +191,67 @@ pub(crate) fn workshops_api(state: &AppState) -> Api<Workshop> {
 /// doit etre le proprietaire enregistre du Workshop. Renvoie 404 (pas 403)
 /// pour un Workshop existant mais appartenant a quelqu'un d'autre : evite
 /// de confirmer a un client non autorise qu'un nom donne existe deja.
+/// Groupe dans lequel provisionner, valide contre ceux du jeton.
+///
+/// Un client ne choisit pas son perimetre, il choisit PARMI les siens : le
+/// groupe demande doit figurer dans le jeton, sinon `403`. Voir
+/// `docs/specs/07-groupes.md`, section 3.
+///
+/// Sans groupe demande : un seul groupe est retenu implicitement, plusieurs
+/// exigent d'etre departages (`400`), aucun interdit la creation (`403`) —
+/// deviner reviendrait a placer un environnement, et sa depense, dans un
+/// groupe au hasard.
+pub(crate) fn resolve_owner_group(
+    requested: Option<&str>,
+    user: &AuthenticatedUser,
+) -> Result<String, ApiError> {
+    match requested {
+        Some(group) => {
+            if user.groups.iter().any(|g| g == group) {
+                Ok(group.to_string())
+            } else {
+                Err(ApiError::forbidden(format!(
+                    "groupe {group:?} absent de vos groupes"
+                )))
+            }
+        }
+        None => match user.groups.as_slice() {
+            [only] => Ok(only.clone()),
+            [] => Err(ApiError::forbidden(
+                "aucun groupe : impossible de rattacher un Workshop",
+            )),
+            several => Err(ApiError::bad_request(&format!(
+                "plusieurs groupes ({}) : precisez `ownerGroup`",
+                several.join(", ")
+            ))),
+        },
+    }
+}
+
 pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
-    if workshop.spec.owner_subject != user.0 {
+    // Le GROUPE donne l'acces des qu'il est renseigne : tout membre pilote le
+    // Workshop, y compris pour reprendre l'environnement d'un collegue
+    // absent. C'est le sens meme de « un Workshop appartient a un groupe ».
+    if let Some(group) = workshop.spec.owner_group.as_deref() {
+        if user.groups.iter().any(|g| g == group) {
+            return Ok(());
+        }
+        tracing::warn!(
+            workshop_group = %group,
+            jwt_user = %user.subject,
+            "acces refuse : le sujet n'appartient pas au groupe proprietaire"
+        );
+        return Err(ApiError::not_found());
+    }
+
+    // Repli, le temps de la transition : les Workshops crees avant
+    // l'introduction des groupes n'en portent pas. Disparaitra quand
+    // `owner_group` deviendra obligatoire (voir docs/specs/07-groupes.md).
+    if workshop.spec.owner_subject != user.subject {
         tracing::warn!(
             workshop_owner = %workshop.spec.owner_subject,
-            jwt_user = %user.0,
-            "ensure_owner: sujet JWT ne match pas le proprietaire du Workshop"
+            jwt_user = %user.subject,
+            "acces refuse : Workshop sans groupe, et le sujet n'en est pas le createur"
         );
         return Err(ApiError::not_found());
     }
@@ -287,6 +342,10 @@ struct CreateWorkshopRequest {
     tools: Vec<String>,
     #[serde(default)]
     identity_injection_rules: Vec<atelier_common::IdentityInjectionRule>,
+    /// Groupe proprietaire. Facultatif si l'appelant n'a qu'un seul groupe ;
+    /// obligatoire s'il en a plusieurs (voir `resolve_owner_group`).
+    #[serde(default)]
+    owner_group: Option<String>,
 }
 
 async fn create_workshop(
@@ -304,6 +363,7 @@ async fn create_workshop(
             "provisionner un Workshop requiert le role 'developer' ou 'admin'",
         ));
     }
+    let owner_group = resolve_owner_group(req.owner_group.as_deref(), &user)?;
     validate_name(&req.name)?;
 
     let workshop = Workshop::new(
@@ -317,7 +377,8 @@ async fn create_workshop(
             // Jamais depuis le corps de la requete : c'est l'identite
             // verifiee par le JWT qui devient le proprietaire, pas une
             // valeur que le client pourrait usurper.
-            owner_subject: user.0,
+            owner_group: Some(owner_group),
+            owner_subject: user.subject,
             desired_state: WorkshopDesiredState::Running,
         },
     );
@@ -341,7 +402,7 @@ async fn list_workshops(
     let visible = all
         .items
         .into_iter()
-        .filter(|w| claims.has_role(ADMIN_ROLE) || w.spec.owner_subject == user.0)
+        .filter(|w| claims.has_role(ADMIN_ROLE) || w.spec.owner_subject == user.subject)
         .collect();
     Ok(Json(visible))
 }

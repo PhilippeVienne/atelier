@@ -124,6 +124,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # docs/PROGRESS.md) — permet de pointer `/chat` vers un modele
         # `mock_response` LiteLLM (`atelier-budget-test`) pour les tests,
         # sans toucher au code. Defaut de production inchange.
+        workshop_owner_group=os.environ.get("PM_ENGINE_WORKSHOP_OWNER_GROUP", ""),
         devcontainer_repo_template=os.environ.get("PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE", ""),
         chat_model=os.environ.get("PM_ENGINE_CHAT_MODEL", "sonnet-premium"),
         claude_code_model=os.environ.get(

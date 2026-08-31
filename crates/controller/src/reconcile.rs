@@ -1838,6 +1838,7 @@ mod template_hash_tests {
                 egress_allowlist: vec![],
                 tools: vec![],
                 identity_injection_rules: vec![],
+                owner_group: None,
                 owner_subject: "test-user".into(),
                 desired_state: WorkshopDesiredState::Running,
             },

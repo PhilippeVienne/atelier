@@ -76,8 +76,18 @@ spec:
                   - secretPath
                   type: object
                 type: array
+              ownerGroup:
+                description: |-
+                  Groupe proprietaire : c'est LUI qui donne acces (voir `docs/specs/07-groupes.md`). Tout membre du groupe peut piloter ce Workshop, ce qui permet notamment de reprendre l'environnement d'un collegue absent.
+
+                  `Option` le temps de la transition : les Workshops crees avant l'introduction des groupes n'en portent pas, et l'api-server retombe alors sur `owner_subject`. Deviendra obligatoire une fois ce repli retire.
+                nullable: true
+                type: string
               ownerSubject:
-                description: Identite du sujet JWT autorise a piloter ce Workshop.
+                description: |-
+                  Sujet JWT qui a CREE ce Workshop.
+
+                  Ne donne plus l'acces des lors qu'`owner_group` est renseigne : il repond a « qui l'a provisionne » (audit, tracabilite), pas a « qui y a droit ». Conserve pour cette raison, y compris apres le depart de la personne du groupe.
                 type: string
               resources:
                 description: Ressources allouees au pod parent (qui heberge la microVM + le tooling).
@@ -118,7 +128,10 @@ spec:
                 default: {}
                 type: object
               imageDigest:
-                description: Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
+                description: |-
+                  Digest de l'image rootfs construite par `image-builder` a partir du devcontainer, une fois le build termine (cache content-addressed).
+
+                  `skip_serializing_if` est ESSENTIEL ici : ce champ est ecrit par `image-builder` (depuis son Job), pas par le controller, alors que les deux patchent `status`. Sans lui, un `None` cote controller part en `"imageDigest": null` dans le JSON merge patch, ce que l'API Kubernetes interprete comme une SUPPRESSION du champ — le digest tout juste publie par `image-builder` etait alors efface, et le Workshop restait bloque en `BuildingImage` indefiniment alors que son image existait bel et bien dans le cache. Bug reel, observe environ une fois sur trois builds simultanes (2026-08-30).
                 nullable: true
                 type: string
               phase:
@@ -137,7 +150,10 @@ spec:
                 nullable: true
                 type: string
               snapshotDigest:
-                description: Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.
+                description: |-
+                  Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.
+
+                  Meme `skip_serializing_if` que `image_digest`, et pour la meme raison : ecrit par `vm-supervisor` via le controller, il ne doit jamais etre efface par un patch qui ne le renseigne simplement pas.
                 nullable: true
                 type: string
               upgradeState:

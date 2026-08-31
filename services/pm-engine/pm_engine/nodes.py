@@ -200,6 +200,14 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
                     # VIDE et le build d'image du Workshop ne peut jamais
                     # aboutir — voir `PmEngineDeps.workshop_egress_allowlist`.
                     "egressAllowlist": deps.workshop_egress_allowlist,
+                    # Omis si non configure : l'api-server retient alors le
+                    # groupe unique de l'appelant. C'est seulement quand il y
+                    # en a plusieurs qu'il faut trancher explicitement.
+                    **(
+                        {"ownerGroup": deps.workshop_owner_group}
+                        if deps.workshop_owner_group
+                        else {}
+                    ),
                 },
             )
 

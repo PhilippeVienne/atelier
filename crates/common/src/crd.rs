@@ -35,7 +35,23 @@ pub struct WorkshopSpec {
     /// sans jamais injecter.
     #[serde(default)]
     pub identity_injection_rules: Vec<IdentityInjectionRule>,
-    /// Identite du sujet JWT autorise a piloter ce Workshop.
+    /// Groupe proprietaire : c'est LUI qui donne acces (voir
+    /// `docs/specs/07-groupes.md`). Tout membre du groupe peut piloter ce
+    /// Workshop, ce qui permet notamment de reprendre l'environnement d'un
+    /// collegue absent.
+    ///
+    /// `Option` le temps de la transition : les Workshops crees avant
+    /// l'introduction des groupes n'en portent pas, et l'api-server retombe
+    /// alors sur `owner_subject`. Deviendra obligatoire une fois ce repli
+    /// retire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_group: Option<String>,
+    /// Sujet JWT qui a CREE ce Workshop.
+    ///
+    /// Ne donne plus l'acces des lors qu'`owner_group` est renseigne : il
+    /// repond a « qui l'a provisionne » (audit, tracabilite), pas a « qui y a
+    /// droit ». Conserve pour cette raison, y compris apres le depart de la
+    /// personne du groupe.
     pub owner_subject: String,
     /// Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en
     /// veille via snapshot Firecracker, pod parent libere). Le controller
@@ -245,6 +261,7 @@ mod tests {
                 egress_allowlist: vec!["github.com".into()],
                 tools: vec![],
                 identity_injection_rules: vec![],
+                owner_group: None,
                 owner_subject: "user@example.invalid".into(),
                 desired_state: WorkshopDesiredState::Running,
             },

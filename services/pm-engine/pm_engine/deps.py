@@ -38,6 +38,15 @@ class PmEngineDeps:
     Renseignee depuis `PM_ENGINE_WORKSHOP_EGRESS_ALLOWLIST` (voir
     `pm_engine.main`)."""
 
+    workshop_owner_group: str = ""
+    """Groupe proprietaire des Workshops crees par le PM.
+
+    Obligatoire des lors que le compte de service appartient a plusieurs
+    groupes : l'api-server refuse alors de choisir a sa place (`400`), pour
+    ne pas placer un environnement — et sa depense — dans un groupe au
+    hasard. Renseigne depuis `PM_ENGINE_WORKSHOP_OWNER_GROUP`.
+    Voir `docs/specs/07-groupes.md`."""
+
     devcontainer_repo_template: str = ""
     """Gabarit d'URL de clone du depot, telle qu'un GUEST doit la voir.
 
