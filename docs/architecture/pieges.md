@@ -42,6 +42,14 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **`cargo clippy` ne produit pas d'executable.** Verifier avec clippy puis
+  relancer `target/debug/<binaire>` fait tourner l'ANCIEN binaire : le
+  correctif compile, passe le lint, et ne s'execute pas. Constate le
+  2026-08-31 sur le confinement de securite — le controller reconciliait
+  toutes les 15 s sans erreur et n'ecrivait jamais la condition attendue, ce
+  qui a envoye chercher la cause du cote du schema du CRD et de l'elagage
+  Kubernetes. `cargo build -p <crate>` avant tout redemarrage manuel ; en cas
+  de doute, comparer l'horodatage du binaire a celui de la modification.
 - **Une regle d'injection ne sert a rien si la requete ne passe pas par
   l'injecteur.** Le controller creait bien une Virtual Key par Workshop
   (`atelier-wks-<nom>`), la plafonnait, l'ecrivait dans OpenBao et generait la

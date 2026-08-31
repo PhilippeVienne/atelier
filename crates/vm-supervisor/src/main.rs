@@ -49,6 +49,15 @@ type SnapshotResult = anyhow::Result<String>;
 /// suit (la boucle principale doit reprendre la main derriere).
 struct SnapshotRequest {
     respond_to: oneshot::Sender<SnapshotResult>,
+    /// Confinement de securite (tache 4.2.4) plutot qu'une mise en veille
+    /// ordinaire.
+    ///
+    /// Deux differences, toutes deux voulues : l'egress du guest est GELE
+    /// avant le snapshot (sans quoi une exfiltration en cours continuerait
+    /// pendant qu'on l'archive), et la microVM n'est PAS eteinte ensuite —
+    /// une mise en veille libere le pod, un confinement doit laisser
+    /// l'incident analysable.
+    lockdown: bool,
 }
 
 #[tokio::main]
@@ -195,12 +204,25 @@ async fn main() -> anyhow::Result<()> {
     //       status.image_digest plutot que des chemins fournis directement
     // TODO: relayer logs/metriques de la VM vers le control plane
 
+    // Etat de confinement, expose en lecture : c'est le seul moyen pour le
+    // controller de savoir qu'un Workshop a ete confine. Sans lui, un
+    // operateur verrait un Workshop `Running` alors que son reseau est
+    // coupe et son etat archive — un mensonge par omission, et exactement le
+    // genre d'etat silencieux qui coute cher sur ce projet.
+    let locked_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (tx, mut rx) = mpsc::channel::<SnapshotRequest>(1);
     let control_addr =
         std::env::var("ATELIER_VM_CONTROL_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
-    let control_state = Arc::new(Mutex::new(tx));
+    let control_state = ControlState {
+        tx: Arc::new(Mutex::new(tx)),
+        locked_down: Arc::clone(&locked_down),
+    };
     let app = Router::new()
         .route("/snapshot", post(snapshot_handler))
+        .route(
+            "/lockdown",
+            post(lockdown_handler).get(lockdown_state_handler),
+        )
         .with_state(control_state);
     let listener = tokio::net::TcpListener::bind(&control_addr)
         .await
@@ -215,14 +237,30 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             request = rx.recv() => {
-                let Some(SnapshotRequest { respond_to }) = request else {
+                let Some(SnapshotRequest { respond_to, lockdown }) = request else {
                     // Serveur HTTP arrete (ne devrait pas arriver avant la
                     // fin du process) : rien de plus a faire ici.
                     break;
                 };
+                if lockdown {
+                    // L'egress d'abord : le snapshot prend plusieurs
+                    // secondes, pendant lesquelles une exfiltration en cours
+                    // continuerait tranquillement.
+                    if let Err(err) = network.lockdown_egress().await {
+                        tracing::error!(%err, "gel de l'egress echoue, le snapshot d'urgence est pris malgre tout");
+                    }
+                }
                 let result = snapshot_and_publish(&mut vm, snapshot_dir.as_deref()).await;
                 let succeeded = result.is_ok();
                 let _ = respond_to.send(result);
+                if lockdown {
+                    locked_down.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // On s'arrete la : ni `shutdown`, ni `teardown`. La
+                    // microVM reste figee et le pod debout, pour que
+                    // l'incident puisse etre examine.
+                    tracing::error!("CONFINEMENT DE SECURITE actif : egress gele, etat archive, microVM conservee");
+                    continue;
+                }
                 if succeeded {
                     tracing::info!("snapshot published, shutting down microVM for suspend");
                     let shutdown_result = vm.shutdown().await;
@@ -311,11 +349,44 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-async fn snapshot_handler(
-    State(tx): State<Arc<Mutex<mpsc::Sender<SnapshotRequest>>>>,
-) -> impl IntoResponse {
+#[derive(Clone)]
+struct ControlState {
+    tx: Arc<Mutex<mpsc::Sender<SnapshotRequest>>>,
+    locked_down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+async fn snapshot_handler(State(state): State<ControlState>) -> impl IntoResponse {
+    control_request(state.tx, false).await
+}
+
+/// Etat de confinement, lu par le controller a chaque reconciliation.
+async fn lockdown_state_handler(State(state): State<ControlState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "lockdown": state.locked_down.load(std::sync::atomic::Ordering::SeqCst)
+    }))
+}
+
+/// Confinement de securite, demande par `net-proxy` quand il detecte une
+/// anomalie reseau (`crates/net-proxy/src/anomaly.rs`). Meme canal que le
+/// snapshot : c'est `vm-supervisor` qui pilote le TAP et la microVM, lui
+/// seul peut couper et figer.
+async fn lockdown_handler(State(state): State<ControlState>) -> impl IntoResponse {
+    control_request(state.tx, true).await
+}
+
+async fn control_request(
+    tx: Arc<Mutex<mpsc::Sender<SnapshotRequest>>>,
+    lockdown: bool,
+) -> axum::response::Response {
     let (respond_to, rx) = oneshot::channel();
-    let send_result = tx.lock().await.send(SnapshotRequest { respond_to }).await;
+    let send_result = tx
+        .lock()
+        .await
+        .send(SnapshotRequest {
+            respond_to,
+            lockdown,
+        })
+        .await;
     if send_result.is_err() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

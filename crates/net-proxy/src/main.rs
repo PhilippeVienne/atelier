@@ -37,6 +37,7 @@
 
 mod admin;
 mod allowlist;
+mod anomaly;
 mod dns;
 mod forward;
 mod http;
@@ -155,6 +156,9 @@ async fn main() -> anyhow::Result<()> {
         });
     let simulator: Arc<RwLock<Option<(String, u16)>>> = Arc::new(RwLock::new(None));
 
+    // Detection d'anomalie : active des que `ATELIER_VM_CONTROL_ADDR`
+    // designe le canal de controle de `vm-supervisor` (meme pod).
+    let anomaly = Some(std::sync::Arc::new(anomaly::AnomalyDetector::from_env()));
     let egress_config = EgressConfig {
         allowlist,
         upstream: upstream_proxy,
@@ -162,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
         internal: Arc::clone(&internal_routes),
         identity_proxy,
         simulator: Arc::clone(&simulator),
+        anomaly,
     };
 
     let control_router = portforward::router(portforward::PortForwardState {

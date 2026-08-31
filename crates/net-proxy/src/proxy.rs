@@ -57,6 +57,9 @@ pub struct EgressConfig {
     /// via MCP — un simulateur AWS local n'a pas vocation a etre joignable
     /// par defaut, seulement quand demande.
     pub simulator: Arc<RwLock<Option<(String, u16)>>>,
+    /// Detection d'anomalie reseau (tache 4.2.4) : compte les refus d'egress
+    /// et demande le confinement au-dela d'un seuil. `None` en test.
+    pub anomaly: Option<Arc<crate::anomaly::AnomalyDetector>>,
 }
 
 pub async fn handle_connection(
@@ -128,6 +131,9 @@ pub async fn handle_connection(
             allowed = false,
             "egress refuse (hors allowlist)"
         );
+        if let Some(anomaly) = config.anomaly.as_ref() {
+            anomaly.record_denial(&host).await;
+        }
         let _ = client.write_all(FORBIDDEN_RESPONSE).await;
         return Ok(());
     }
@@ -232,6 +238,9 @@ async fn handle_transparent_tls_connection_on_port(
     };
     if !allowed {
         tracing::warn!(%peer, host, port, allowed = false, "egress refuse (hors allowlist, TLS transparent)");
+        if let Some(anomaly) = config.anomaly.as_ref() {
+            anomaly.record_denial(&host).await;
+        }
         return Ok(());
     }
     tracing::info!(%peer, host, port, allowed = true, "egress autorise (TLS transparent)");
@@ -454,6 +463,7 @@ mod tests {
                 })
             }),
             simulator: Arc::new(RwLock::new(None)),
+            anomaly: None,
         }
     }
 
@@ -634,6 +644,7 @@ mod tests {
             internal: Arc::new(InternalRoutes::default()),
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
+            anomaly: None,
         };
         let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client_addr = client_listener.local_addr().unwrap();
@@ -687,6 +698,7 @@ mod tests {
             internal: Arc::new(InternalRoutes::default()),
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
+            anomaly: None,
         };
 
         // Le SNI ("127.0.0.1") sert a l'allowlist ; la connexion sortante
@@ -739,6 +751,7 @@ mod tests {
             internal: Arc::new(InternalRoutes::default()),
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
+            anomaly: None,
         };
         let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client_addr = client_listener.local_addr().unwrap();

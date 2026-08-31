@@ -307,6 +307,25 @@ impl NetworkSetup {
     /// testant : la connexion sortante partait bien, mais son retour etait
     /// jete par cette meme chaine, cause d'un `Connection timed out` cote
     /// net-proxy alors que le service ecoutait normalement dans le guest.
+    /// Gel total de l'egress du guest : insere un `DROP` en TETE de la
+    /// chaine dediee, avant toute regle d'acceptation.
+    ///
+    /// En tete et non en queue : la chaine commence par accepter les
+    /// connexions ETABLIES, ce qui laisserait vivre celles en cours — or
+    /// c'est precisement par elles qu'une exfiltration passerait. Le
+    /// confinement doit couper ce qui est deja ouvert.
+    ///
+    /// La microVM continue de tourner : on la fige (snapshot) plutot que de
+    /// la tuer, pour que l'incident reste analysable. Idempotent en pratique
+    /// — une seconde insertion ajoute un `DROP` redondant, sans effet de
+    /// bord.
+    pub async fn lockdown_egress(&self) -> Result<()> {
+        let chain = self.iptables_chain_name();
+        run("iptables", &["-I", &chain, "1", "-j", "DROP"]).await?;
+        tracing::warn!(chain = %chain, "egress du guest GELE (confinement de securite)");
+        Ok(())
+    }
+
     async fn setup_dedicated_chain(&self, tcp_ports: &[u16]) -> Result<()> {
         let chain = self.iptables_chain_name();
         let host_ip = self.host_ip.to_string();

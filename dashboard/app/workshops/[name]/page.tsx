@@ -174,6 +174,25 @@ export default async function WorkshopDetailPage({
           <Field label="Snapshot" value={status?.snapshotDigest ?? "—"} />
         </div>
 
+        {/* Confinement de securite (tache 4.2.4) : la PHASE reste `Running`
+            — la microVM est deliberement conservee pour rester analysable —
+            donc rien d'autre ne signalerait qu'un Workshop est coupe du
+            reseau et son etat archive. En haut de page, avant tout le reste :
+            c'est l'information qui change la lecture de toutes les autres. */}
+        {status?.conditions?.SecurityLockdown === "true" && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/5 p-4">
+            <p className="text-sm font-semibold text-red-600 dark:text-red-400">
+              Confinement de sécurité actif
+            </p>
+            <p className="mt-1 text-xs text-red-600/90 dark:text-red-400/90">
+              Une anomalie réseau a été détectée : accès sortant gelé et état de
+              la microVM archivé. Elle est conservée en l&apos;état pour analyse
+              — la phase reste <code>Running</code> pour cette raison, elle ne
+              signifie pas que le Workshop est utilisable.
+            </p>
+          </div>
+        )}
+
         {budget && <LlmBudgetCard budget={budget} />}
 
         <Credentials workshopName={name} initial={credentials} />

@@ -1395,6 +1395,16 @@ async fn ensure_parent_pod(
                                 &format!("0.0.0.0:{NET_PROXY_TRANSPARENT_TLS_PORT}"),
                             ),
                             env_var("ATELIER_VM_ADDR", VM_GUEST_IP),
+                            // Canal de controle de `vm-supervisor`, dans CE
+                            // pod : c'est par lui que net-proxy demande le
+                            // confinement quand il detecte une anomalie
+                            // reseau (tache 4.2.4). `127.0.0.1` — les
+                            // conteneurs d'un pod partagent le netns, et ce
+                            // canal n'a aucune raison de sortir.
+                            env_var(
+                                "ATELIER_VM_CONTROL_ADDR",
+                                &format!("127.0.0.1:{VM_CONTROL_PORT}"),
+                            ),
                             // Tout l'egress autorise par net-proxy est chaine
                             // vers identity-proxy des lors qu'il est configure
                             // (voir docs/architecture/network-security.md,
@@ -1671,6 +1681,23 @@ async fn ensure_parent_pod(
     let mut status = carry_forward_status(workshop, phase, Some(image_digest));
     status.pod_name = Some(pod_name);
     status.upgrade_state = upgrade_state;
+
+    // Confinement de securite (tache 4.2.4) : `vm-supervisor` l'expose, le
+    // controller le remonte dans `status.conditions`. Sans cela, un Workshop
+    // confine s'affiche `Running` alors que son reseau est coupe et son etat
+    // archive — la phase seule ne peut pas le dire, puisque la microVM est
+    // deliberement conservee pour rester analysable.
+    if let Some(pod_ip) = current
+        .as_ref()
+        .and_then(|p| p.status.as_ref())
+        .and_then(|s| s.pod_ip.clone())
+    {
+        if is_locked_down(&pod_ip).await {
+            status
+                .conditions
+                .insert("SecurityLockdown".to_string(), "true".to_string());
+        }
+    }
     Ok(status)
 }
 
@@ -1786,6 +1813,30 @@ async fn ensure_injection_rules_config_map(
             .map(|_| ()),
         Err(err) => Err(err),
     }
+}
+
+/// Le `vm-supervisor` de ce pod signale-t-il un confinement de securite ?
+///
+/// Best-effort : un superviseur injoignable ou une reponse illisible valent
+/// « pas de confinement ». Se tromper dans ce sens n'invente pas d'incident ;
+/// l'inverse ferait clignoter une alerte de securite sur un simple hoquet
+/// reseau, et une alerte qui crie faux finit par n'etre plus lue.
+async fn is_locked_down(pod_ip: &str) -> bool {
+    let url = format!("http://{pod_ip}:{VM_CONTROL_PORT}/lockdown");
+    let Ok(response) = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|body| body.get("lockdown").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
 }
 
 fn carry_forward_status(
