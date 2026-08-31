@@ -55,6 +55,9 @@ class PMWorkflowState(TypedDict):
     # --- OpenPullRequest ---
     pr_number: NotRequired[int]
     pr_url: NotRequired[str]
+    # Nombre de fichiers modifies par la PR, ou `None` si le provider ne sait
+    # pas repondre. `0` est une anomalie : voir le garde-fou d'`OpenPullRequest`.
+    pr_changed_files: NotRequired[int | None]
 
     # --- AwaitHitlApproval ---
     hitl_decision: NotRequired[str]  # "approved" | "rejected"

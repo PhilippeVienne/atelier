@@ -75,3 +75,17 @@ class BaseGitProvider(ABC):
     async def merge_pr(self, repo: str, pr_number: int) -> None:
         """Fusionne une Pull/Merge Request deja approuvee
         (`MergeAndClose`, apres `AwaitHitlApproval`)."""
+
+    async def changed_file_count(self, repo: str, pr_number: int) -> int | None:
+        """Nombre de fichiers modifies par une PR, ou `None` si le provider
+        ne sait pas repondre.
+
+        Volontairement NON abstraite, et `None` plutot que `0` par defaut :
+        une PR vide et une PR dont on ignore le contenu sont deux choses
+        differentes, et faire passer la seconde pour la premiere declencherait
+        de fausses alertes. `OpenPullRequest` s'en sert uniquement pour
+        avertir — une PR a 0 fichier est presque toujours le signe que le
+        travail de l'agent n'a pas atteint la branche. Ce symptome a ete
+        produit par trois causes distinctes sans que rien ne le signale (voir
+        `docs/architecture/pieges.md`), d'ou ce garde-fou."""
+        return None

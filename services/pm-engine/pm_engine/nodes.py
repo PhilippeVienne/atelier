@@ -23,7 +23,7 @@ from langgraph.types import interrupt
 from .deps import PmEngineDeps
 from .embeddings import embedding_literal as embeddings_embedding_literal
 from .embeddings import pad_embedding
-from .exec_client import wait_for_exec_completion
+from .exec_client import ExecResult, wait_for_exec_completion
 from .mcp_client import atelier_mcp_session, call_tool_json
 from .state import PMWorkflowState, SubTask
 
@@ -218,7 +218,6 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
     c'est ce qui garantit l'absence de chevauchement (voir
     docs/specs/05-devfactory-pm-engine.md, section 1)."""
     deps = _deps(config)
-    token = await deps.mcp_token_provider.get_token()
 
     async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
         for task in state.get("plan", []):
@@ -276,7 +275,10 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
                 session, "exec_in_workshop", {"name": task["workshop_name"], "command": command}
             )
             await wait_for_exec_completion(
-                deps.atelier_api_url, token, task["workshop_name"], execution["executionId"]
+                deps.atelier_api_url,
+                deps.mcp_token_provider,
+                task["workshop_name"],
+                execution["executionId"],
             )
 
     return {"phase": "DelegateToClaudeCode"}
@@ -285,6 +287,28 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
 # --------------------------------------------------------------------------
 # 5. RunDevcontainerTests
 # --------------------------------------------------------------------------
+def format_test_trace(workshop_name: str, result: ExecResult) -> str:
+    """Trace de test d'une sous-tache, telle qu'elle sera re-injectee dans le
+    prompt de l'agent par `AutoCorrectionLoop`.
+
+    Le code de sortie en fait partie, et une sortie vide est signalee comme
+    telle. Sans ca, l'echec d'une sous-tache dont la suite de tests ne produit
+    rien (typiquement : elle n'ecrit aucun test, la commande sort en erreur
+    sans afficher un mot) donnait un `error_trace` reduit a "Les tests ont
+    echoue :" suivi de rien du tout. L'agent rappele pour corriger n'avait
+    alors strictement rien sur quoi travailler, et le budget de corrections se
+    consommait a vide — constate le 2026-08-31, deux tours de correction
+    perdus sur une trace vide.
+    """
+    body = f"{result.stdout}\n{result.stderr}".strip()
+    if not body:
+        body = (
+            "(aucune sortie : la commande de test n'a rien affiche — "
+            "suite de tests absente ou non executee)"
+        )
+    return f"## {workshop_name} (exit code {result.exit_code})\n{body}\n\n"
+
+
 async def run_devcontainer_tests(state: PMWorkflowState, config: RunnableConfig) -> dict:
     """Execute la suite de tests declaree par le devcontainer
     (convention : `.devcontainer/devcontainer.json` -> champ
@@ -293,7 +317,6 @@ async def run_devcontainer_tests(state: PMWorkflowState, config: RunnableConfig)
     `bash .devcontainer/test.sh`, voir la limite documentee dans
     docs/PROGRESS.md)."""
     deps = _deps(config)
-    token = await deps.mcp_token_provider.get_token()
 
     all_passed = True
     combined_output = ""
@@ -305,9 +328,12 @@ async def run_devcontainer_tests(state: PMWorkflowState, config: RunnableConfig)
                 {"name": task["workshop_name"], "command": "bash .devcontainer/test.sh"},
             )
             result = await wait_for_exec_completion(
-                deps.atelier_api_url, token, task["workshop_name"], execution["executionId"]
+                deps.atelier_api_url,
+                deps.mcp_token_provider,
+                task["workshop_name"],
+                execution["executionId"],
             )
-            combined_output += f"## {task['workshop_name']}\n{result.stdout}\n{result.stderr}\n"
+            combined_output += format_test_trace(task["workshop_name"], result)
             if result.exit_code != 0:
                 all_passed = False
 
@@ -377,7 +403,29 @@ async def open_pull_request(state: PMWorkflowState, config: RunnableConfig) -> d
         head_branch=head_task["branch_name"],
         base_branch="main",
     )
-    return {"pr_number": pr.number, "pr_url": pr.url, "phase": "OpenPullRequest"}
+    # Garde-fou : une PR sans aucun fichier modifie signifie presque toujours
+    # que le travail de l'agent n'a jamais atteint la branche. Trois causes
+    # distinctes ont deja produit exactement ce symptome, chacune en silence
+    # (voir docs/architecture/pieges.md). On avertit bruyamment plutot que de
+    # laisser passer : le graphe continue quand meme vers la revue humaine,
+    # qui reste seule juge — bloquer ici priverait l'humain de la seule vue
+    # d'ensemble disponible.
+    changed_files = await deps.git_provider.changed_file_count(state["repo"], pr.number)
+    if changed_files == 0:
+        logger.error(
+            "OpenPullRequest: la PR %s ne contient AUCUN fichier modifie — "
+            "le travail de l'agent n'a probablement pas ete commite/pousse "
+            "dans les Workshops %s",
+            pr.url,
+            [t["workshop_name"] for t in plan],
+        )
+
+    return {
+        "pr_number": pr.number,
+        "pr_url": pr.url,
+        "pr_changed_files": changed_files,
+        "phase": "OpenPullRequest",
+    }
 
 
 # --------------------------------------------------------------------------

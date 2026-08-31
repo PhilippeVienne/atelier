@@ -160,6 +160,11 @@ class ForgejoProvider(BaseGitProvider):
             state=data["state"],
         )
 
+    async def changed_file_count(self, repo: str, pr_number: int) -> int | None:
+        response = await self._client.get(f"/repos/{repo}/pulls/{pr_number}/files")
+        response.raise_for_status()
+        return len(response.json())
+
     async def merge_pr(self, repo: str, pr_number: int) -> None:
         response = await self._client.post(
             f"/repos/{repo}/pulls/{pr_number}/merge",

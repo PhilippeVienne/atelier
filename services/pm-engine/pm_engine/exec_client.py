@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 import httpx
 from httpx_sse import aconnect_sse
 
+from .oidc import OidcTokenProvider
+
 
 @dataclass
 class ExecResult:
@@ -29,7 +31,7 @@ class ExecResult:
 
 async def wait_for_exec_completion(
     atelier_api_url: str,
-    token: str,
+    token_provider: OidcTokenProvider,
     workshop_name: str,
     execution_id: str,
     *,
@@ -39,10 +41,18 @@ async def wait_for_exec_completion(
     (execution terminee) — le serveur rejoue depuis le debut du buffer a
     chaque connexion (voir `crate::exec::stream_handler`), donc un seul
     passage suffit ici (pas besoin de gerer une reconnexion sur coupure
-    dans ce client, contrairement a un humain qui rouvrirait l'onglet)."""
+    dans ce client, contrairement a un humain qui rouvrirait l'onglet).
+
+    Prend le PROVIDER de jeton, pas un jeton : ses appelants bouclent sur
+    plusieurs sous-taches et chaque attente peut durer un quart d'heure
+    (Claude Code implemente une fonctionnalite). Un jeton recupere une fois
+    avant la boucle etait deja expire a l'ouverture du flux de la sous-tache
+    suivante — meme classe de bug que la session MCP, voir
+    `pm_engine.mcp_client._OidcAuth`."""
     url = f"{atelier_api_url.rstrip('/')}/v1/workshops/{workshop_name}/exec/{execution_id}/stream"
     result = ExecResult()
 
+    token = await token_provider.get_token()
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {token}"}, timeout=httpx.Timeout(timeout_s)
     ) as client:

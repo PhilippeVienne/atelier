@@ -68,10 +68,13 @@ attendus et font partie du processus, ils sont consignes dans
 >     Job. Correction a envisager : patch JSON merge cible sur les seuls
 >     champs calcules, ou relecture du Workshop juste avant `update_status`.
 >
-> 0b. **La PR ouverte par le PM est vide** — le correctif "modele epingle"
->     n'a pas ete valide par un run complet. Ajouter au passage un garde-fou
->     dans `OpenPullRequest` : ouvrir une PR sans aucun changement devrait
->     echouer ou avertir, pas passer silencieusement.
+> 0b. **La PR ouverte par le PM n'est plus vide** (regle le 2026-08-31 :
+>     keep-alive de `net-proxy`, jeton OIDC rafraichi par requete, et surtout
+>     `bypassPermissions` — voir `architecture/pieges.md`). Reste a faire :
+>     un **garde-fou dans `OpenPullRequest`**, car ouvrir une PR sans aucun
+>     changement passe toujours silencieusement. C'est ce silence qui a coute
+>     le plus cher : trois causes distinctes ont produit exactement le meme
+>     symptome (une PR a 0 fichier), sans qu'aucune ne soit signalee.
 >
 > 0c. **`apply_wires_the_llm_virtual_key_injection_rule_when_configured`
 >     echoue** (`crates/controller/tests/reconcile.rs`) : la regle

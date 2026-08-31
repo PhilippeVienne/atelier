@@ -114,7 +114,11 @@ async def test_forgejo_provider_full_issue_to_merged_pr_lifecycle(test_repo: str
         assert pr.base_branch == "main"
         assert pr.state == "open"
 
-        # 6. merge_pr
+        # 6. changed_file_count : garde-fou d'`OpenPullRequest` contre les PR
+        #    vides. Ici la PR porte exactement un fichier (`task.txt`).
+        assert await provider.changed_file_count(test_repo, pr.number) == 1
+
+        # 7. merge_pr
         await provider.merge_pr(test_repo, pr.number)
     finally:
         await provider.aclose()

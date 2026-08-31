@@ -26,6 +26,7 @@ import pytest
 
 from pm_engine import nodes
 from pm_engine.deps import PmEngineDeps
+from pm_engine.exec_client import ExecResult
 from pm_engine.git_providers import ForgejoProvider
 from pm_engine.llm_client import LlmClient
 from pm_engine.mcp_client import atelier_mcp_session, call_tool_json, call_tool_text
@@ -113,6 +114,26 @@ async def test_repo():
             await admin_client.delete(f"/repos/{FORGEJO_OWNER}/{repo_name}")
 
 
+def test_test_trace_reports_the_exit_code_and_names_an_empty_output() -> None:
+    """Regression : une sous-tache qui echoue SANS rien afficher donnait une
+    trace vide, donc un prompt de correction inexploitable (deux tours de
+    correction perdus, constate le 2026-08-31). Le code de sortie doit
+    toujours figurer, et l'absence de sortie doit etre dite explicitement."""
+    trace = nodes.format_test_trace("pm-9-task-2", ExecResult(status="Succeeded", exit_code=1))
+    assert "pm-9-task-2" in trace
+    assert "exit code 1" in trace
+    assert "aucune sortie" in trace
+
+
+def test_test_trace_keeps_the_real_output_when_there_is_one() -> None:
+    trace = nodes.format_test_trace(
+        "pm-9-task-1",
+        ExecResult(status="Succeeded", exit_code=0, stdout="ok 1 - liste vide", stderr=""),
+    )
+    assert "ok 1 - liste vide" in trace
+    assert "aucune sortie" not in trace
+
+
 def test_route_after_tests_proceeds_when_tests_pass() -> None:
     state = PMWorkflowState(test_passed=True, correction_attempts=0, max_correction_attempts=3)
     assert nodes.route_after_tests(state) == "OpenPullRequest"
@@ -187,8 +208,20 @@ async def test_provision_and_suspend_workshop_via_real_mcp(deps, test_repo) -> N
     )
     config = _FakeConfig(configurable={"deps": deps})
 
-    await nodes.provision_workshop(state, config)
-    await nodes.suspend_while_waiting_review(state, config)
+    # `devcontainer_repo` pointe volontairement dans le vide. Le resultat
+    # depend donc de l'environnement, et les DEUX issues sont correctes :
+    #  - sans `atelier-controller`, le Workshop reste en attente et
+    #    `provision_workshop` finit par rendre la main (cas d'origine de ce
+    #    test) ;
+    #  - avec un controller reel, celui-ci tente la construction, echoue, et
+    #    `provision_workshop` remonte l'echec sans attendre le timeout
+    #    (fail-fast ajoute le 2026-08-30 — c'est precisement ce qu'on veut).
+    # Ce que ce test verifie vraiment est en dessous : le pont MCP.
+    try:
+        await nodes.provision_workshop(state, config)
+        await nodes.suspend_while_waiting_review(state, config)
+    except RuntimeError as exc:
+        assert "en echec" in str(exc), exc
 
     async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
         # `status` est `null` tant qu'aucun `atelier-controller` reel n'a
