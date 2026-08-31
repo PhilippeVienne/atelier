@@ -42,6 +42,28 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **`--permission-mode acceptEdits` n'autorise PAS les commandes `Bash`.**
+  Il auto-approuve les editions de fichiers, rien de plus. En mode `--print`
+  (non interactif), personne n'est la pour approuver le reste : `git add`,
+  `git commit` et `git push` etaient donc refuses en silence. L'agent
+  produisait un travail complet et correct qui restait en fichiers **non
+  suivis** dans la microVM, et `OpenPullRequest` ouvrait une PR vide. Le
+  Workshop delegue s'executant dans une microVM Firecracker jetable sans
+  acces reseau hors allowlist, la frontiere de securite est la microVM et non
+  l'invite d'un CLI : `DelegateToClaudeCode` utilise donc
+  `bypassPermissions`. **Signature du probleme** : `git status` dans le
+  Workshop montre `?? <fichiers>` avec un `git log` intact — le travail
+  existe, il n'est simplement jamais entre dans l'index.
+- **Un jeton fige a l'ouverture d'une session MCP expire en cours de
+  session.** Une session Streamable HTTP emet plusieurs requetes HTTP au fil
+  de sa vie (POST de l'appel d'outil, flux SSE, DELETE de fermeture), et un
+  noeud comme `DelegateToClaudeCode` vit bien plus longtemps qu'un jeton OIDC
+  (300 s par defaut chez Keycloak) : l'api-server repondait `ExpiredSignature`
+  au milieu de la delegation. `pm_engine.mcp_client` pose desormais l'en-tete
+  `Authorization` **par requete** via un `httpx2.Auth` adosse au
+  `OidcTokenProvider` (qui cache et renouvelle deja). Allonger la duree de vie
+  du jeton ne fait que deplacer la limite : c'est le rafraichissement qui
+  supprime l'hypothese sur la duree des appels.
 - **Un proxy HTTP ne doit pas reecrire que la PREMIERE requete d'une
   connexion.** Un client configure avec `HTTP_PROXY` (tous les Workshops)
   garde sa connexion ouverte et envoie toutes ses requetes suivantes en forme

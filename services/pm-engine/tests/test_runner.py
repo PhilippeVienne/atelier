@@ -84,9 +84,15 @@ async def test_start_workflow_then_resume_review_tracks_pm_reviews() -> None:
             )
             assert "__interrupt__" in result
 
+        # On isole la revue de CE test plutot que de comparer la liste
+        # entiere : `list_pending_reviews` interroge la base de dev partagee,
+        # ou des workflows reels laissent des revues en attente. Comparer la
+        # liste complete faisait echouer ce test sur un simple usage normal
+        # de l'environnement, sans qu'aucun code soit en cause.
         pending = await runner.list_pending_reviews(deps)
-        assert [r["thread_id"] for r in pending] == [thread_id]
-        assert pending[0]["pr_url"] == "http://example.invalid/pr/runner-test"
+        mine = [r for r in pending if r["thread_id"] == thread_id]
+        assert len(mine) == 1
+        assert mine[0]["pr_url"] == "http://example.invalid/pr/runner-test"
 
         async with build_checkpointer(DATABASE_URL_PM) as checkpointer2:
             resumed_graph = _build_minimal_graph(checkpointer2)
@@ -94,7 +100,7 @@ async def test_start_workflow_then_resume_review_tracks_pm_reviews() -> None:
             assert final["status"] == "merged"
 
         pending_after = await runner.list_pending_reviews(deps)
-        assert pending_after == []
+        assert [r for r in pending_after if r["thread_id"] == thread_id] == []
 
         async with pool.acquire() as conn:
             async with conn.transaction():

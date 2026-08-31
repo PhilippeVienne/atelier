@@ -699,6 +699,20 @@ async fn ensure_workspace_clone(
                 tracing::warn!(%revision, "revision introuvable, clone laisse sur la branche par defaut");
             }
         }
+        // Identite git par defaut du depot clone : sans elle, `git commit`
+        // echoue ("Please tell me who you are") pour tout agent qui essaie
+        // de commiter son travail dans la microVM. Locale au depot (pas
+        // `--global`), donc triviale a surcharger par l'utilisateur ou par
+        // un agent qui connait une meilleure identite.
+        for (key, value) in [
+            ("user.name", "Atelier Workshop"),
+            ("user.email", "workshop@atelier.local"),
+        ] {
+            let _ = Command::new("git")
+                .args(["-C", &ws_dir.to_string_lossy(), "config", key, value])
+                .status()
+                .await;
+        }
         tracing::info!(repo = %source.repo, revision = %source.revision, "depot clone dans le workspace");
     }
 

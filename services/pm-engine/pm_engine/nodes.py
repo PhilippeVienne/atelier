@@ -252,8 +252,23 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
             # le corps d'un ticket est une entree non fiable, et il finissait
             # interprete par le shell du Workshop. `shlex.quote` produit des
             # guillemets SIMPLES, ou plus rien n'est interprete.
+            # `bypassPermissions`, et NON `acceptEdits` : ce dernier
+            # auto-approuve les editions de fichiers mais PAS les commandes
+            # `Bash`. En mode `--print` (non interactif), il n'y a personne
+            # pour approuver : `git add`/`commit`/`push` etaient donc refuses
+            # en silence. L'agent ecrivait un travail complet et correct, qui
+            # restait en fichiers NON SUIVIS dans la microVM — et
+            # `OpenPullRequest` ouvrait une PR vide. Constate le 2026-08-31 :
+            # `git status` dans le Workshop montrait `?? api/`, `?? server.js`,
+            # `?? test/` avec un `git log` intact.
+            #
+            # Deleguer les permissions est ici sans danger, et c'est meme la
+            # raison d'etre d'Atelier : l'agent s'execute dans une microVM
+            # Firecracker jetable, sans acces reseau hors allowlist. La
+            # frontiere de securite est la microVM, pas l'invite de
+            # confirmation d'un CLI.
             command = (
-                "claude --print --permission-mode acceptEdits "
+                "claude --print --permission-mode bypassPermissions "
                 f"--model {shlex.quote(deps.claude_code_model)} "
                 f"{shlex.quote(prompt)}"
             )

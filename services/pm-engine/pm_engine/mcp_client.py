@@ -21,22 +21,41 @@ from mcp.client.streamable_http import streamable_http_client
 from .oidc import OidcTokenProvider
 
 
+class _OidcAuth(httpx2.Auth):
+    """Pose l'en-tete `Authorization` a CHAQUE requete HTTP de la session,
+    en demandant son jeton au provider (qui le met en cache et le renouvelle
+    avant expiration — voir `OidcTokenProvider`).
+
+    Un en-tete fige a l'ouverture de la session ne tient pas : une session
+    Streamable HTTP emet plusieurs requetes HTTP au fil de sa vie (POST de
+    l'appel d'outil, flux SSE, DELETE de fermeture), et un noeud comme
+    `DelegateToClaudeCode` vit bien plus longtemps qu'un jeton OIDC — le
+    jeton expirait donc EN COURS de session et l'api-server repondait
+    `ExpiredSignature`. Rafraichir par requete est la bonne granularite :
+    elle ne depend d'aucune hypothese sur la duree des appels d'outils.
+    """
+
+    def __init__(self, token_provider: OidcTokenProvider) -> None:
+        self._token_provider = token_provider
+
+    async def async_auth_flow(self, request):  # type: ignore[no-untyped-def]
+        request.headers["Authorization"] = f"Bearer {await self._token_provider.get_token()}"
+        yield request
+
+
 @asynccontextmanager
 async def atelier_mcp_session(
     base_url: str, token_provider: OidcTokenProvider
 ) -> AsyncIterator[ClientSession]:
-    """Ouvre une session MCP authentifiee vers `{base_url}/v1/mcp`. Une
-    session par appelant (le jeton est fixe pour la duree de la session
-    Streamable HTTP — pas de rafraichissement en cours de session, coherent
-    avec la duree de vie courte d'une session MCP au sein d'un noeud de
-    graphe LangGraph).
+    """Ouvre une session MCP authentifiee vers `{base_url}/v1/mcp`, dont le
+    jeton est renouvele a chaque requete HTTP (voir `_OidcAuth`) : la session
+    peut donc vivre plus longtemps qu'un jeton OIDC.
 
     `httpx2` (pas `httpx`) : le SDK MCP officiel (`mcp`) requiert
     precisement le client HTTP de sa propre dependance `httpx2` pour
     `streamable_http_client` — constate a l'usage (le type attendu par
     cette fonction n'est pas `httpx.AsyncClient`)."""
-    token = await token_provider.get_token()
-    async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as http_client:
+    async with httpx2.AsyncClient(auth=_OidcAuth(token_provider)) as http_client:
         async with streamable_http_client(
             f"{base_url.rstrip('/')}/v1/mcp", http_client=http_client
         ) as (read, write):
