@@ -163,6 +163,13 @@ pub struct ReconcileCtx {
     /// desactivee, aucun alias `llm-proxy` ni injection `ANTHROPIC_*` —
     /// meme convention que `openbao`.
     pub llm_proxy_addr: Option<String>,
+    /// La meme chose, mais telle qu'un POD doit la voir (`net-proxy` s'en
+    /// sert comme cible de l'alias `llm-proxy`). Distincte de
+    /// `llm_proxy_addr`, qui est l'adresse vue par le controller pour ses
+    /// propres appels d'administration : les deux different des que le
+    /// controller tourne hors cluster (port-forward). Meme convention que
+    /// `OpenBaoConfig::pod_addr`.
+    pub llm_proxy_pod_addr: Option<String>,
     /// Jeton envoye par Claude Code (`ANTHROPIC_AUTH_TOKEN`) et attendu par
     /// LiteLLM (`LITELLM_MASTER_KEY`) — partage par tous les Workshops dans
     /// ce lot, voir "Limites assumees" de `docs/PROGRESS.md`.
@@ -242,8 +249,22 @@ pub async fn run() -> anyhow::Result<()> {
         .map(|v| v == "true")
         .unwrap_or(false);
     let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
+    // Adresse injectee dans les pods, distincte de celle qu'utilise le
+    // controller pour ses propres appels d'administration — meme raison et
+    // meme convention que `OpenBaoConfig::pod_addr` : en developpement le
+    // controller tourne HORS cluster et joint LiteLLM par un port-forward
+    // (`127.0.0.1:4000`), adresse qui ne veut rien dire dans un pod. Sans ce
+    // dedoublement, `net-proxy` recevait `127.0.0.1:4000` comme cible de
+    // l'alias `llm-proxy`. Egale a `llm_proxy_addr` par defaut : aucun effet
+    // en production, ou le controller tourne dans le cluster.
+    let llm_proxy_pod_addr = std::env::var("ATELIER_LLM_PROXY_POD_ADDR")
+        .ok()
+        .or_else(|| llm_proxy_addr.clone());
     let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok();
     let git_identity = git_identity::config_from_env();
+    // `litellm` sert aux appels d'ADMINISTRATION faits par le controller
+    // lui-meme (generation de Virtual Keys) : c'est bien `llm_proxy_addr`,
+    // l'adresse vue depuis le controller, qu'il lui faut.
     let litellm_config =
         litellm::config_from_env(llm_proxy_addr.clone(), llm_proxy_auth_token.clone());
     let component_image_registry = std::env::var("ATELIER_COMPONENT_IMAGE_REGISTRY").ok();
@@ -259,6 +280,7 @@ pub async fn run() -> anyhow::Result<()> {
                 registry_addr,
                 registry_insecure,
                 llm_proxy_addr,
+                llm_proxy_pod_addr,
                 llm_proxy_auth_token,
                 git_identity,
                 litellm: litellm_config,
@@ -1322,7 +1344,7 @@ async fn ensure_parent_pod(
                         // configure, contrairement a `simulator` (gate par
                         // `Workshop.spec.tools`) — voir `ReconcileCtx::llm_proxy_addr`.
                         .chain(
-                            ctx.llm_proxy_addr
+                            ctx.llm_proxy_pod_addr
                                 .as_ref()
                                 .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr)),
                         )
@@ -1560,7 +1582,19 @@ fn carry_forward_status(
 ) -> WorkshopStatus {
     WorkshopStatus {
         phase,
-        pod_name: None,
+        // Report de la derniere valeur connue, comme les digests juste en
+        // dessous. `None` en dur effacait `status.podName` sur TOUT chemin de
+        // reconciliation qui ne le renseigne pas — celui du build d'image,
+        // notamment. Or l'api-server s'en sert pour retrouver le pod parent
+        // (`crate::routes`) : une reconciliation concurrente pouvait donc
+        // faire echouer `exec_in_workshop` avec "le Workshop n'a pas de pod
+        // parent actif" alors que le pod tournait.
+        //
+        // Volontairement PAS de `skip_serializing_if` sur ce champ, au
+        // contraire de `image_digest`/`snapshot_digest` : la mise en veille
+        // (`suspend`) doit pouvoir l'effacer pour de bon, et le fait en
+        // ecrasant explicitement ce report par `None` juste apres l'appel.
+        pod_name: workshop.status.as_ref().and_then(|s| s.pod_name.clone()),
         // Report de la derniere valeur connue quand l'appelant n'en a pas :
         // le digest appartient a `image-builder`, un chemin de
         // reconciliation qui ne l'a pas lu n'a aucune raison de l'effacer
@@ -1624,8 +1658,60 @@ async fn update_status(
 
 #[cfg(test)]
 mod template_hash_tests {
-    use super::pod_spec_template_hash;
+    use super::{carry_forward_status, pod_spec_template_hash};
+    use atelier_common::crd::{
+        DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,
+        WorkshopSpec, WorkshopStatus,
+    };
     use k8s_openapi::api::core::v1::{Container, PodSpec};
+    use kube::core::ObjectMeta;
+
+    /// Regression : `carry_forward_status` mettait `pod_name` a `None` en
+    /// dur, si bien que tout chemin de reconciliation qui ne le renseigne pas
+    /// (celui du build d'image, par exemple) effacait `status.podName`.
+    /// L'api-server s'en sert pour retrouver le pod parent : une
+    /// reconciliation concurrente faisait donc echouer `exec_in_workshop`
+    /// avec "le Workshop n'a pas de pod parent actif" alors que le pod
+    /// tournait. Meme classe de bug que l'effacement de `image_digest`.
+    #[test]
+    fn pod_name_survives_a_reconciliation_that_does_not_set_it() {
+        let workshop = Workshop {
+            metadata: ObjectMeta {
+                name: Some("ws".into()),
+                ..Default::default()
+            },
+            spec: WorkshopSpec {
+                devcontainer: DevcontainerSource {
+                    repo: "https://example.invalid/repo.git".into(),
+                    revision: "HEAD".into(),
+                    config_path: ".devcontainer/devcontainer.json".into(),
+                },
+                resources: WorkshopResources {
+                    cpu: "100m".into(),
+                    memory: "128Mi".into(),
+                    disk: None,
+                    max_llm_budget_usd: None,
+                },
+                egress_allowlist: vec![],
+                tools: vec![],
+                identity_injection_rules: vec![],
+                owner_subject: "test-user".into(),
+                desired_state: WorkshopDesiredState::Running,
+            },
+            status: Some(WorkshopStatus {
+                phase: WorkshopPhase::Running,
+                pod_name: Some("ws-parent".into()),
+                ..Default::default()
+            }),
+        };
+
+        let carried = carry_forward_status(&workshop, WorkshopPhase::BuildingImage, None);
+        assert_eq!(
+            carried.pod_name.as_deref(),
+            Some("ws-parent"),
+            "le nom du pod parent doit etre reporte, pas efface"
+        );
+    }
 
     #[test]
     fn identical_specs_hash_identically() {

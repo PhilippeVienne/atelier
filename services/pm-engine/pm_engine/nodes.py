@@ -358,10 +358,20 @@ async def auto_correction_loop(state: PMWorkflowState, config: RunnableConfig) -
     attempts = state.get("correction_attempts", 0) + 1
     return {
         "correction_attempts": attempts,
+        # « Corrige ces echecs » tout court laissait l'agent libre de repartir
+        # de zero : au 2e tour il reimplementait la fonctionnalite dans une
+        # arborescence differente, si bien que la PR finale contenait DEUX
+        # implementations completes de la meme chose (constate le 2026-08-31,
+        # PR 13 : `src/**` et `api/**` en parallele). On lui dit donc
+        # explicitement de partir de l'existant.
         "analysis": (
             f"{state.get('analysis', '')}\n\n"
             f"## Tentative de correction {attempts}\nLes tests ont echoue :\n"
-            f"{state.get('error_trace', '')}\nCorrige ces echecs."
+            f"{state.get('error_trace', '')}\n"
+            "Corrige ces echecs en MODIFIANT les fichiers deja presents dans le "
+            "depot. Ne recree pas l'arborescence et ne reimplemente pas ce qui "
+            "existe deja : commence par lire l'etat courant du depot, puis "
+            "corrige au plus juste."
         ),
         "phase": "AutoCorrectionLoop",
     }
