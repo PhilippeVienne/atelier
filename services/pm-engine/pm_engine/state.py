@@ -53,6 +53,9 @@ class PMWorkflowState(TypedDict):
     max_correction_attempts: NotRequired[int]
 
     # --- OpenPullRequest ---
+    # Branches de sous-taches que `IntegrateSubTasks` n'a pas pu fusionner
+    # dans celle de tete. Vide = integration complete.
+    integration_conflicts: NotRequired[list[str]]
     pr_number: NotRequired[int]
     pr_url: NotRequired[str]
     # Nombre de fichiers modifies par la PR, ou `None` si le provider ne sait

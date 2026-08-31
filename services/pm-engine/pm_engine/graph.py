@@ -27,6 +27,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
     graph.add_node("PlanParallelTasks", nodes.plan_parallel_tasks)
     graph.add_node("ProvisionWorkshop", nodes.provision_workshop)
     graph.add_node("DelegateToClaudeCode", nodes.delegate_to_claude_code)
+    graph.add_node("IntegrateSubTasks", nodes.integrate_sub_tasks)
     graph.add_node("RunDevcontainerTests", nodes.run_devcontainer_tests)
     graph.add_node("AutoCorrectionLoop", nodes.auto_correction_loop)
     graph.add_node("OpenPullRequest", nodes.open_pull_request)
@@ -39,7 +40,11 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
     graph.add_edge("AnalyzeIssue", "PlanParallelTasks")
     graph.add_edge("PlanParallelTasks", "ProvisionWorkshop")
     graph.add_edge("ProvisionWorkshop", "DelegateToClaudeCode")
-    graph.add_edge("DelegateToClaudeCode", "RunDevcontainerTests")
+    # Les branches des sous-taches sont reunies AVANT de tester : chaque
+    # Workshop ne contient que sa part, une suite de tests ne veut donc rien
+    # dire tant que le travail parallele n'a pas ete integre.
+    graph.add_edge("DelegateToClaudeCode", "IntegrateSubTasks")
+    graph.add_edge("IntegrateSubTasks", "RunDevcontainerTests")
     graph.add_conditional_edges(
         "RunDevcontainerTests",
         nodes.route_after_tests,

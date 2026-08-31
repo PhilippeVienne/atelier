@@ -11,7 +11,7 @@ from pm_engine.graph import build_graph
 from pm_engine.state import PMWorkflowState
 
 
-def test_graph_compiles_with_all_eleven_nodes() -> None:
+def test_graph_compiles_with_all_twelve_nodes() -> None:
     graph = build_graph(InMemorySaver())
     node_names = set(graph.get_graph().nodes.keys())
     expected = {
@@ -19,6 +19,7 @@ def test_graph_compiles_with_all_eleven_nodes() -> None:
         "PlanParallelTasks",
         "ProvisionWorkshop",
         "DelegateToClaudeCode",
+        "IntegrateSubTasks",
         "RunDevcontainerTests",
         "AutoCorrectionLoop",
         "OpenPullRequest",
@@ -28,6 +29,20 @@ def test_graph_compiles_with_all_eleven_nodes() -> None:
         "IndexKnowledge",
     }
     assert expected <= node_names
+
+
+def test_integration_happens_between_delegation_and_tests() -> None:
+    """Les branches des sous-taches doivent etre reunies AVANT de lancer la
+    suite de tests : chaque Workshop ne contient que sa propre part, donc un
+    projet incomplet, et tester dans cet etat ne dit rien de la qualite du
+    code (constate le 2026-08-31 : le Workshop sans `test/` sortait en
+    `exit 1` faute de repertoire, et le travail des autres sous-taches
+    n'atteignait meme jamais la PR)."""
+    graph = build_graph(InMemorySaver())
+    edges = {(e.source, e.target) for e in graph.get_graph().edges}
+    assert ("DelegateToClaudeCode", "IntegrateSubTasks") in edges
+    assert ("IntegrateSubTasks", "RunDevcontainerTests") in edges
+    assert ("DelegateToClaudeCode", "RunDevcontainerTests") not in edges
 
 
 async def test_auto_correction_loop_increments_attempts_and_reinjects_the_error() -> None:

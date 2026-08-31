@@ -105,7 +105,19 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     "Decoupe ce ticket en sous-taches paralleles SANS chevauchement de "
                     "fichiers (chaque sous-tache doit avoir un perimetre de fichiers "
                     "disjoint des autres, pour eviter tout conflit entre agents "
-                    "paralleles). Reponds UNIQUEMENT avec un tableau JSON, un objet par "
+                    "paralleles).\n\n"
+                    "CONTRAINTE ESSENTIELLE : chaque sous-tache est confiee a un agent "
+                    "qui travaille SEUL, dans un environnement ou le code des AUTRES "
+                    "sous-taches n'existe pas encore. Chaque sous-tache doit donc etre "
+                    "realisable de bout en bout sans voir le travail des autres. En "
+                    "particulier, ne cree JAMAIS une sous-tache dediee aux tests : les "
+                    "tests d'un module font partie de la sous-tache qui ecrit ce module. "
+                    "De meme, ne cree pas de sous-tache d'integration ou de "
+                    "documentation transversale.\n\n"
+                    "S'il n'existe pas de decoupage reellement independant, renvoie une "
+                    "SEULE sous-tache couvrant tout : mieux vaut une tache unique "
+                    "coherente que plusieurs taches qui ne peuvent pas aboutir.\n\n"
+                    "Reponds UNIQUEMENT avec un tableau JSON, un objet par "
                     'sous-tache : [{"id": "task-1", "title": "...", "scope": '
                     '["chemin/vers/fichiers/**"]}, ...].'
                 ),
@@ -350,6 +362,82 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
 # --------------------------------------------------------------------------
 # 5. RunDevcontainerTests
 # --------------------------------------------------------------------------
+async def integrate_sub_tasks(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Fusionne les branches des sous-taches dans celle de la premiere, dans
+    la microVM de cette premiere sous-tache.
+
+    Sans cette etape, le travail parallele n'etait JAMAIS reuni : chaque
+    agent poussait sur sa propre branche, `OpenPullRequest` ouvrait la PR
+    depuis la branche de la premiere sous-tache seulement, et tout le reste
+    restait abandonne sur ses branches (constate le 2026-08-31 sur le ticket
+    14 : l'interface web de `task-2` n'apparaissait nulle part dans la PR).
+
+    C'est aussi ce qui rendait `RunDevcontainerTests` incapable de dire quoi
+    que ce soit d'utile : il lancait la suite de tests du projet dans CHAQUE
+    Workshop, alors que chacun ne contient que sa propre part. Le Workshop
+    qui n'avait pas ecrit `test/` echouait sur un `node --test test/` sans
+    repertoire — un `exit 1` structurel, sans rapport avec la qualite du
+    code. Une suite de tests ne veut dire quelque chose que sur l'ensemble
+    reuni.
+    """
+    deps = _deps(config)
+    plan = state.get("plan", [])
+    if len(plan) < 2:
+        return {"phase": "IntegrateSubTasks", "integration_conflicts": []}
+
+    target = plan[0]
+    others = [t["branch_name"] for t in plan[1:]]
+    # `--no-edit` : jamais d'editeur interactif. Chaque fusion est tentee
+    # separement pour pouvoir nommer precisement celle qui bloque.
+    # `-c user.*` plutot que de compter sur l'identite du depot : une image
+    # de devcontainer construite avant que `image-builder` ne pose cette
+    # identite (ou tiree du cache d'images) n'en a pas, et `git merge` echoue
+    # alors sur "Committer identity unknown" — un echec que ce noeud
+    # rapportait comme un CONFLIT, ce qui envoyait sur une fausse piste
+    # (constate le 2026-08-31). `-c` ne modifie rien dans le depot.
+    identity = '-c user.name="Atelier PM" -c user.email="pm@atelier.local"'
+    merges = " ".join(
+        f'echo "== {b} =="; git {identity} merge --no-edit "origin/{b}" 2>&1 || echo "CONFLIT:{b}";'
+        for b in others
+    )
+    command = (
+        f'git fetch --all --quiet; git checkout "{target["branch_name"]}" 2>&1 | tail -1; '
+        f"{merges} "
+        "git push origin HEAD 2>&1 | tail -2"
+    )
+
+    async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+        execution = await call_tool_json(
+            session,
+            "exec_in_workshop",
+            {"name": target["workshop_name"], "command": command},
+        )
+    result = await wait_for_exec_completion(
+        deps.atelier_api_url,
+        deps.mcp_token_provider,
+        target["workshop_name"],
+        execution["executionId"],
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    conflicts = [line.split("CONFLIT:", 1)[1].strip() for line in output.splitlines() if "CONFLIT:" in line]
+    if conflicts:
+        # On n'echoue pas : une PR partielle assortie d'un avertissement
+        # explicite vaut mieux qu'un workflow mort, la revue humaine restant
+        # de toute facon le dernier mot.
+        logger.error(
+            "IntegrateSubTasks: fusion impossible pour %s dans %s",
+            conflicts,
+            target["branch_name"],
+        )
+    else:
+        logger.info(
+            "IntegrateSubTasks: %d branche(s) fusionnee(s) dans %s",
+            len(others),
+            target["branch_name"],
+        )
+    return {"phase": "IntegrateSubTasks", "integration_conflicts": conflicts}
+
+
 def format_test_trace(workshop_name: str, result: ExecResult) -> str:
     """Trace de test d'une sous-tache, telle qu'elle sera re-injectee dans le
     prompt de l'agent par `AutoCorrectionLoop`.
@@ -380,25 +468,39 @@ async def run_devcontainer_tests(state: PMWorkflowState, config: RunnableConfig)
     `bash .devcontainer/test.sh`, voir la limite documentee dans
     docs/PROGRESS.md)."""
     deps = _deps(config)
+    plan = state.get("plan", [])
+    if not plan:
+        return {
+            "test_output": "",
+            "test_passed": False,
+            "error_trace": "aucune sous-tache a tester",
+            "phase": "RunDevcontainerTests",
+        }
 
+    # Un SEUL Workshop, celui qui porte l'integration (voir
+    # `IntegrateSubTasks`). Lancer la suite dans chaque Workshop n'avait pas
+    # de sens : chacun ne contient que sa propre sous-tache, donc un projet
+    # incomplet par construction — celui qui n'avait pas ecrit `test/`
+    # echouait sur `node --test test/` faute de repertoire, un `exit 1`
+    # structurel sans rapport avec la qualite du code. Une suite de tests ne
+    # dit quelque chose que sur l'ensemble reuni.
+    target = plan[0]
     all_passed = True
-    combined_output = ""
     async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
-        for task in state.get("plan", []):
-            execution = await call_tool_json(
-                session,
-                "exec_in_workshop",
-                {"name": task["workshop_name"], "command": "bash .devcontainer/test.sh"},
-            )
-            result = await wait_for_exec_completion(
-                deps.atelier_api_url,
-                deps.mcp_token_provider,
-                task["workshop_name"],
-                execution["executionId"],
-            )
-            combined_output += format_test_trace(task["workshop_name"], result)
-            if result.exit_code != 0:
-                all_passed = False
+        execution = await call_tool_json(
+            session,
+            "exec_in_workshop",
+            {"name": target["workshop_name"], "command": "bash .devcontainer/test.sh"},
+        )
+    result = await wait_for_exec_completion(
+        deps.atelier_api_url,
+        deps.mcp_token_provider,
+        target["workshop_name"],
+        execution["executionId"],
+    )
+    combined_output = format_test_trace(target["workshop_name"], result)
+    if result.exit_code != 0:
+        all_passed = False
 
     return {
         "test_output": combined_output,
@@ -464,8 +566,19 @@ async def open_pull_request(state: PMWorkflowState, config: RunnableConfig) -> d
     # premiere version (voir la meme simplification que ProvisionWorkshop) :
     # la premiere branche de sous-tache sert de tete de PR.
     head_task = plan[0]
+    # Les conflits d'integration sont dits dans la PR : le relecteur humain
+    # doit savoir qu'il ne regarde qu'une partie du travail, sans quoi une PR
+    # amputee de la moitie des sous-taches ressemble a une PR complete.
+    conflicts = state.get("integration_conflicts") or []
+    integration_line = (
+        f"⚠️ Branches NON fusionnees (conflit) : {', '.join(conflicts)} — "
+        "cette PR ne contient pas leur travail.\n\n"
+        if conflicts
+        else ""
+    )
     body = (
         f"Resout #{state['issue_number']}.\n\n{state.get('analysis', '')}\n\n"
+        f"{integration_line}"
         f"Tests : {'✅ passes' if state.get('test_passed') else '⚠️ echec, voir logs'}\n\n"
         "PR ouverte automatiquement par atelier-pm-bot."
     )
