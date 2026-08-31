@@ -357,6 +357,17 @@ struct ExecRow {
 /// canal en memoire pour un usage de reconnexion peu frequent). Se termine
 /// (fin du flux SSE) une fois `status != "Running"`, apres un dernier
 /// evenement `status` portant `exitCode`.
+/// Le flux SSE est-il termine ? Uniquement lorsque l'evenement `status` a
+/// REELLEMENT ete emis, c'est-a-dire quand la commande est finie **et**
+/// qu'il ne restait plus rien a transmettre.
+///
+/// S'arreter sur le seul `finished` fermait le flux sur un dernier
+/// evenement `stdout` (les branches sont ordonnees stdout -> stderr ->
+/// status), donc sans jamais envoyer `exitCode`.
+fn stream_is_done(finished: bool, nothing_left_to_send: bool) -> bool {
+    finished && nothing_left_to_send
+}
+
 pub async fn stream_handler(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -407,6 +418,7 @@ pub async fn stream_handler(
             stderr_sent = row.stderr_buffer.len();
 
             let finished = row.status != "Running";
+            let nothing_left_to_send = stdout_new.is_empty() && stderr_new.is_empty();
             let event = if !stdout_new.is_empty() {
                 Event::default().event("stdout").data(stdout_new)
             } else if !stderr_new.is_empty() {
@@ -420,6 +432,25 @@ pub async fn stream_handler(
                 Event::default().event("ping").data("")
             };
 
+            // On ne s'arrete qu'apres avoir REELLEMENT emis l'evenement
+            // `status` — pas des que la commande est terminee.
+            //
+            // Les branches ci-dessus sont ordonnees stdout -> stderr ->
+            // status : quand un sondage trouve a la fois de la sortie neuve
+            // et une commande deja terminee (le cas courant d'une commande
+            // qui affiche puis rend la main entre deux sondages), c'est la
+            // sortie qui part, et s'arreter la fermait le flux SANS jamais
+            // envoyer `status`. Le client restait alors sur son etat initial
+            // (`status: "Running"`, `exitCode: null`) : cote PM,
+            // `RunDevcontainerTests` comparait `None != 0` et concluait donc
+            // a l'echec de TOUTE execution, y compris celles dont les tests
+            // passaient — trois tours d'auto-correction consommes a chaque
+            // run (constate le 2026-08-31).
+            //
+            // `status` est emis exactement quand la commande est terminee et
+            // qu'il ne reste plus rien a transmettre : c'est cette condition,
+            // et non `finished`, qui met fin au flux.
+            let status_emitted = stream_is_done(finished, nothing_left_to_send);
             if !finished {
                 tokio::time::sleep(POLL_INTERVAL).await;
             }
@@ -432,7 +463,7 @@ pub async fn stream_handler(
                     id,
                     stdout_sent,
                     stderr_sent,
-                    finished,
+                    status_emitted,
                 ),
             ))
         },
@@ -466,7 +497,7 @@ async fn fetch_row(
 
 #[cfg(test)]
 mod workspace_tests {
-    use super::{in_workspace, workspace_dir};
+    use super::{in_workspace, stream_is_done, workspace_dir};
 
     /// Regression (2026-08-30) : une commande SSH non interactive demarre
     /// dans `/home/vscode`, pas dans les sources. `RunDevcontainerTests`
@@ -497,5 +528,28 @@ mod workspace_tests {
         assert!(wrapped.starts_with("cd /workspaces/todo-app"));
         assert!(wrapped.contains("|| true"));
         assert!(wrapped.ends_with("npm test"));
+    }
+
+    /// Regression : une commande qui affiche puis rend la main entre deux
+    /// sondages est vue « terminee AVEC de la sortie neuve » — c'est le cas
+    /// courant. Le flux envoyait alors ce dernier `stdout` et se fermait,
+    /// sans jamais emettre `status`. Cote client, `exitCode` restait `null`
+    /// et `RunDevcontainerTests` (pm-engine) comparait `None != 0` : TOUTE
+    /// execution etait donc reputee en echec, meme quand les tests
+    /// passaient, ce qui consommait les trois tours d'auto-correction a
+    /// chaque run (constate le 2026-08-31).
+    #[test]
+    fn the_stream_stays_open_until_the_status_event_has_been_sent() {
+        assert!(
+            !stream_is_done(true, false),
+            "commande terminee mais sortie encore a transmettre : le flux doit continuer, \
+             sans quoi `status` (et donc `exitCode`) n'est jamais envoye"
+        );
+        assert!(
+            stream_is_done(true, true),
+            "plus rien a envoyer : `status` vient d'etre emis"
+        );
+        assert!(!stream_is_done(false, true), "commande encore en cours");
+        assert!(!stream_is_done(false, false), "commande encore en cours");
     }
 }
