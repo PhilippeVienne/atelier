@@ -46,6 +46,24 @@ fi
 log "CRD Workshop"
 kubectl apply -f crds/workshop.yaml >/dev/null
 
+# --- 1bis. kvm-device-plugin : SANS LUI, AUCUN WORKSHOP NE BOOTE ---------
+# Le pod parent demande la ressource `atelier.dev/kvm` (voir
+# `crates/controller/src/reconcile.rs`), qui n'existe que si ce DaemonSet
+# l'annonce. Sans lui, le pod reste `Pending` indefiniment sur un
+# "Insufficient atelier.dev/kvm" — un symptome qui ne dit rien de sa cause a
+# qui decouvre le projet. Il manquait a ce script alors que son manifeste
+# etait la depuis le debut.
+log "kvm-device-plugin"
+kubectl apply -f deploy/dev/kvm-device-plugin/daemonset.yaml >/dev/null
+kubectl rollout status daemonset/atelier-kvm-device-plugin --timeout=120s >/dev/null 2>&1 \
+  || log "  (le DaemonSet n'est pas encore pret, les Workshops attendront)"
+
+# --- 1ter. Redis (file de travaux du pm-engine) --------------------------
+log "Redis"
+kubectl apply -f deploy/dev/redis/dev-pod.yaml >/dev/null
+kubectl wait --for=condition=Ready pod/atelier-redis-dev --timeout=90s >/dev/null 2>&1 \
+  || log "  (Redis pas encore pret)"
+
 # --- 2. PKI locale (deploy/dev/pki/) -------------------------------------
 # Genere une Root CA + certificat multi-SAN dev-only, idempotent (le
 # script ne regenere pas une CA deja presente sur cette machine). Pas
@@ -307,6 +325,17 @@ export ATELIER_API_SERVER_URL=http://api.atelier.local
 EOF
 
 log "Termine. Pour lancer la stack :"
+# --- Diagnostic : la route vers le reseau des pods est-elle en place ? ---
+# `controller` tourne hors cluster en dev et sonde les pods directement. Sans
+# cette route, sa sonde echoue en silence : le Workshop reste en
+# `Provisioning` sans que rien n'explique pourquoi. On ne peut pas la poser
+# ici (sudo), mais on peut dire qu'elle manque.
+NODE_IP="$(kubectl get node "$KIND_CLUSTER-control-plane" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
+if ! ip route get 10.244.0.1 >/dev/null 2>&1; then
+  log "ATTENTION: pas de route vers 10.244.0.0/24 — le controller lance hors cluster ne joindra pas les pods."
+  [ -n "$NODE_IP" ] && log "  sudo ip route add 10.244.0.0/24 via $NODE_IP"
+fi
+
 cat <<EOF
 
   source $ENV_FILE
@@ -334,6 +363,10 @@ Etapes manuelles restantes (non automatisables depuis ce script) :
        export SSL_CERT_FILE="$ROOT_DIR/deploy/dev/pki/ca/atelier-ca.crt"
        export NODE_EXTRA_CA_CERTS="$ROOT_DIR/deploy/dev/pki/ca/atelier-ca.crt"
 
-  3. Redis : pas encore d'infra de dev (Jalon M5, voir
-     docs/specs/PLAN-ACTION-GLOBAL.md).
+  3. Route vers le reseau des pods, si le controller tourne hors cluster
+     (cas nominal en dev) : sans elle, sa sonde ne confirme jamais la
+     phase Running d'un Workshop, et le pipeline reste bloque sans
+     erreur explicite. Necessite sudo, d'ou cette etape manuelle :
+
+       sudo ip route add 10.244.0.0/24 via $(kubectl get node "$KIND_CLUSTER-control-plane" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo '<IP du noeud kind>')
 EOF
