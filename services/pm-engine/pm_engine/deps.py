@@ -38,6 +38,21 @@ class PmEngineDeps:
     Renseignee depuis `PM_ENGINE_WORKSHOP_EGRESS_ALLOWLIST` (voir
     `pm_engine.main`)."""
 
+    devcontainer_repo_template: str = ""
+    """Gabarit d'URL de clone du depot, telle qu'un GUEST doit la voir.
+
+    `{repo}` y est remplace par l'identifiant `owner/nom` du depot. Existe
+    parce que cette URL n'a rien a voir avec celle de la forge vue depuis
+    l'hote : les microVM n'ont ni le `/etc/hosts` ni le DNS de l'hote, et ne
+    sortent que sur les ports 80 et 443. C'est donc un parametre de
+    deploiement, pas quelque chose que le Dashboard puisse deviner — et le
+    renseigner ici evite surtout de faire transiter des identifiants par
+    l'interface.
+
+    Exemple (dev) :
+    `http://atelier-forgejo-dev.default.svc.cluster.local/{repo}.git`.
+    Renseigne depuis `PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE`."""
+
     claude_code_model: str = "claude-3-5-sonnet-20241022"
     """Modele passe explicitement a Claude Code (`--model`) dans les
     Workshops.

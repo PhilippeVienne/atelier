@@ -23,6 +23,7 @@ Lancement local :
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -43,7 +44,8 @@ from .graph import build_graph
 from .llm_client import LlmClient
 from .oidc import OidcTokenProvider
 from .rag import search_memories
-from .runner import list_pending_reviews, resume_review
+from .runner import list_pending_reviews, resume_review, start_workflow
+from .workflows import get_workflow, list_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # docs/PROGRESS.md) — permet de pointer `/chat` vers un modele
         # `mock_response` LiteLLM (`atelier-budget-test`) pour les tests,
         # sans toucher au code. Defaut de production inchange.
+        devcontainer_repo_template=os.environ.get("PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE", ""),
         chat_model=os.environ.get("PM_ENGINE_CHAT_MODEL", "sonnet-premium"),
         claude_code_model=os.environ.get(
             "PM_ENGINE_CLAUDE_CODE_MODEL", "claude-3-5-sonnet-20241022"
@@ -397,3 +400,96 @@ async def decide_review(
         logger.warning("echec de reprise du thread %s: %s", thread_id, exc)
         raise HTTPException(status_code=404, detail=f"thread {thread_id} introuvable ou invalide") from exc
     return {"thread_id": thread_id, "status": result.get("status", "unknown")}
+
+
+# --------------------------------------------------------------------------
+# Suivi des workflows (« mission control » du Dashboard)
+# --------------------------------------------------------------------------
+class WorkflowRequest(BaseModel):
+    repo: str
+    issue_number: int
+    # Optionnel : par defaut, deduit de `PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE`
+    # (voir `PmEngineDeps.devcontainer_repo_template`). Ce gabarit peut porter
+    # des identifiants, qui n'ont alors aucune raison de transiter par
+    # l'interface — le Dashboard n'envoie que `owner/nom`.
+    devcontainer_repo: str | None = None
+
+
+@app.post("/workflows")
+async def launch_workflow(
+    body: WorkflowRequest,
+    request: Request,
+    _claims: Claims = Depends(require_auth),
+) -> dict:
+    """Demarre un workflow PM sur un ticket, et rend la main immediatement.
+
+    Le graphe tourne une dizaine de minutes : le tenir dans la requete HTTP
+    condamnerait l'appelant a une connexion ouverte aussi longtemps, pour
+    rien — l'etat est de toute facon persiste a chaque noeud dans le
+    checkpointer, et c'est `GET /workflows/{thread_id}` qui le donne. La
+    tache de fond n'est donc pas un detail d'implementation : elle est le
+    pendant naturel d'un graphe qui sait deja reprendre ou il en etait.
+
+    LIMITE ASSUMEE : cette tache vit dans le processus pm-engine. Le
+    redemarrer pendant un run l'interrompt — l'etat reste intact dans le
+    checkpointer et un nouvel appel sur le meme `thread_id` reprend ou on en
+    etait, mais RIEN ne le fait automatiquement. Un workflow orphelin reste
+    donc fige sur sa derniere phase jusqu'a ce qu'on le relance. Le rendre
+    reellement resistant demanderait une file de travaux persistante et un
+    reprise au demarrage, ce qui depasse ce jalon.
+    """
+    deps: PmEngineDeps = _require_deps(request)
+    graph = request.app.state.graph
+    thread_id = f"{body.repo}#{body.issue_number}"
+
+    devcontainer_repo = body.devcontainer_repo or (
+        deps.devcontainer_repo_template.replace("{repo}", body.repo)
+        if deps.devcontainer_repo_template
+        else ""
+    )
+    if not devcontainer_repo:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "devcontainer_repo absent et PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE "
+                "non configure : impossible de savoir comment un guest clone ce depot"
+            ),
+        )
+
+    async def _run() -> None:
+        try:
+            await start_workflow(
+                graph, deps, thread_id, body.repo, body.issue_number, devcontainer_repo
+            )
+        except Exception as exc:  # noqa: BLE001 - journalise, jamais avale en silence
+            logger.exception("workflow %s interrompu: %s", thread_id, exc)
+
+    asyncio.create_task(_run())
+    return {"thread_id": thread_id, "repo": body.repo, "issue_number": body.issue_number}
+
+
+@app.get("/workflows")
+async def workflows(
+    request: Request, _claims: Claims = Depends(require_auth)
+) -> list[dict]:
+    """Workflows connus, du plus recemment actif au plus ancien."""
+    deps: PmEngineDeps = _require_deps(request)
+    return await list_workflows(deps)
+
+
+@app.get("/workflows/{thread_id:path}")
+async def workflow_state(
+    thread_id: str,
+    request: Request,
+    _claims: Claims = Depends(require_auth),
+) -> dict:
+    """Etat courant d'un workflow, relu depuis son checkpoint.
+
+    `{thread_id:path}` et non `{thread_id}` : un identifiant de thread vaut
+    `owner/repo#42` et contient donc une barre oblique.
+    """
+    deps: PmEngineDeps = _require_deps(request)
+    state = await get_workflow(request.app.state.graph, deps, thread_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"workflow {thread_id} introuvable")
+    return state

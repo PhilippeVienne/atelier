@@ -116,3 +116,149 @@ export async function proxyChat(
     },
   });
 }
+
+// --------------------------------------------------------------------------
+// Workflows (« mission control », suivi du pipeline PM en direct)
+// --------------------------------------------------------------------------
+
+export interface WorkflowSubTask {
+  id: string;
+  title: string;
+  scope: string[];
+  workshopName: string;
+  branchName: string;
+}
+
+export interface WorkflowWorkshop {
+  name: string;
+  phase: string | null;
+  podName: string | null;
+}
+
+export interface WorkflowState {
+  threadId: string;
+  /** Date du premier checkpoint = depart reel du workflow (ISO 8601). */
+  startedAt: string | null;
+  workshops: WorkflowWorkshop[];
+  repo: string | null;
+  issueNumber: number | null;
+  issueTitle: string | null;
+  issueUrl: string | null;
+  phase: string | null;
+  phaseIndex: number;
+  phases: string[];
+  pendingNodes: string[];
+  plan: WorkflowSubTask[];
+  correctionAttempts: number;
+  maxCorrectionAttempts: number;
+  testPassed: boolean | null;
+  testOutput: string | null;
+  integrationConflicts: string[];
+  prNumber: number | null;
+  prUrl: string | null;
+  prChangedFiles: number | null;
+  status: string | null;
+}
+
+/** Le `thread_id` vaut `owner/repo#42` : il contient une barre oblique et un
+ *  `#`, donc il traverse l'URL en segments encodes cote pm-engine
+ *  (`{thread_id:path}`). On encode ici chaque segment separement pour que la
+ *  barre reste une barre et que le `#` ne soit pas pris pour un fragment. */
+function threadPath(threadId: string): string {
+  return threadId.split("/").map(encodeURIComponent).join("/");
+}
+
+export async function getWorkflow(threadId: string): Promise<WorkflowState> {
+  const res = await call(`/workflows/${threadPath(threadId)}`);
+  const w = (await res.json()) as Record<string, never> & {
+    thread_id: string;
+    started_at: string | null;
+    workshops: Array<{ name: string; phase: string | null; pod_name: string | null }>;
+    repo: string | null;
+    issue_number: number | null;
+    issue_title: string | null;
+    issue_url: string | null;
+    phase: string | null;
+    phase_index: number;
+    phases: string[];
+    pending_nodes: string[];
+    plan: Array<{
+      id: string;
+      title: string;
+      scope: string[];
+      workshop_name: string;
+      branch_name: string;
+    }>;
+    correction_attempts: number;
+    max_correction_attempts: number;
+    test_passed: boolean | null;
+    test_output: string | null;
+    integration_conflicts: string[];
+    pr_number: number | null;
+    pr_url: string | null;
+    pr_changed_files: number | null;
+    status: string | null;
+  };
+  return {
+    threadId: w.thread_id,
+    startedAt: w.started_at,
+    workshops: w.workshops.map((k) => ({
+      name: k.name,
+      phase: k.phase,
+      podName: k.pod_name,
+    })),
+    repo: w.repo,
+    issueNumber: w.issue_number,
+    issueTitle: w.issue_title,
+    issueUrl: w.issue_url,
+    phase: w.phase,
+    phaseIndex: w.phase_index,
+    phases: w.phases,
+    pendingNodes: w.pending_nodes,
+    plan: w.plan.map((t) => ({
+      id: t.id,
+      title: t.title,
+      scope: t.scope,
+      workshopName: t.workshop_name,
+      branchName: t.branch_name,
+    })),
+    correctionAttempts: w.correction_attempts,
+    maxCorrectionAttempts: w.max_correction_attempts,
+    testPassed: w.test_passed,
+    testOutput: w.test_output,
+    integrationConflicts: w.integration_conflicts,
+    prNumber: w.pr_number,
+    prUrl: w.pr_url,
+    prChangedFiles: w.pr_changed_files,
+    status: w.status,
+  };
+}
+
+/** `devcontainerRepo` est optionnel : sans lui, le pm-engine deduit l'URL de
+ *  clone de son propre gabarit de deploiement
+ *  (`PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE`). C'est le chemin normal — ce
+ *  gabarit peut porter des identifiants, qui n'ont alors aucune raison de
+ *  passer par le navigateur. */
+export async function launchWorkflow(
+  repo: string,
+  issueNumber: number,
+  devcontainerRepo?: string,
+): Promise<{ threadId: string }> {
+  const res = await call("/workflows", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repo,
+      issue_number: issueNumber,
+      ...(devcontainerRepo ? { devcontainer_repo: devcontainerRepo } : {}),
+    }),
+  });
+  const body = (await res.json()) as { thread_id: string };
+  return { threadId: body.thread_id };
+}
+
+export async function listWorkflows(): Promise<string[]> {
+  const res = await call("/workflows");
+  const rows = (await res.json()) as Array<{ thread_id: string }>;
+  return rows.map((r) => r.thread_id);
+}
