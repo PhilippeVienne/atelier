@@ -1029,9 +1029,14 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
 async fn cleanup_tolerates_an_unreachable_litellm() {
     atelier_common::telemetry::ensure_crypto_provider();
 
-    let client = Client::try_default()
-        .await
-        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+    // `try_client()` + skip, comme TOUS les autres tests de ce fichier : un
+    // `expect` faisait paniquer la CI, qui n'a pas de cluster. C'est ce qui
+    // rendait `Atelier CI` rouge sans que rien ne le signale en local, ou le
+    // kubeconfig existe toujours.
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
 
     let ns = "default";
     let name = unique_name("test-workshop-litellm-unreachable");
