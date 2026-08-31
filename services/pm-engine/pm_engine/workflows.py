@@ -54,14 +54,22 @@ def phase_index(phase: str | None) -> int:
         return -1
 
 
-async def list_workflows(deps: PmEngineDeps, limit: int = 20) -> list[dict[str, Any]]:
+async def list_workflows(
+    graph: Any, deps: PmEngineDeps, limit: int = 20
+) -> list[dict[str, Any]]:
     """Les workflows les plus recemment actifs, du plus recent au plus
-    ancien.
+    ancien, avec de quoi les reconnaitre.
 
     On interroge directement la table `checkpoints` : c'est la seule source
     qui connaisse TOUS les threads, y compris ceux dont le processus qui les
     a lances n'existe plus. `DISTINCT ON` retient le dernier checkpoint de
     chaque thread — un thread en compte des dizaines.
+
+    Le filtrage se fait sur le CONTENU de l'etat (un ticket et un depot),
+    jamais sur la forme du nom du thread : la meme table sert aussi aux
+    conversations du chat, et un thread nomme a la main par un operateur
+    (`integ-1602`) est un workflow parfaitement legitime qu'un filtre sur
+    « le nom contient un # » aurait ecarte.
     """
     async with deps.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -73,8 +81,45 @@ async def list_workflows(deps: PmEngineDeps, limit: int = 20) -> list[dict[str, 
         )
     # `checkpoint_id` est un UUIDv6/v7 monotone : le trier decroissant classe
     # bien du plus recemment actif au plus ancien, sans colonne de date.
-    rows = sorted(rows, key=lambda r: r["checkpoint_id"], reverse=True)[:limit]
-    return [{"thread_id": r["thread_id"]} for r in rows]
+    rows = sorted(rows, key=lambda r: r["checkpoint_id"], reverse=True)
+
+    async def _summary(thread_id: str) -> dict[str, Any] | None:
+        try:
+            snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception:
+            return None
+        values = getattr(snapshot, "values", None) or {}
+        if not values.get("repo") or not values.get("issue_number"):
+            return None
+        return {
+            "thread_id": thread_id,
+            "repo": values.get("repo"),
+            "issue_number": values.get("issue_number"),
+            "issue_title": values.get("issue_title"),
+            "phase": values.get("phase"),
+            "phase_index": phase_index(values.get("phase")),
+            "pr_url": values.get("pr_url"),
+            "test_passed": values.get("test_passed"),
+        }
+
+    summaries = await asyncio.gather(*(_summary(r["thread_id"]) for r in rows))
+
+    # Un seul rang par (depot, ticket) : le plus recent. Rejouer le meme
+    # ticket cree un thread distinct a chaque fois, et la liste se remplissait
+    # de doublons — huit lignes `acme/widgets #1` laissees par la suite de
+    # tests, qui noyaient les vrais runs. Ce qu'on veut savoir, c'est ou en
+    # est CE ticket, pas combien de fois on l'a relance.
+    seen: set[tuple[str, int]] = set()
+    unique: list[dict[str, Any]] = []
+    for summary in summaries:
+        if summary is None:
+            continue
+        key = (summary["repo"], summary["issue_number"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(summary)
+    return unique[:limit]
 
 
 async def _workshop_phase(deps: PmEngineDeps, name: str) -> dict[str, Any]:
@@ -118,14 +163,23 @@ async def get_workflow(graph: Any, deps: PmEngineDeps, thread_id: str) -> dict[s
     # elle, la vue ne peut qu'afficher un temps ecoule depuis l'ouverture de
     # la page — c'est-a-dire `00:00` sur un run demarre depuis dix minutes,
     # ce qui est faux et se voit tout de suite en demo.
+    # ... et celle du DERNIER, qui donne la duree reelle d'un run termine.
+    # Sans elle, un workflow fini afficherait un temps ecoule qui continue de
+    # grandir avec l'heure qu'il est — « 85 minutes » pour un run qui en a
+    # dure douze.
     async with deps.db_pool.acquire() as conn:
-        started_at = await conn.fetchval(
+        bounds = await conn.fetchrow(
             """
-            SELECT checkpoint->>'ts' FROM checkpoints
-            WHERE thread_id = $1 ORDER BY checkpoint_id ASC LIMIT 1
+            SELECT
+              (SELECT checkpoint->>'ts' FROM checkpoints
+               WHERE thread_id = $1 ORDER BY checkpoint_id ASC LIMIT 1) AS started_at,
+              (SELECT checkpoint->>'ts' FROM checkpoints
+               WHERE thread_id = $1 ORDER BY checkpoint_id DESC LIMIT 1) AS updated_at
             """,
             thread_id,
         )
+    started_at = bounds["started_at"] if bounds else None
+    updated_at = bounds["updated_at"] if bounds else None
 
     phase = values.get("phase")
     # `next` vide = le graphe n'a plus rien a executer : soit il est termine,
@@ -146,6 +200,7 @@ async def get_workflow(graph: Any, deps: PmEngineDeps, thread_id: str) -> dict[s
     return {
         "thread_id": thread_id,
         "started_at": started_at,
+        "updated_at": updated_at,
         "workshops": list(workshops),
         "repo": values.get("repo"),
         "issue_number": values.get("issue_number"),

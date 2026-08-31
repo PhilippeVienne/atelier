@@ -137,8 +137,10 @@ export interface WorkflowWorkshop {
 
 export interface WorkflowState {
   threadId: string;
-  /** Date du premier checkpoint = depart reel du workflow (ISO 8601). */
+  /** Date du premier checkpoint = départ réel du workflow (ISO 8601). */
   startedAt: string | null;
+  /** Date du dernier checkpoint : donne la durée d'un run terminé. */
+  updatedAt: string | null;
   workshops: WorkflowWorkshop[];
   repo: string | null;
   issueNumber: number | null;
@@ -173,6 +175,7 @@ export async function getWorkflow(threadId: string): Promise<WorkflowState> {
   const w = (await res.json()) as Record<string, never> & {
     thread_id: string;
     started_at: string | null;
+    updated_at: string | null;
     workshops: Array<{ name: string; phase: string | null; pod_name: string | null }>;
     repo: string | null;
     issue_number: number | null;
@@ -202,6 +205,7 @@ export async function getWorkflow(threadId: string): Promise<WorkflowState> {
   return {
     threadId: w.thread_id,
     startedAt: w.started_at,
+    updatedAt: w.updated_at,
     workshops: w.workshops.map((k) => ({
       name: k.name,
       phase: k.phase,
@@ -257,8 +261,37 @@ export async function launchWorkflow(
   return { threadId: body.thread_id };
 }
 
-export async function listWorkflows(): Promise<string[]> {
+export interface WorkflowSummary {
+  threadId: string;
+  repo: string;
+  issueNumber: number;
+  issueTitle: string | null;
+  phase: string | null;
+  phaseIndex: number;
+  prUrl: string | null;
+  testPassed: boolean | null;
+}
+
+export async function listWorkflows(): Promise<WorkflowSummary[]> {
   const res = await call("/workflows");
-  const rows = (await res.json()) as Array<{ thread_id: string }>;
-  return rows.map((r) => r.thread_id);
+  const rows = (await res.json()) as Array<{
+    thread_id: string;
+    repo: string;
+    issue_number: number;
+    issue_title: string | null;
+    phase: string | null;
+    phase_index: number;
+    pr_url: string | null;
+    test_passed: boolean | null;
+  }>;
+  return rows.map((r) => ({
+    threadId: r.thread_id,
+    repo: r.repo,
+    issueNumber: r.issue_number,
+    issueTitle: r.issue_title,
+    phase: r.phase,
+    phaseIndex: r.phase_index,
+    prUrl: r.pr_url,
+    testPassed: r.test_passed,
+  }));
 }

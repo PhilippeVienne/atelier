@@ -1,14 +1,14 @@
 import Link from "next/link";
 import { TopNav } from "@/app/components/top-nav";
 import { logout } from "@/app/actions";
-import { listWorkflows, PmEngineError } from "@/lib/pm-engine";
+import { listWorkflows, PmEngineError, type WorkflowSummary } from "@/lib/pm-engine";
 import { forgejoMirrorEnabled, listProjects } from "@/lib/forgejo";
 import { Launcher } from "./launcher";
 
 // Point d'entree de la vue « mission control » : lancer un ticket, ou
 // reprendre le suivi d'un workflow deja demarre.
 export default async function PipelineIndex() {
-  let workflows: string[] = [];
+  let workflows: WorkflowSummary[] = [];
   try {
     workflows = await listWorkflows();
   } catch (err) {
@@ -25,9 +25,6 @@ export default async function PipelineIndex() {
     }
   }
 
-  // Les threads de workflow valent `owner/depot#42` ; les autres (chat,
-  // tests) n'ont pas ce format et n'ont rien a faire dans cette liste.
-  const tickets = workflows.filter((t) => t.includes("#"));
 
   return (
     <div className="min-h-dvh flex flex-col">
@@ -40,7 +37,7 @@ export default async function PipelineIndex() {
         </Link>
         <form action={logout}>
           <button className="text-sm text-muted hover:text-foreground transition-colors px-2">
-            Se deconnecter
+            Se déconnecter
           </button>
         </form>
       </TopNav>
@@ -49,25 +46,42 @@ export default async function PipelineIndex() {
         <Launcher projects={projects} />
 
         <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-muted">Workflows recents</h2>
-          {tickets.length === 0 ? (
+          <h2 className="text-sm font-semibold text-muted">Workflows récents</h2>
+          {workflows.length === 0 ? (
             <p className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted">
               Aucun workflow pour l&apos;instant. Lancez un ticket ci-dessus.
             </p>
           ) : (
             <ul className="flex flex-col gap-2">
-              {tickets.map((threadId) => {
-                const path = threadId.split("/").map(encodeURIComponent).join("/");
-                const [repo, issue] = threadId.split("#");
+              {workflows.map((w) => {
+                const path = w.threadId.split("/").map(encodeURIComponent).join("/");
                 return (
-                  <li key={threadId}>
+                  <li key={w.threadId}>
                     <Link
                       href={`/pipeline/${path}`}
-                      className="flex items-center justify-between rounded-lg border border-border bg-surface/70 px-4 py-3 text-sm transition-colors hover:bg-surface-hover"
+                      className="flex items-center gap-3 rounded-lg border border-border bg-surface/70 px-4 py-3 text-sm transition-colors hover:bg-surface-hover"
                     >
-                      <span className="font-mono truncate">{repo}</span>
-                      <span className="ml-3 shrink-0 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
-                        #{issue}
+                      <span className="shrink-0 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
+                        #{w.issueNumber}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {w.issueTitle ?? w.repo}
+                      </span>
+                      {/* Resultat des tests : l'information la plus utile pour
+                          retrouver un run d'un coup d'oeil. `null` = pas encore
+                          execute, a distinguer d'un echec. */}
+                      {w.testPassed === true && (
+                        <span className="shrink-0 text-xs text-emerald-600 dark:text-emerald-400">
+                          tests verts
+                        </span>
+                      )}
+                      {w.testPassed === false && (
+                        <span className="shrink-0 text-xs text-red-600 dark:text-red-400">
+                          tests en échec
+                        </span>
+                      )}
+                      <span className="shrink-0 font-mono text-xs text-muted">
+                        {w.phaseIndex >= 0 ? `${w.phaseIndex + 1}/11` : "—"}
                       </span>
                     </Link>
                   </li>

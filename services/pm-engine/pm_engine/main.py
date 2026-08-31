@@ -474,7 +474,7 @@ async def workflows(
 ) -> list[dict]:
     """Workflows connus, du plus recemment actif au plus ancien."""
     deps: PmEngineDeps = _require_deps(request)
-    return await list_workflows(deps)
+    return await list_workflows(request.app.state.graph, deps)
 
 
 @app.get("/workflows/{thread_id:path}")

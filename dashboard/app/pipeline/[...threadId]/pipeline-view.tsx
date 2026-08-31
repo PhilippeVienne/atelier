@@ -50,6 +50,7 @@ interface SubTask {
 interface Workflow {
   threadId: string;
   startedAt: string | null;
+  updatedAt: string | null;
   repo: string | null;
   issueNumber: number | null;
   issueTitle: string | null;
@@ -76,24 +77,29 @@ interface Workflow {
  *  d'interface. */
 const PHASE_LABELS: Record<string, string> = {
   AnalyzeIssue: "Analyse du ticket",
-  PlanParallelTasks: "Decoupage en sous-taches",
+  PlanParallelTasks: "Découpage en sous-tâches",
   ProvisionWorkshop: "Provisionnement des microVM",
-  DelegateToClaudeCode: "Developpement par les agents",
-  IntegrateSubTasks: "Integration des branches",
-  RunDevcontainerTests: "Execution des tests",
+  DelegateToClaudeCode: "Développement par les agents",
+  IntegrateSubTasks: "Intégration des branches",
+  RunDevcontainerTests: "Exécution des tests",
   OpenPullRequest: "Ouverture de la Pull Request",
   SuspendWhileWaitingReview: "Mise en veille des microVM",
   AwaitHitlApproval: "Attente de revue humaine",
-  MergeAndClose: "Fusion et cloture",
+  MergeAndClose: "Fusion et clôture",
   IndexKnowledge: "Indexation des connaissances",
 };
 
-/** Temps ecoule depuis le DEPART du workflow (premier checkpoint), pas
- *  depuis l'ouverture de la page : sur un run demarre il y a dix minutes,
- *  un compteur partant de zero afficherait une duree fausse. */
-function elapsed(startedAt: string | null): string {
+/** Durée du workflow, mesurée depuis son DÉPART (premier checkpoint) et non
+ *  depuis l'ouverture de la page : sur un run démarré il y a dix minutes, un
+ *  compteur partant de zéro afficherait une durée fausse.
+ *
+ *  Pour un run terminé, la borne haute est le dernier checkpoint, pas
+ *  l'heure courante — sans quoi un run de douze minutes finirait par
+ *  afficher « 85:55 » simplement parce qu'on rouvre la page plus tard. */
+function duration(startedAt: string | null, endedAt: string | null): string {
   if (!startedAt) return "—";
-  const s = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000));
+  const end = endedAt ? Date.parse(endedAt) : Date.now();
+  const s = Math.max(0, Math.floor((end - Date.parse(startedAt)) / 1000));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
@@ -172,10 +178,13 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
           </div>
           <div className="flex items-center gap-6">
             <Stat
-              label="Etape"
+              label="Étape"
               value={current >= 0 ? `${current + 1} / ${wf.phases.length}` : "—"}
             />
-            <Stat label="Ecoule" value={elapsed(wf.startedAt)} />
+            <Stat
+              label={finished ? "Durée" : "Écoulé"}
+              value={duration(wf.startedAt, finished ? wf.updatedAt : null)}
+            />
             <div
               className={`rounded-full px-3 py-1 text-sm font-medium ${
                 waitingForHuman
@@ -189,14 +198,14 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
                 <span
                   className={`h-1.5 w-1.5 rounded-full bg-current ${finished ? "" : "animate-pulse"}`}
                 />
-                {waitingForHuman ? "Revue attendue" : finished ? "Termine" : "En cours"}
+                {waitingForHuman ? "Revue attendue" : finished ? "Terminé" : "En cours"}
               </span>
             </div>
           </div>
         </div>
         {error && (
           <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
-            Derniere mise a jour indisponible ({error}) — affichage du dernier etat connu.
+            Dernière mise à jour indisponible ({error}) — affichage du dernier état connu.
           </p>
         )}
       </header>
@@ -259,7 +268,7 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
       {wf.plan.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold text-muted">
-            {wf.plan.length} sous-tache{wf.plan.length > 1 ? "s" : ""} en parallele
+            {wf.plan.length} sous-tâche{wf.plan.length > 1 ? "s" : ""} en parallèle
           </h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {wf.plan.map((task) => {
@@ -309,14 +318,14 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
       {/* Le resultat : integration, tests, PR */}
       <section className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-border bg-surface/70 backdrop-blur p-4">
-          <p className="text-[11px] uppercase tracking-wide text-muted">Integration</p>
+          <p className="text-[11px] uppercase tracking-wide text-muted">Intégration</p>
           {wf.integrationConflicts.length > 0 ? (
             <p className="mt-1 text-sm text-red-600 dark:text-red-400">
               {wf.integrationConflicts.length} branche(s) en conflit
             </p>
           ) : current > wf.phases.indexOf("IntegrateSubTasks") ? (
             <p className="mt-1 text-sm text-emerald-600 dark:text-emerald-400">
-              Branches reunies
+              Branches réunies
             </p>
           ) : (
             <p className="mt-1 text-sm text-muted">En attente</p>
@@ -328,9 +337,9 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
           {wf.testPassed === true ? (
             <p className="mt-1 text-sm text-emerald-600 dark:text-emerald-400">Verts</p>
           ) : wf.testPassed === false ? (
-            <p className="mt-1 text-sm text-red-600 dark:text-red-400">En echec</p>
+            <p className="mt-1 text-sm text-red-600 dark:text-red-400">En échec</p>
           ) : (
-            <p className="mt-1 text-sm text-muted">Pas encore executes</p>
+            <p className="mt-1 text-sm text-muted">Pas encore exécutés</p>
           )}
         </div>
 
@@ -358,7 +367,7 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
               branche. On le dit ici plutot que de laisser croire au succes. */}
           {wf.prChangedFiles === 0 && (
             <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-              Aucun fichier modifie — travail non pousse ?
+              Aucun fichier modifié — travail non poussé ?
             </p>
           )}
         </div>

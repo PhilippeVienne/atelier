@@ -36,7 +36,7 @@ export function Launcher({ projects }: { projects: string[] }) {
       const path = body.threadId.split("/").map(encodeURIComponent).join("/");
       router.push(`/pipeline/${path}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "echec du lancement");
+      setError(err instanceof Error ? err.message : "échec du lancement");
       setPending(false);
     }
   }
@@ -45,8 +45,8 @@ export function Launcher({ projects }: { projects: string[] }) {
     <div className="rounded-xl border border-border bg-surface/70 backdrop-blur p-5">
       <h2 className="text-sm font-semibold">Lancer un ticket</h2>
       <p className="mt-1 text-xs text-muted">
-        Le PM analyse le ticket, le decoupe, provisionne une microVM par
-        sous-tache, delegue a Claude Code, integre, teste et ouvre la Pull
+        Le PM analyse le ticket, le découpe, provisionne une microVM par
+        sous-tâche, délègue à Claude Code, intègre, teste et ouvre la Pull
         Request.
       </p>
       <div className="mt-4 flex flex-wrap items-end gap-3">
@@ -68,7 +68,7 @@ export function Launcher({ projects }: { projects: string[] }) {
             <input
               value={repo}
               onChange={(e) => setRepo(e.target.value)}
-              placeholder="proprietaire/depot"
+              placeholder="propriétaire/dépôt"
               className="h-9 rounded-lg border border-border bg-surface px-3 text-sm min-w-56"
             />
           )}
@@ -88,7 +88,7 @@ export function Launcher({ projects }: { projects: string[] }) {
           disabled={!canLaunch}
           className="h-9 rounded-lg bg-accent px-4 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {pending ? "Demarrage…" : "Lancer"}
+          {pending ? "Démarrage…" : "Lancer"}
         </button>
       </div>
       {error && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>}
