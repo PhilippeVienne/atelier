@@ -17,6 +17,8 @@ import logging
 import re
 import shlex
 
+import httpx
+
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
@@ -33,6 +35,11 @@ logger = logging.getLogger(__name__)
 # la phase `Running` (build de l'image devcontainer + boot de la microVM).
 PROVISION_TIMEOUT_SECONDS = 900
 PROVISION_POLL_SECONDS = 10
+# Duree pendant laquelle une phase `Failed` est toleree avant d'abandonner :
+# le Job de build retente (`backoffLimit`), et le Workshop repasse alors par
+# `Running`. Large devant le delai de replanification d'un pod, court devant
+# `PROVISION_TIMEOUT_SECONDS` — voir `_await_workshop_running`.
+FAILED_GRACE_SECONDS = 300
 
 # Un modele encadre frequemment sa reponse JSON dans un bloc de code
 # markdown (```json ... ```) malgre une consigne "UNIQUEMENT du JSON" —
@@ -140,9 +147,34 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
     deps = _deps(config)
     async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
         for task in state.get("plan", []):
-            await deps.git_provider.create_branch(
-                state["repo"], task["branch_name"], base_branch="main"
-            )
+            # Idempotent : LangGraph rejoue un noeud qui a echoue (reprise
+            # d'un thread depuis son checkpoint), et la branche de la
+            # sous-tache existe alors deja. Sans ce filet, toute reprise de
+            # `ProvisionWorkshop` mourait sur un `409 Conflict` — y compris
+            # les reprises apres une panne dont le cluster s'etait remis tout
+            # seul (constate le 2026-08-31). Une branche deja creee est
+            # exactement l'etat vise : il n'y a rien a corriger.
+            try:
+                await deps.git_provider.create_branch(
+                    state["repo"], task["branch_name"], base_branch="main"
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 409:
+                    raise
+                logger.info(
+                    "ProvisionWorkshop: la branche %s existe deja, reprise",
+                    task["branch_name"],
+                )
+            # Meme raison d'idempotence que la branche ci-dessus. On teste
+            # l'existence plutot que de rattraper une erreur de creation :
+            # cela ne depend d'aucun texte de message d'erreur, et le
+            # Workshop deja present est justement l'etat recherche.
+            if await _workshop_exists(deps, task["workshop_name"]):
+                logger.info(
+                    "ProvisionWorkshop: le Workshop %s existe deja, reprise",
+                    task["workshop_name"],
+                )
+                continue
             await call_tool_json(
                 session,
                 "create_workshop",
@@ -179,6 +211,20 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
     return {"phase": "ProvisionWorkshop"}
 
 
+async def _workshop_exists(deps: PmEngineDeps, workshop_name: str) -> bool:
+    """`get_workshop_status` aboutit-il pour ce Workshop ? Toute erreur vaut
+    « absent » : ce test ne sert qu'a eviter une creation en double lors
+    d'une reprise, et se tromper cote « absent » reproduit simplement le
+    comportement d'avant (la creation echouera bruyamment si le Workshop
+    existait bel et bien)."""
+    try:
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+            await call_tool_json(session, "get_workshop_status", {"name": workshop_name})
+        return True
+    except Exception:
+        return False
+
+
 async def _await_workshop_running(deps: PmEngineDeps, workshop_name: str) -> None:
     """Sonde `get_workshop_status` jusqu'a la phase `Running`.
 
@@ -186,20 +232,37 @@ async def _await_workshop_running(deps: PmEngineDeps, workshop_name: str) -> Non
     d'une image devcontainer donnee est long (clone + `envbuilder` + push
     registre), les suivants profitent du cache d'images partage."""
     deadline = asyncio.get_running_loop().time() + PROVISION_TIMEOUT_SECONDS
+    failed_since: float | None = None
     while True:
         async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
             status = await call_tool_json(
                 session, "get_workshop_status", {"name": workshop_name}
             )
         phase = (status or {}).get("phase")
+        now = asyncio.get_running_loop().time()
         if phase == "Running":
             logger.info("ProvisionWorkshop: %s est Running", workshop_name)
             return
+        # `Failed` n'est PAS definitif : le Job de build a un `backoffLimit`,
+        # et un pod de build qui echoue fait passer le Workshop par `Failed`
+        # avant que la tentative suivante ne reussisse. Abandonner au premier
+        # `Failed` faisait donc echouer tout le workflow sur une panne dont
+        # Kubernetes se remettait seul quelques minutes plus tard (constate le
+        # 2026-08-31 : premier pod de build en `Error`, retentative
+        # `Completed`, Workshop finalement `Running`). On n'abandonne que si
+        # l'echec PERSISTE — ce qui garde l'interet du fail-fast (ne pas
+        # attendre le timeout complet sur un Workshop reellement mort) sans
+        # sacrifier les reprises normales.
         if phase == "Failed":
-            raise RuntimeError(
-                f"le Workshop {workshop_name} est en echec (phase Failed), "
-                "voir ses evenements Kubernetes"
-            )
+            failed_since = failed_since if failed_since is not None else now
+            if now - failed_since > FAILED_GRACE_SECONDS:
+                raise RuntimeError(
+                    f"le Workshop {workshop_name} est en echec (phase Failed) "
+                    f"depuis plus de {FAILED_GRACE_SECONDS}s, voir ses "
+                    "evenements Kubernetes"
+                )
+        else:
+            failed_since = None
         if asyncio.get_running_loop().time() > deadline:
             raise TimeoutError(
                 f"le Workshop {workshop_name} n'est pas Running apres "

@@ -453,8 +453,8 @@ graph TD
 
 ### 🎯 Definition of Done (DoD) du Jalon M6
 - [x] L'installation complète se fait en une commande Helm (`helm upgrade --install`, verifie empiriquement — voir `docs/PROGRESS.md`).
-- [ ] Les 4 Ingress et certificats TLS sont opérationnels (rendu valide par `helm template`/`kubectl apply --dry-run=client` uniquement ; aucun certificat cert-manager reel emis, `tls.enabled=false` dans l'environnement de test — voir `docs/admin-guide.md`, section "Limites Connues").
-- [ ] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent parfaitement l'infra dev (hors perimetre de cette tache : non touches, non revalides ici).
+- [ ] Les 4 Ingress et certificats TLS sont opérationnels. Rendu valide par `helm template` / `kubectl apply --dry-run=client` uniquement. **Reste a faire pour cocher** : deployer cert-manager, passer `tls.enabled=true` et verifier l'emission d'un vrai certificat — aucun n'a jamais ete emis, l'environnement de dev tournant en `tls.enabled=false` derriere Traefik en clair. Voir `docs/admin-guide.md`, section "Limites Connues".
+- [ ] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent parfaitement l'infra dev. **Ce qui manque est identifie** (2026-08-31) : `local-stack.sh` ne deploie ni `kvm-device-plugin` (sans lui aucun Workshop ne boote) ni Redis — voir leurs README respectifs — et ne pose pas la route `10.244.0.0/24` necessaire a un controller lance hors cluster. La creation du registre OCI, elle, echouait en silence sur un poste neuf (`docker start` d'un conteneur inexistant avale par `|| true`) : corrigee, le script cree desormais le registre et s'arrete franchement s'il ne tourne pas.
 - [x] La documentation MkDocs intègre le Guide Administrateur complet.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 

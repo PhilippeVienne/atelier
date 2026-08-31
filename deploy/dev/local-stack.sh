@@ -202,8 +202,24 @@ kubectl apply -f deploy/dev/traefik/ingresses.yaml >/dev/null
 #        joignable depuis les pods, cf. docs/PROGRESS.md "Reseau kind ↔
 #        registre") ------------------------------------------------------
 log "Registre OCI"
-docker start atelier-registry-dev >/dev/null 2>&1 || true
+# `docker start` sur un conteneur qui n'a JAMAIS existe echoue, et le
+# `|| true` avalait l'erreur : sur un poste neuf le registre n'etait donc
+# jamais cree, et tous les builds d'image echouaient plus tard sans que rien
+# ici ne le signale. On le cree s'il manque.
+if ! docker inspect atelier-registry-dev >/dev/null 2>&1; then
+  docker run -d --name atelier-registry-dev -p 5000:5000 --restart unless-stopped \
+    registry:2 >/dev/null
+else
+  docker start atelier-registry-dev >/dev/null 2>&1 || true
+fi
+# Deja connecte au reseau kind : `docker network connect` echoue alors, d'ou
+# le `|| true` legitime ici (contrairement au cas ci-dessus).
 docker network connect kind atelier-registry-dev --alias atelier-registry-dev >/dev/null 2>&1 || true
+if ! docker inspect -f '{{.State.Running}}' atelier-registry-dev 2>/dev/null | grep -q true; then
+  echo "ERREUR: le registre OCI atelier-registry-dev n'est pas demarre." >&2
+  echo "        Sans lui, aucun Workshop ne peut construire son image." >&2
+  exit 1
+fi
 
 # --- 10. Images `:dev` des composants qui tournent dans les pods Workshop
 # ------------------------------------------------------------------------
