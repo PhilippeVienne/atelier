@@ -93,6 +93,14 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/events", get(list_workshop_events))
         .route("/v1/workshops/{name}/llm-budget", get(workshop_llm_budget))
+        .route(
+            "/v1/workshops/{name}/credentials",
+            get(list_credentials).put(put_credential),
+        )
+        .route(
+            "/v1/workshops/{name}/credentials/{host}",
+            axum::routing::delete(delete_credential),
+        )
         .route("/v1/admin/llm", get(admin_llm_overview))
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
@@ -272,8 +280,146 @@ pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Res
     Ok(())
 }
 
-/// IP du pod parent d'un Workshop en cours d'execution — precondition
-/// commune a `portforward` et `vscode` (les deux relaient vers un port
+// --------------------------------------------------------------------------
+// Credentials (regles d'injection `identity-proxy` + secret OpenBao)
+// --------------------------------------------------------------------------
+
+/// Regles d'injection du Workshop. JAMAIS les valeurs : elles ne quittent
+/// pas OpenBao, et la policy de ce serveur ne lui accorde meme pas le droit
+/// de les relire.
+async fn list_credentials(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<crate::credentials::CredentialSummary>>, ApiError> {
+    let workshop = workshops_api(&state).get(&name).await?;
+    ensure_owner(&workshop, &user)?;
+    Ok(Json(
+        workshop
+            .spec
+            .identity_injection_rules
+            .iter()
+            .map(crate::credentials::CredentialSummary::from)
+            .collect(),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutCredentialRequest {
+    /// Hote auquel la regle s'applique, tel que l'agent l'appellera.
+    host: String,
+    /// En-tete a poser. Defaut `Authorization`, convention la plus repandue.
+    #[serde(default = "default_header")]
+    header: String,
+    /// Prefixe de la valeur (`"Bearer "`, `"token "`, ou vide selon l'API).
+    #[serde(default)]
+    prefix: String,
+    /// La valeur du credential. Deposee dans OpenBao et jamais reservie.
+    value: String,
+}
+
+fn default_header() -> String {
+    "Authorization".to_string()
+}
+
+/// Enregistre un credential : la valeur part dans OpenBao, la regle dans la
+/// spec du Workshop.
+///
+/// Le secret est ecrit AVANT la regle. Dans l'ordre inverse, un echec
+/// d'ecriture laisserait une regle pointant vers un secret inexistant, et
+/// `identity-proxy` n'injecterait rien sans que l'interface ne le montre.
+async fn put_credential(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(name): Path<String>,
+    Json(req): Json<PutCredentialRequest>,
+) -> Result<Json<crate::credentials::CredentialSummary>, ApiError> {
+    let workshop = workshops_api(&state).get(&name).await?;
+    ensure_owner(&workshop, &user)?;
+
+    if req.host.trim().is_empty() || req.value.is_empty() {
+        return Err(ApiError::bad_request("`host` et `value` sont requis"));
+    }
+    let secrets = state
+        .session_auth
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("OpenBao non configure sur cette instance"))?;
+
+    crate::credentials::store_secret(secrets, &name, &req.host, &req.value)
+        .await
+        .map_err(|err| {
+            // Le message d'erreur d'OpenBao n'est pas relaye tel quel : il
+            // peut citer le chemin vise, et un detail de trop sur la
+            // topologie des secrets n'a rien a faire dans une reponse HTTP.
+            tracing::warn!(%err, workshop = %name, "ecriture du credential dans OpenBao echouee");
+            ApiError::bad_gateway("ecriture du credential dans OpenBao echouee")
+        })?;
+
+    let rule = atelier_common::IdentityInjectionRule {
+        host: req.host.clone(),
+        header: req.header,
+        prefix: req.prefix,
+        secret_path: crate::credentials::secret_path(&req.host),
+        field: crate::credentials::CREDENTIAL_FIELD.to_string(),
+    };
+    let summary = crate::credentials::CredentialSummary::from(&rule);
+
+    // Remplace la regle du meme hote si elle existe : `identity-proxy` n'en
+    // applique qu'une par hote, en laisser deux rendrait le comportement
+    // dependant de leur ordre.
+    let mut rules = workshop.spec.identity_injection_rules.clone();
+    rules.retain(|r| r.host != rule.host);
+    rules.push(rule);
+    patch_injection_rules(&state, &name, rules).await?;
+
+    Ok(Json(summary))
+}
+
+async fn delete_credential(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path((name, host)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let workshop = workshops_api(&state).get(&name).await?;
+    ensure_owner(&workshop, &user)?;
+
+    let mut rules = workshop.spec.identity_injection_rules.clone();
+    let before = rules.len();
+    rules.retain(|r| r.host != host);
+    if rules.len() == before {
+        return Err(ApiError::not_found());
+    }
+    // La regle d'abord : tant qu'elle existe, `identity-proxy` pourrait
+    // encore injecter. Le secret ensuite — et un echec de suppression du
+    // secret ne doit pas laisser la regle en place.
+    patch_injection_rules(&state, &name, rules).await?;
+
+    if let Some(secrets) = state.session_auth.as_ref() {
+        if let Err(err) = crate::credentials::remove_secret(secrets, &name, &host).await {
+            tracing::warn!(%err, workshop = %name, host = %host, "suppression du secret OpenBao echouee, la regle a bien ete retiree");
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Patch cible sur `spec.identityInjectionRules`.
+///
+/// Merge patch sur ce seul champ, jamais la spec entiere : le controller
+/// ecrit d'autres champs de son cote, et renvoyer une spec relue quelques
+/// millisecondes plus tot ecraserait ce qu'il vient d'y mettre.
+async fn patch_injection_rules(
+    state: &AppState,
+    name: &str,
+    rules: Vec<atelier_common::IdentityInjectionRule>,
+) -> Result<(), ApiError> {
+    let patch = serde_json::json!({ "spec": { "identityInjectionRules": rules } });
+    workshops_api(state)
+        .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
 /// Vue d'administration de la passerelle LiteLLM.
 ///
 /// Premiere route du projet reservee a un ROLE, et non a un proprietaire :
@@ -319,6 +465,8 @@ async fn workshop_llm_budget(
         .ok_or_else(|| ApiError::service_unavailable("passerelle LiteLLM injoignable"))
 }
 
+/// IP du pod parent d'un Workshop en cours d'execution — precondition
+/// commune a `portforward` et `vscode` (les deux relaient vers un port
 /// ouvert par une microVM hebergee dans ce pod, via `net-proxy`).
 pub(crate) async fn resolve_running_pod_ip(
     state: &AppState,

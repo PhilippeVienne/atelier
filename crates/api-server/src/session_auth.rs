@@ -93,6 +93,37 @@ impl SessionAuthClient {
             .await
     }
 
+    /// Depose une valeur dans un secret du Workshop.
+    ///
+    /// Contrairement aux lectures de ce module, une ecriture qui echoue est
+    /// remontee comme une ERREUR et non silencieusement ignoree : lire un
+    /// secret absent est un cas degrade acceptable, croire avoir enregistre
+    /// un credential qui n'existe pas ne l'est pas.
+    pub async fn write_secret_field(
+        &self,
+        workshop_name: &str,
+        secret_path: &str,
+        field: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let token = self.client_token(false).await?;
+        self.client
+            .write_field_for(&token, workshop_name, secret_path, field, value)
+            .await
+    }
+
+    /// Supprime definitivement un secret du Workshop.
+    pub async fn delete_secret(
+        &self,
+        workshop_name: &str,
+        secret_path: &str,
+    ) -> anyhow::Result<()> {
+        let token = self.client_token(false).await?;
+        self.client
+            .delete_secret_for(&token, workshop_name, secret_path)
+            .await
+    }
+
     async fn read_secret_field(
         &self,
         workshop_name: &str,

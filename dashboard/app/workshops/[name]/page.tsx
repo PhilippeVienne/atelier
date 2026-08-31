@@ -4,6 +4,7 @@ import {
   ApiServerError,
   getLlmBudget,
   getWorkshop,
+  listCredentials,
   listWorkshopEvents,
 } from "@/lib/api-server";
 import { remove, resume, suspend } from "@/app/actions";
@@ -12,8 +13,23 @@ import { TopNav } from "@/app/components/top-nav";
 import { EventsLog } from "./events-log";
 import { LiveRefresh } from "./live-refresh";
 import { ConnectLink, TerminalFrame } from "./connect";
+import { Credentials } from "./credentials";
 
 const BUSY_PHASES = ["BuildingImage", "Provisioning", "Suspending", "Resuming", "Terminating"];
+
+/** Masque les identifiants d'une URL avant affichage.
+ *
+ * Une URL de clone peut porter un `user:token@` — c'est le cas du raccourci
+ * de demonstration du PM. L'afficher tel quel mettait un jeton Forgejo en
+ * clair a l'ecran, dans une page qui sert justement a gerer des secrets.
+ * Le nom d'utilisateur reste visible : il aide a comprendre l'acces utilise,
+ * sans rien donner. */
+export function maskUrlCredentials(value: string): string {
+  return value.replace(
+    /(\w+:\/\/)([^/@\s:]+):([^/@\s]+)@/g,
+    (_m, scheme, user) => `${scheme}${user}:••••••@`,
+  );
+}
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -116,6 +132,15 @@ export default async function WorkshopDetailPage({
   // Consommation LLM : information d'appoint, jamais bloquante — une
   // passerelle LiteLLM absente ou injoignable ne doit pas empecher
   // d'afficher un Workshop par ailleurs sain (voir `getLlmBudget`).
+  // Credentials : liste des regles, jamais les valeurs. Non bloquant comme
+  // le budget — une lecture qui echoue ne doit pas masquer le Workshop.
+  let credentials: Awaited<ReturnType<typeof listCredentials>> = [];
+  try {
+    credentials = await listCredentials(name);
+  } catch {
+    credentials = [];
+  }
+
   let budget: Awaited<ReturnType<typeof getLlmBudget>> = null;
   try {
     budget = await getLlmBudget(name);
@@ -139,7 +164,10 @@ export default async function WorkshopDetailPage({
         </div>
 
         <div className="grid grid-cols-2 gap-5 rounded-xl border border-border bg-surface p-5 shadow-sm">
-          <Field label="Dépôt" value={workshop.spec.devcontainer.repo} />
+          <Field
+            label="Dépôt"
+            value={maskUrlCredentials(workshop.spec.devcontainer.repo)}
+          />
           <Field label="Révision" value={workshop.spec.devcontainer.revision} />
           <Field label="Pod parent" value={status?.podName ?? "—"} />
           <Field label="Image" value={status?.imageDigest ?? "—"} />
@@ -147,6 +175,12 @@ export default async function WorkshopDetailPage({
         </div>
 
         {budget && <LlmBudgetCard budget={budget} />}
+
+        <Credentials
+          workshopName={name}
+          initial={credentials}
+          needsRestart={phase === "Running"}
+        />
 
         <div className="flex flex-wrap gap-2">
           {canConnect && (

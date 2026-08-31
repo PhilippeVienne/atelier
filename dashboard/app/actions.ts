@@ -8,6 +8,8 @@ import {
   deleteWorkshop,
   resumeWorkshop,
   suspendWorkshop,
+  putCredential,
+  deleteCredential,
 } from "@/lib/api-server";
 import { decideReview } from "@/lib/pm-engine";
 import { destroySession } from "@/lib/session";
@@ -114,4 +116,46 @@ export async function createMirrorProjectAction(
 
   revalidatePath("/projects");
   redirect("/projects");
+}
+
+/** Enregistre un credential pour un Workshop.
+ *
+ * La valeur est envoyée par le navigateur mais l'écriture se fait ICI, côté
+ * serveur : elle traverse la Server Action puis l'api-server jusqu'à
+ * OpenBao, sans jamais être conservée ni relue. Ni le navigateur ni cette
+ * application n'en gardent trace.
+ */
+export async function putCredentialAction(name: string, formData: FormData) {
+  const host = String(formData.get("host") ?? "").trim();
+  const header = String(formData.get("header") ?? "").trim() || "Authorization";
+  const prefix = String(formData.get("prefix") ?? "");
+  const value = String(formData.get("value") ?? "");
+  if (!host || !value) {
+    return { error: "L'hôte et la valeur sont requis." };
+  }
+  try {
+    await putCredential(name, { host, header, prefix, value });
+  } catch (err) {
+    // Le message brut de l'api-server peut citer le chemin OpenBao visé :
+    // inutile de le remonter jusqu'au navigateur.
+    if (err instanceof ApiServerError) {
+      return { error: `Enregistrement refusé (${err.status}).` };
+    }
+    throw err;
+  }
+  revalidatePath(`/workshops/${name}`);
+  return {};
+}
+
+export async function deleteCredentialAction(name: string, host: string) {
+  try {
+    await deleteCredential(name, host);
+  } catch (err) {
+    if (err instanceof ApiServerError) {
+      return { error: `Suppression refusée (${err.status}).` };
+    }
+    throw err;
+  }
+  revalidatePath(`/workshops/${name}`);
+  return {};
 }

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod credentials;
 pub mod exec;
 pub mod llm_budget;
 pub mod mcp_server;

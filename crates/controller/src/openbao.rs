@@ -159,7 +159,7 @@ pub async fn ensure_api_server_role(
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
 
-    let policy_hcl = [
+    let mut policy_hcl = [
         "session_auth",
         "ssh_key",
     ]
@@ -171,6 +171,16 @@ pub async fn ensure_api_server_role(
     })
     .collect::<Vec<_>>()
     .join("\n");
+
+    // Credentials saisis dans l'interface : l'api-server les DEPOSE, sans
+    // jamais pouvoir les relire. `create`/`update` et `delete`, pas `read` —
+    // il n'en a aucun besoin (il ne renvoie jamais un secret), et le lui
+    // accorder ferait de lui une porte de sortie pour tous les credentials de
+    // tous les Workshops. Seul `identity-proxy`, avec son propre role, lit
+    // ces chemins.
+    policy_hcl.push_str(
+        "\npath \"secret/data/workshops/+/credentials/*\" { capabilities = [\"create\", \"update\"] }\npath \"secret/metadata/workshops/+/credentials/*\" { capabilities = [\"delete\", \"list\"] }",
+    );
 
     client
         .put(format!("{}/v1/sys/policy/{API_SERVER_ROLE}", config.addr))

@@ -189,3 +189,38 @@ export async function getLlmOverview(): Promise<LlmOverview> {
   const res = await call("/v1/admin/llm");
   return (await res.json()) as LlmOverview;
 }
+
+export interface Credential {
+  host: string;
+  header: string;
+  prefix: string;
+  /** Chemin OpenBao : dit où le secret vit, jamais ce qu'il vaut. */
+  secretPath: string;
+}
+
+export async function listCredentials(name: string): Promise<Credential[]> {
+  const res = await call(`/v1/workshops/${encodeURIComponent(name)}/credentials`);
+  return (await res.json()) as Credential[];
+}
+
+/** Enregistre un credential. La valeur ne fait que TRAVERSER le serveur, qui
+ *  la dépose dans OpenBao — elle n'est ni stockée ici, ni relisible ensuite,
+ *  y compris par l'api-server (sa policy OpenBao ne lui accorde pas `read`). */
+export async function putCredential(
+  name: string,
+  input: { host: string; header: string; prefix: string; value: string },
+): Promise<Credential> {
+  const res = await call(`/v1/workshops/${encodeURIComponent(name)}/credentials`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return (await res.json()) as Credential;
+}
+
+export async function deleteCredential(name: string, host: string): Promise<void> {
+  await call(
+    `/v1/workshops/${encodeURIComponent(name)}/credentials/${encodeURIComponent(host)}`,
+    { method: "DELETE" },
+  );
+}

@@ -142,4 +142,57 @@ impl OpenBaoClient {
             .map(str::to_string)
             .with_context(|| format!("champ '{field}' absent du secret '{secret_path}'"))
     }
+
+    /// Ecrit (ou remplace) un secret d'un Workshop.
+    ///
+    /// Le pendant en ecriture de [`read_field_for`], utilise par l'api-server
+    /// pour deposer un credential saisi dans l'interface sans que celui-ci
+    /// n'atterrisse ailleurs qu'ici — ni dans la spec du Workshop, ni dans un
+    /// journal.
+    pub async fn write_field_for(
+        &self,
+        client_token: &str,
+        workshop_name: &str,
+        secret_path: &str,
+        field: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        self.http
+            .post(format!(
+                "{}/v1/secret/data/workshops/{}/{}",
+                self.addr, workshop_name, secret_path
+            ))
+            .header("X-Vault-Token", client_token)
+            .json(&serde_json::json!({ "data": { field: value } }))
+            .send()
+            .await
+            .context("requete d'ecriture de secret OpenBao")?
+            .error_for_status()
+            .context("ecriture de secret OpenBao refusee")?;
+        Ok(())
+    }
+
+    /// Supprime definitivement un secret d'un Workshop (metadonnees
+    /// comprises : sans cela, KV v2 conserve les versions precedentes, et un
+    /// credential « supprime » resterait lisible par qui aurait le droit de
+    /// lire son historique).
+    pub async fn delete_secret_for(
+        &self,
+        client_token: &str,
+        workshop_name: &str,
+        secret_path: &str,
+    ) -> anyhow::Result<()> {
+        self.http
+            .delete(format!(
+                "{}/v1/secret/metadata/workshops/{}/{}",
+                self.addr, workshop_name, secret_path
+            ))
+            .header("X-Vault-Token", client_token)
+            .send()
+            .await
+            .context("requete de suppression de secret OpenBao")?
+            .error_for_status()
+            .context("suppression de secret OpenBao refusee")?;
+        Ok(())
+    }
 }

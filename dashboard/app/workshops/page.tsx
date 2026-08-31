@@ -3,6 +3,7 @@ import { listWorkshops, type Workshop } from "@/lib/api-server";
 import { logout, remove, resume, suspend } from "@/app/actions";
 import { PhaseBadge } from "@/app/components/phase-badge";
 import { TopNav } from "@/app/components/top-nav";
+import { maskUrlCredentials } from "./[name]/page";
 
 function WorkshopCard({ workshop }: { workshop: Workshop }) {
   const name = workshop.metadata.name;
@@ -24,7 +25,9 @@ function WorkshopCard({ workshop }: { workshop: Workshop }) {
         </Link>
         <PhaseBadge phase={phase} />
       </div>
-      <p className="text-sm text-muted truncate">{workshop.spec.devcontainer.repo}</p>
+      <p className="text-sm text-muted truncate">
+        {maskUrlCredentials(workshop.spec.devcontainer.repo)}
+      </p>
       <p className="text-xs text-muted font-mono truncate">
         {workshop.status?.imageDigest?.slice(0, 24) ?? "image non construite"}
       </p>
