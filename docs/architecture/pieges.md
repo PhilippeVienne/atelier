@@ -42,23 +42,30 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
-- **La Virtual Key LiteLLM par Workshop est provisionnee, plafonnee... et
-  jamais utilisee.** Le controller cree bien une cle dediee
-  (`atelier-wks-<nom>`), lui pose le budget de
-  `spec.resources.maxLlmBudgetUsd`, l'ecrit dans OpenBao et genere la regle
-  d'injection `identity-proxy` correspondante. Mais `net-proxy` route l'alias
-  `llm-proxy` **directement vers LiteLLM**, alors que l'alias Git
-  (`git.atelier.internal`) pointe, lui, vers `identity-proxy`. La requete ne
-  traverse donc jamais l'injecteur : le guest continue d'envoyer le jeton
-  statique partage de son `/etc/environment`, et toute la depense de l'agent
-  est facturee a ce jeton commun. **Mesure a l'appui** (2026-08-31) : apres
-  un appel Claude Code reussi dans un Workshop, `atelier-wks-<nom>` affiche
-  `spend = 0.000000` pour un `max_budget` de 5 $. Consequence : le plafond
-  par Workshop ne contraint rien, et la consommation par Workshop n'est pas
-  attribuable. Le correctif suit le schema Git (alias -> identity-proxy +
-  `hostAlias` vers le vrai service), avec une subtilite : le guest appelle
-  `http://llm-proxy` sur le port 80, quand le Service LiteLLM ecoute sur
-  4000.
+- **Une regle d'injection ne sert a rien si la requete ne passe pas par
+  l'injecteur.** Le controller creait bien une Virtual Key par Workshop
+  (`atelier-wks-<nom>`), la plafonnait, l'ecrivait dans OpenBao et generait la
+  regle d'injection — mais `net-proxy` aiguillait l'alias `llm-proxy` DROIT
+  vers LiteLLM, la ou l'alias Git pointe vers `identity-proxy`. La cle
+  n'etait donc jamais utilisee : le guest envoyait le jeton statique partage,
+  et le plafond ne contraignait rien. Corrige en reproduisant le montage Git
+  (alias -> identity-proxy + `hostAlias` vers le ClusterIP du service), ce qui
+  a demande d'exposer LiteLLM sur le **port 80** : une microVM ne sort que sur
+  80 et 443, et `identity-proxy` se connecte au port de la requete du guest.
+  **Verification qui tranche** : `kubectl logs <pod> -c identity-proxy` doit
+  afficher `credential injecte host="llm-proxy"`. Sans cette ligne, la cle est
+  ignoree quoi qu'en dise la configuration.
+- **LiteLLM facture 0 pour une combinaison provider/modele dont il ignore le
+  tarif.** `anthropic/deepseek-chat` (endpoint Anthropic natif de DeepSeek)
+  n'a pas de grille integree : `/model/info` renvoie
+  `input_cost_per_token: 0`, toute la comptabilite reste a zero et les
+  plafonds de Virtual Key ne se declenchent jamais — en silence, puisque les
+  appels reussissent. Il faut poser `input_cost_per_token`/
+  `output_cost_per_token` explicitement dans `model_list`. Les valeurs a
+  utiliser sont celles que LiteLLM applique deja au meme modele sous son
+  provider natif (`deepseek/deepseek-chat`), lisibles dans `/model/info` :
+  aucun chiffre a inventer. **Symptome** : injection confirmee dans les logs
+  d'identity-proxy, mais `spend` obstinement a `0.000000`.
   **A ne pas conclure trop vite** : l'absence de cles `atelier-wks-*` dans
   `/key/list` ne prouve rien — le nettoyage d'un Workshop les revoque, alors
   que les cles `atelier-build-*` survivent. Verifier sur un Workshop VIVANT.

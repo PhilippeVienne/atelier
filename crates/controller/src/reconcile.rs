@@ -1072,6 +1072,13 @@ async fn ensure_parent_pod(
     // reconciliation du Workshop — voir `crate::git_identity`.
     let mut effective_identity_injection_rules = workshop.spec.identity_injection_rules.clone();
     let mut git_host_alias: Option<HostAlias> = None;
+    // Pose seulement si la Virtual Key LiteLLM a pu etre provisionnee ET le
+    // ClusterIP de la passerelle resolu : dans ce cas l'alias `llm-proxy` du
+    // guest est aiguille vers identity-proxy (qui injecte la cle) au lieu de
+    // LiteLLM directement, et ce `hostAlias` donne a identity-proxy le moyen
+    // de resoudre `llm-proxy` pour joindre la vraie passerelle. Meme montage
+    // que `git_host_alias`.
+    let mut llm_host_alias: Option<HostAlias> = None;
     if let Some(git_config) = &ctx.git_identity {
         match git_identity::resolve_cluster_ip(&ctx.client, git_config).await {
             Ok(ip) => {
@@ -1130,6 +1137,40 @@ async fn ensure_parent_pod(
                                 secret_path: litellm::LLM_VIRTUAL_KEY_SECRET_PATH.to_string(),
                                 field: litellm::LLM_VIRTUAL_KEY_SECRET_FIELD.to_string(),
                             });
+                            // Une regle d'injection ne sert a rien si la
+                            // requete ne passe pas par identity-proxy. C'etait
+                            // precisement le cas : `net-proxy` aiguillait
+                            // l'alias `llm-proxy` DROIT vers LiteLLM, la ou
+                            // l'alias Git pointe vers identity-proxy. La cle
+                            // etait donc creee, plafonnee, ecrite dans
+                            // OpenBao... et jamais utilisee, le guest
+                            // continuant d'envoyer le jeton statique partage.
+                            // On resout ici le ClusterIP de la passerelle pour
+                            // qu'identity-proxy puisse la joindre apres
+                            // injection.
+                            match resolve_llm_cluster_ip(
+                                &ctx.client,
+                                ctx.llm_proxy_pod_addr.as_deref(),
+                            )
+                            .await
+                            {
+                                Ok(ip) => {
+                                    llm_host_alias = Some(HostAlias {
+                                        ip: ip.to_string(),
+                                        hostnames: Some(vec![
+                                            litellm::LLM_PROXY_ALIAS_HOST.to_string()
+                                        ]),
+                                    });
+                                }
+                                Err(err) => {
+                                    // Sans ClusterIP, on LAISSE l'alias pointer
+                                    // vers LiteLLM : le Workshop garde un acces
+                                    // LLM fonctionnel (via le jeton statique),
+                                    // ce qui vaut mieux qu'un agent coupe du
+                                    // modele. La cle reste alors inutilisee.
+                                    tracing::warn!(%err, "resolution du ClusterIP de LiteLLM echouee, l'alias llm-proxy reste direct et la Virtual Key ne sera pas injectee");
+                                }
+                            }
                         }
                         Err(err) => {
                             tracing::error!(%err, "ecriture de la Virtual Key LiteLLM dans OpenBao echouee, isolation par Workshop desactivee pour cette session");
@@ -1229,7 +1270,18 @@ async fn ensure_parent_pod(
             // tete de `crates/net-proxy/src/internal.rs`. Absent si la
             // resolution du ClusterIP a echoue ou si la fonctionnalite n'est
             // pas configuree (`git_host_alias` est alors `None`).
-            host_aliases: git_host_alias.clone().map(|alias| vec![alias]),
+            // Les deux alias cohabitent : la forge Git et la passerelle LLM
+            // sont deux destinations distinctes qu'identity-proxy doit
+            // pouvoir resoudre. `None` si aucune n'est active, pour ne pas
+            // poser un champ vide dans la spec du pod.
+            host_aliases: {
+                let aliases: Vec<HostAlias> = git_host_alias
+                    .clone()
+                    .into_iter()
+                    .chain(llm_host_alias.clone())
+                    .collect();
+                (!aliases.is_empty()).then_some(aliases)
+            },
             volumes: Some(vec![
                 Volume {
                     name: "cache".to_string(),
@@ -1343,10 +1395,33 @@ async fn ensure_parent_pod(
                         // pas un sidecar de ce pod : toujours cable des que
                         // configure, contrairement a `simulator` (gate par
                         // `Workshop.spec.tools`) — voir `ReconcileCtx::llm_proxy_addr`.
+                        // Cible de l'alias `llm-proxy` vu par le guest. Deux
+                        // cas, et c'est tout l'enjeu de l'isolation par
+                        // Workshop :
+                        //  - Virtual Key injectable (`llm_host_alias` pose) :
+                        //    on aiguille vers identity-proxy, qui remplace
+                        //    l'`Authorization` du guest par la cle dediee
+                        //    avant de joindre la vraie passerelle. C'est le
+                        //    seul montage ou le plafond de depense contraint
+                        //    reellement quelque chose.
+                        //  - sinon : aiguillage direct vers LiteLLM, comme
+                        //    avant. L'agent garde un acces au modele avec le
+                        //    jeton statique partage — degradation assumee,
+                        //    preferable a un Workshop coupe du LLM.
                         .chain(
-                            ctx.llm_proxy_pod_addr
+                            llm_host_alias
                                 .as_ref()
-                                .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr)),
+                                .map(|_| {
+                                    env_var(
+                                        "ATELIER_LLM_PROXY_ADDR",
+                                        &format!("127.0.0.1:{IDENTITY_PROXY_PORT}"),
+                                    )
+                                })
+                                .or_else(|| {
+                                    ctx.llm_proxy_pod_addr
+                                        .as_ref()
+                                        .map(|addr| env_var("ATELIER_LLM_PROXY_ADDR", addr))
+                                }),
                         )
                         // Alias `git.atelier.internal` (2.2.3, Jalon M2) :
                         // pointe directement vers identity-proxy (meme
@@ -1575,6 +1650,50 @@ fn pod_spec_template_hash(spec: Option<&PodSpec>) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Nom et namespace du Service LiteLLM, deduits de l'adresse cluster
+/// configuree (`ATELIER_LLM_PROXY_POD_ADDR`, ex.
+/// `atelier-llm-proxy.default.svc.cluster.local:4000`).
+///
+/// Deduit plutot que configure a part : cette adresse EST deja la
+/// designation du Service, et ajouter deux variables d'environnement
+/// supplementaires qu'il faudrait garder coherentes avec elle serait une
+/// source de divergence silencieuse. `None` si l'adresse n'a pas la forme
+/// d'un nom DNS de Service Kubernetes — l'appelant retombe alors sur le
+/// comportement anterieur plutot que de deviner.
+fn llm_service_ref(pod_addr: &str) -> Option<(String, String)> {
+    let host = pod_addr.split(':').next()?;
+    let mut parts = host.split('.');
+    let name = parts.next()?;
+    let namespace = parts.next()?;
+    if name.is_empty() || namespace.is_empty() || !host.contains(".svc") {
+        return None;
+    }
+    Some((name.to_string(), namespace.to_string()))
+}
+
+async fn resolve_llm_cluster_ip(
+    client: &Client,
+    pod_addr: Option<&str>,
+) -> anyhow::Result<std::net::IpAddr> {
+    let pod_addr = pod_addr.ok_or_else(|| anyhow::anyhow!("adresse cluster LiteLLM absente"))?;
+    let (name, namespace) = llm_service_ref(pod_addr).ok_or_else(|| {
+        anyhow::anyhow!("adresse LiteLLM {pod_addr:?} n'est pas un nom de Service Kubernetes")
+    })?;
+    let services: Api<k8s_openapi::api::core::v1::Service> =
+        Api::namespaced(client.clone(), &namespace);
+    let service = services
+        .get(&name)
+        .await
+        .map_err(|err| anyhow::anyhow!("lecture du Service {namespace}/{name} echouee: {err}"))?;
+    service
+        .spec
+        .and_then(|spec| spec.cluster_ip)
+        .filter(|ip| ip != "None")
+        .ok_or_else(|| anyhow::anyhow!("Service {namespace}/{name} sans ClusterIP exploitable"))?
+        .parse()
+        .map_err(|err| anyhow::anyhow!("ClusterIP de {namespace}/{name} illisible: {err}"))
+}
+
 fn carry_forward_status(
     workshop: &Workshop,
     phase: WorkshopPhase,
@@ -1665,6 +1784,30 @@ mod template_hash_tests {
     };
     use k8s_openapi::api::core::v1::{Container, PodSpec};
     use kube::core::ObjectMeta;
+
+    /// Le nom du Service LiteLLM est DEDUIT de l'adresse cluster configuree,
+    /// pas configure a part : une adresse qui n'a pas la forme d'un nom DNS
+    /// de Service doit donner `None`, pour que l'appelant retombe sur le
+    /// comportement anterieur (alias direct, jeton statique) plutot que de
+    /// deviner un nom de Service inexistant.
+    #[test]
+    fn llm_service_is_derived_from_the_cluster_address() {
+        use super::llm_service_ref;
+        assert_eq!(
+            llm_service_ref("atelier-llm-proxy.default.svc.cluster.local:4000"),
+            Some(("atelier-llm-proxy".to_string(), "default".to_string()))
+        );
+        assert_eq!(
+            llm_service_ref("atelier-llm-proxy.atelier-system.svc:4000"),
+            Some((
+                "atelier-llm-proxy".to_string(),
+                "atelier-system".to_string()
+            ))
+        );
+        // Port-forward local : pas un Service, on ne doit rien deduire.
+        assert_eq!(llm_service_ref("127.0.0.1:4000"), None);
+        assert_eq!(llm_service_ref("localhost:4000"), None);
+    }
 
     /// Regression : `carry_forward_status` mettait `pod_name` a `None` en
     /// dur, si bien que tout chemin de reconciliation qui ne le renseigne pas

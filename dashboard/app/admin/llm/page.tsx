@@ -193,16 +193,12 @@ export default async function AdminLlmPage() {
           )}
         </section>
 
-        {/* Limite connue, dite ici plutot que laissee a deviner : sans elle,
-            un administrateur conclurait a tort que les Workshops ne
-            consomment presque rien. */}
-        <p className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-700 dark:text-amber-400">
-          Limite connue : la dépense de l&apos;agent n&apos;est pas encore
-          imputée à la clé de son Workshop. L&apos;alias <code>llm-proxy</code>{" "}
-          ne traverse pas <code>identity-proxy</code>, si bien que le guest
-          utilise le jeton statique partagé — les plafonds par Workshop ne
-          contraignent donc rien aujourd&apos;hui. Voir{" "}
-          <code>docs/architecture/pieges.md</code>.
+        <p className="text-xs text-muted">
+          La dépense d&apos;un Workshop est imputée à sa Virtual Key dédiée :
+          l&apos;alias <code>llm-proxy</code> traverse <code>identity-proxy</code>,
+          qui substitue la clé du Workshop au jeton du guest. Les appels
+          antérieurs à ce câblage restent, eux, imputés au jeton statique
+          partagé — d&apos;où un total global supérieur à la somme des clés.
         </p>
       </main>
     </div>

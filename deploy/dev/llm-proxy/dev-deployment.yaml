@@ -109,5 +109,16 @@ spec:
   selector:
     app: atelier-llm-proxy
   ports:
-    - port: 4000
+    - name: http
+      port: 4000
+      targetPort: 4000
+    # Meme convention que le Service Forgejo (`http80`, voir
+    # deploy/dev/forgejo/) : une microVM ne sort que sur les ports 80 et 443
+    # (le reste est DROP par la chaine iptables), et `identity-proxy` se
+    # connecte au port de la requete du guest — or celui-ci appelle
+    # `http://llm-proxy`, donc le port 80. Sans cette entree, le trafic LLM
+    # ne peut pas traverser identity-proxy, et la Virtual Key du Workshop
+    # n'est jamais injectee.
+    - name: http80
+      port: 80
       targetPort: 4000

@@ -24,6 +24,16 @@ model_list:
       model: anthropic/deepseek-chat
       api_base: https://api.deepseek.com/anthropic
       api_key: os.environ/DEEPSEEK_API_KEY
+      # LiteLLM ne connait pas le tarif de la COMBINAISON
+      # `anthropic/deepseek-chat` (provider Anthropic + modele DeepSeek) et
+      # facture donc 0 : toute la comptabilite de depense, et avec elle les
+      # plafonds par Workshop, restait a zero sans que rien ne le signale.
+      # Les valeurs ci-dessous sont celles que LiteLLM applique lui-meme a
+      # `deepseek/deepseek-chat` (`/model/info`) : meme modele, meme
+      # fournisseur, donc meme prix — aucun chiffre invente ici. A revoir si
+      # DeepSeek change sa grille.
+      input_cost_per_token: 0.00000028
+      output_cost_per_token: 0.00000042
 
   # Claude Code choisit lui-meme son modele par defaut, et ce nom evolue a
   # chaque version du CLI (`claude-opus-4-8[1m]` constate en pratique le
@@ -48,6 +58,16 @@ model_list:
       model: anthropic/deepseek-chat
       api_base: https://api.deepseek.com/anthropic
       api_key: os.environ/DEEPSEEK_API_KEY
+      # LiteLLM ne connait pas le tarif de la COMBINAISON
+      # `anthropic/deepseek-chat` (provider Anthropic + modele DeepSeek) et
+      # facture donc 0 : toute la comptabilite de depense, et avec elle les
+      # plafonds par Workshop, restait a zero sans que rien ne le signale.
+      # Les valeurs ci-dessous sont celles que LiteLLM applique lui-meme a
+      # `deepseek/deepseek-chat` (`/model/info`) : meme modele, meme
+      # fournisseur, donc meme prix — aucun chiffre invente ici. A revoir si
+      # DeepSeek change sa grille.
+      input_cost_per_token: 0.00000028
+      output_cost_per_token: 0.00000042
 
   # Meme cible, alias explicite pour un `claude --model deepseek-dev`
   # delibere plutot qu'implicite.
