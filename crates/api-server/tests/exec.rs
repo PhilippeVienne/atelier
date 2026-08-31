@@ -217,6 +217,7 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         db_pool: test_db_pool().await,
         openbao_addr: None,
         litellm_addr: None,
+        llm_budget: None,
         session_auth: None,
         storage: None,
     };

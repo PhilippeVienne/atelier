@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod exec;
+pub mod llm_budget;
 pub mod mcp_server;
 pub mod portforward;
 pub mod routes;

@@ -42,6 +42,26 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **La Virtual Key LiteLLM par Workshop est provisionnee, plafonnee... et
+  jamais utilisee.** Le controller cree bien une cle dediee
+  (`atelier-wks-<nom>`), lui pose le budget de
+  `spec.resources.maxLlmBudgetUsd`, l'ecrit dans OpenBao et genere la regle
+  d'injection `identity-proxy` correspondante. Mais `net-proxy` route l'alias
+  `llm-proxy` **directement vers LiteLLM**, alors que l'alias Git
+  (`git.atelier.internal`) pointe, lui, vers `identity-proxy`. La requete ne
+  traverse donc jamais l'injecteur : le guest continue d'envoyer le jeton
+  statique partage de son `/etc/environment`, et toute la depense de l'agent
+  est facturee a ce jeton commun. **Mesure a l'appui** (2026-08-31) : apres
+  un appel Claude Code reussi dans un Workshop, `atelier-wks-<nom>` affiche
+  `spend = 0.000000` pour un `max_budget` de 5 $. Consequence : le plafond
+  par Workshop ne contraint rien, et la consommation par Workshop n'est pas
+  attribuable. Le correctif suit le schema Git (alias -> identity-proxy +
+  `hostAlias` vers le vrai service), avec une subtilite : le guest appelle
+  `http://llm-proxy` sur le port 80, quand le Service LiteLLM ecoute sur
+  4000.
+  **A ne pas conclure trop vite** : l'absence de cles `atelier-wks-*` dans
+  `/key/list` ne prouve rien — le nettoyage d'un Workshop les revoque, alors
+  que les cles `atelier-build-*` survivent. Verifier sur un Workshop VIVANT.
 - **Un flux SSE ne doit pas se fermer sur « le travail est fini », mais sur
   « j'ai emis l'evenement final ».** `stream_handler` (`api-server`)
   s'arretait des que la commande etait terminee, quel que soit l'evenement

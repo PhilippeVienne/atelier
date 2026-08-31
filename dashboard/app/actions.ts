@@ -53,6 +53,13 @@ export async function createWorkshopAction(
     String(formData.get("configPath") ?? "").trim() || ".devcontainer/devcontainer.json";
   const cpu = String(formData.get("cpu") ?? "").trim() || "1";
   const memory = String(formData.get("memory") ?? "").trim() || "512Mi";
+  // Champ laisse vide = pas de plafond, et surtout pas un plafond a zero :
+  // `Number("")` vaut `0`, ce qui couperait tout appel LLM des le premier.
+  const budgetRaw = String(formData.get("maxLlmBudgetUsd") ?? "").trim();
+  const maxLlmBudgetUsd = budgetRaw === "" ? undefined : Number(budgetRaw);
+  if (maxLlmBudgetUsd !== undefined && !Number.isFinite(maxLlmBudgetUsd)) {
+    return { error: "Le budget LLM doit etre un nombre." };
+  }
   const egressAllowlist = String(formData.get("egressAllowlist") ?? "")
     .split(",")
     .map((s) => s.trim())
@@ -66,7 +73,7 @@ export async function createWorkshopAction(
     await createWorkshop({
       name,
       devcontainer: { repo, revision, configPath },
-      resources: { cpu, memory },
+      resources: { cpu, memory, maxLlmBudgetUsd },
       egressAllowlist,
     });
   } catch (err) {

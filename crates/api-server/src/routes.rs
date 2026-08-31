@@ -44,6 +44,11 @@ pub struct AppState {
     /// injecter de Basic Auth (fonctionnalite optionnelle si non
     /// configuree, meme convention que le reste du projet).
     pub session_auth: Option<crate::session_auth::SessionAuthClient>,
+    /// Lecture de la consommation LLM d'un Workshop (`crate::llm_budget`).
+    /// `None` si `ATELIER_LLM_PROXY_ADDR`/`ATELIER_LLM_PROXY_AUTH_TOKEN` sont
+    /// absents : l'endpoint repond alors 503, plutot que d'afficher un
+    /// « 0,00 $ » qui se ferait passer pour une mesure.
+    pub llm_budget: Option<std::sync::Arc<crate::llm_budget::LlmBudgetClient>>,
     /// Backend S3 pour l'archivage des sessions terminal (Jalon M2, voir
     /// `crate::session_recorder`). `None` si `S3_ENDPOINT` est absent :
     /// l'archivage est alors simplement desactive, aucune session n'est
@@ -64,6 +69,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/suspend", post(suspend_workshop))
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/events", get(list_workshop_events))
+        .route("/v1/workshops/{name}/llm-budget", get(workshop_llm_budget))
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
             get(crate::exec::stream_handler),
@@ -175,6 +181,29 @@ pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Res
 
 /// IP du pod parent d'un Workshop en cours d'execution — precondition
 /// commune a `portforward` et `vscode` (les deux relaient vers un port
+/// Consommation LLM d'un Workshop (`crate::llm_budget`).
+///
+/// Lecture seule et soumise a la meme regle de propriete que le reste de
+/// l'API : la depense d'un Workshop en dit long sur ce qui y tourne, elle
+/// n'a pas a etre lisible par un autre utilisateur.
+async fn workshop_llm_budget(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(name): Path<String>,
+) -> Result<Json<crate::llm_budget::LlmBudget>, ApiError> {
+    let workshop = workshops_api(&state).get(&name).await?;
+    ensure_owner(&workshop, &user)?;
+
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+    client
+        .workshop_budget(&name)
+        .await
+        .map(Json)
+        .ok_or_else(|| ApiError::service_unavailable("passerelle LiteLLM injoignable"))
+}
+
 /// ouvert par une microVM hebergee dans ce pod, via `net-proxy`).
 pub(crate) async fn resolve_running_pod_ip(
     state: &AppState,
@@ -434,6 +463,16 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.to_string(),
+        }
+    }
+
+    /// Fonctionnalite optionnelle non configuree, ou dependance externe
+    /// momentanement injoignable : ni une erreur du client, ni un defaut de
+    /// ce serveur — d'ou `503` plutot que `400` ou `500`.
+    pub(crate) fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
         }
     }
 

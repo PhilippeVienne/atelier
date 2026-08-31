@@ -22,6 +22,10 @@ export interface DevcontainerSource {
 export interface WorkshopResources {
   cpu: string;
   memory: string;
+  /** Plafond de depense LLM du Workshop, en dollars. `undefined` = aucun
+   *  plafond : le controller n'en pose alors pas sur la Virtual Key
+   *  LiteLLM, ce qui n'est PAS la meme chose qu'un plafond a zero. */
+  maxLlmBudgetUsd?: number;
   disk?: string | null;
 }
 
@@ -133,4 +137,27 @@ export interface WorkshopEvent {
 export async function listWorkshopEvents(name: string): Promise<WorkshopEvent[]> {
   const res = await call(`/v1/workshops/${encodeURIComponent(name)}/events`);
   return res.json();
+}
+
+export interface LlmBudget {
+  spendUsd: number;
+  /** `null` = aucun plafond configure, a distinguer d'un plafond nul. */
+  maxBudgetUsd: number | null;
+  /** Nombre de Virtual Keys trouvees ; `0` = la depense affichee vaut zero
+   *  par absence de donnee, pas par mesure. */
+  keyCount: number;
+}
+
+/** Consommation LLM d'un Workshop, telle que LiteLLM la comptabilise sur ses
+ *  Virtual Keys. Renvoie `null` si la passerelle n'est pas configuree ou
+ *  n'est pas joignable (503) : c'est une information d'appoint, son absence
+ *  ne doit pas empecher d'afficher le Workshop. */
+export async function getLlmBudget(name: string): Promise<LlmBudget | null> {
+  try {
+    const res = await call(`/v1/workshops/${encodeURIComponent(name)}/llm-budget`);
+    return (await res.json()) as LlmBudget;
+  } catch (err) {
+    if (err instanceof ApiServerError && err.status === 503) return null;
+    throw err;
+  }
 }

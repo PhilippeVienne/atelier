@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ApiServerError, getWorkshop, listWorkshopEvents } from "@/lib/api-server";
+import {
+  ApiServerError,
+  getLlmBudget,
+  getWorkshop,
+  listWorkshopEvents,
+} from "@/lib/api-server";
 import { remove, resume, suspend } from "@/app/actions";
 import { PhaseBadge } from "@/app/components/phase-badge";
 import { TopNav } from "@/app/components/top-nav";
@@ -15,6 +20,69 @@ function Field({ label, value }: { label: string; value: string }) {
     <div className="flex flex-col gap-1">
       <span className="text-xs uppercase tracking-wide text-muted">{label}</span>
       <span className="text-sm font-mono break-all">{value}</span>
+    </div>
+  );
+}
+
+/** Consommation LLM du Workshop.
+ *
+ * On distingue trois cas, parce qu'ils n'ont pas le meme sens : un plafond
+ * configure (on peut montrer la marge restante), aucun plafond (la depense
+ * seule), et aucune Virtual Key (la depense n'est pas « zero », elle est
+ * inconnue). Afficher « 0,00 $ » dans ce dernier cas laisserait croire a une
+ * mesure. */
+function LlmBudgetCard({
+  budget,
+}: {
+  budget: { spendUsd: number; maxBudgetUsd: number | null; keyCount: number };
+}) {
+  // `narrowSymbol` : la locale fr rend USD en « $US », lourd a lire dans un
+  // rapport de consommation ou le symbole se repete.
+  const money = (v: number) =>
+    v.toLocaleString("fr-FR", {
+      style: "currency",
+      currency: "USD",
+      currencyDisplay: "narrowSymbol",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    });
+  const ratio =
+    budget.maxBudgetUsd && budget.maxBudgetUsd > 0
+      ? Math.min(1, budget.spendUsd / budget.maxBudgetUsd)
+      : null;
+  // Au-dela de 80 % le plafond devient une information urgente : LiteLLM
+  // refusera les appels des qu'il sera atteint, et l'agent s'arretera net.
+  const tone =
+    ratio === null ? "bg-accent" : ratio >= 0.8 ? "bg-red-500" : ratio >= 0.5 ? "bg-amber-500" : "bg-emerald-500";
+
+  return (
+    <div className="rounded-xl border border-border bg-surface p-5 shadow-sm flex flex-col gap-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs uppercase tracking-wide text-muted">Crédit LLM</span>
+        {budget.keyCount === 0 ? (
+          <span className="text-sm text-muted">aucune clé — consommation inconnue</span>
+        ) : (
+          <span className="text-sm font-medium tabular-nums">
+            {money(budget.spendUsd)}
+            {budget.maxBudgetUsd != null && (
+              <span className="text-muted"> / {money(budget.maxBudgetUsd)}</span>
+            )}
+          </span>
+        )}
+      </div>
+      {ratio !== null && (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
+          <div
+            className={`h-full rounded-full transition-all ${tone}`}
+            style={{ width: `${Math.max(2, ratio * 100)}%` }}
+          />
+        </div>
+      )}
+      <p className="text-xs text-muted">
+        {budget.maxBudgetUsd == null
+          ? "Aucun plafond : la Virtual Key de ce Workshop n'est pas limitée en dépense."
+          : "Au-delà du plafond, LiteLLM refuse les appels de ce Workshop."}
+      </p>
     </div>
   );
 }
@@ -45,6 +113,16 @@ export default async function WorkshopDetailPage({
   const canConnect = phase === "Running";
   const busy = BUSY_PHASES.includes(phase);
 
+  // Consommation LLM : information d'appoint, jamais bloquante — une
+  // passerelle LiteLLM absente ou injoignable ne doit pas empecher
+  // d'afficher un Workshop par ailleurs sain (voir `getLlmBudget`).
+  let budget: Awaited<ReturnType<typeof getLlmBudget>> = null;
+  try {
+    budget = await getLlmBudget(name);
+  } catch {
+    budget = null;
+  }
+
   return (
     <>
       <LiveRefresh active={busy} />
@@ -61,12 +139,14 @@ export default async function WorkshopDetailPage({
         </div>
 
         <div className="grid grid-cols-2 gap-5 rounded-xl border border-border bg-surface p-5 shadow-sm">
-          <Field label="Depot" value={workshop.spec.devcontainer.repo} />
-          <Field label="Revision" value={workshop.spec.devcontainer.revision} />
+          <Field label="Dépôt" value={workshop.spec.devcontainer.repo} />
+          <Field label="Révision" value={workshop.spec.devcontainer.revision} />
           <Field label="Pod parent" value={status?.podName ?? "—"} />
           <Field label="Image" value={status?.imageDigest ?? "—"} />
           <Field label="Snapshot" value={status?.snapshotDigest ?? "—"} />
         </div>
+
+        {budget && <LlmBudgetCard budget={budget} />}
 
         <div className="flex flex-wrap gap-2">
           {canConnect && (

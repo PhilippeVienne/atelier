@@ -62,10 +62,15 @@ export function NewWorkshopForm({
         placeholder=".devcontainer/devcontainer.json"
         defaultValue={defaults?.configPath ?? ".devcontainer/devcontainer.json"}
       />
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <Field label="CPU" name="cpu" placeholder="1" defaultValue="1" />
-        <Field label="Memoire" name="memory" placeholder="512Mi" defaultValue="512Mi" />
+        <Field label="Mémoire" name="memory" placeholder="512Mi" defaultValue="512Mi" />
+        <Field label="Budget LLM ($)" name="maxLlmBudgetUsd" placeholder="aucun" />
       </div>
+      <p className="-mt-2 text-xs text-muted">
+        Le budget plafonne la Virtual Key LiteLLM dédiée à ce Workshop : au-delà,
+        LiteLLM refuse ses appels. Laissé vide, aucun plafond n&apos;est posé.
+      </p>
       <label className="flex flex-col gap-1 text-sm">
         <span className="font-medium">Allowlist egress (separee par des virgules)</span>
         <textarea

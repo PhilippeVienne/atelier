@@ -32,6 +32,18 @@ async fn main() -> anyhow::Result<()> {
     // (sans schema), utilisee uniquement par la verification Fast-Fail du
     // serveur MCP (`crate::mcp_server`, tache 4.1.2).
     let litellm_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
+    // Lecture de la consommation LLM : memes variables que le controller,
+    // qui provisionne les Virtual Keys. Les DEUX sont necessaires (une
+    // adresse sans cle maitresse ne donne acces a rien), d'ou le `zip`.
+    let llm_budget = litellm_addr
+        .clone()
+        .zip(std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok())
+        .filter(|(addr, key)| !addr.trim().is_empty() && !key.trim().is_empty())
+        .map(|(addr, key)| {
+            std::sync::Arc::new(atelier_api_server::llm_budget::LlmBudgetClient::new(
+                addr, key,
+            ))
+        });
     let session_auth = openbao_addr
         .clone()
         .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
@@ -45,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
             db_pool,
             openbao_addr,
             litellm_addr,
+            llm_budget,
             session_auth,
             storage,
         },
