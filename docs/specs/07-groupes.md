@@ -80,8 +80,10 @@ budget de groupe supposerait un compteur agrégé et une politique de partage
 décision de produit distincte.
 
 En revanche la **console d'administration** gagne à afficher la dépense par
-groupe : l'information est déjà là (`metadata.owner` des Virtual Keys), il
-suffira d'y écrire le groupe plutôt que le sujet.
+groupe. ✅ *Fait le 2026-08-31* : `metadata.owner` des Virtual Keys porte
+désormais le groupe et non le créateur — la dépense d'un Workshop est celle
+du groupe qui le porte. L'agrégation par équipe dans la console reste à
+écrire, mais la donnée est là.
 
 ## 6. Trajectoire
 
@@ -91,7 +93,10 @@ Découpage tel qu'il sera implémenté, chaque étape étant vérifiable seule :
    utilisateurs et le compte de service du PM. Vérifiable : le claim `groups`
    apparaît dans un jeton réel.
 2. **CRD** : `WorkshopSpec.ownerGroup`, optionnel au départ pour ne pas
-   invalider les Workshops existants.
+   invalider les Workshops existants. ✅ *Devenu obligatoire le 2026-08-31* —
+   `kubectl apply` d'un Workshop sans groupe est désormais refusé par
+   Kubernetes lui-même (`spec.ownerGroup: Required value`), et non plus
+   seulement par l'api-server.
 3. **api-server** : autorisation par groupe avec repli sur `ownerSubject`
    tant que `ownerGroup` est absent ; création qui exige et valide le groupe.
 4. **pm-engine** : les Workshops du PM naissent dans le groupe du ticket.
@@ -105,5 +110,7 @@ Découpage tel qu'il sera implémenté, chaque étape étant vérifiable seule :
    atelier-core`, et un autre membre du groupe relit son flux.
 
 Les étapes 1 à 3 sont indépendantes des suivantes et livrables telles quelles.
-Le repli de l'étape 3 est ce qui permet de ne pas tout casser en un commit :
-il disparaîtra quand `ownerGroup` sera obligatoire.
+Le repli de l'étape 3 a permis de ne pas tout casser en un commit ; il a été
+**retiré le 2026-08-31**, une fois `ownerGroup` obligatoire. Deux règles
+d'autorisation en parallèle finissent par diverger, et c'est celle qu'on
+oublie qui décide.

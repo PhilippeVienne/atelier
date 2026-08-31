@@ -63,7 +63,7 @@ attendus et font partie du processus, ils sont consignes dans
 >     `status.podName`, que `carry_forward_status` remettait a `None` en
 >     dur : corrige. Texte d'origine conserve ci-dessous pour le contexte.
 >
-> 0a-bis. **Course sur `status.imageDigest`** — le plus important, et
+> 0a-ter. **Course sur `status.imageDigest`** — le plus important, et
 >     independant du PM. `image-builder` patche `status.imageDigest` a la fin
 >     du build, mais le controller ecrit ensuite un statut complet calcule
 >     depuis une copie en memoire anterieure, ce qui **efface le digest**. Le
@@ -82,7 +82,11 @@ attendus et font partie du processus, ils sont consignes dans
 >     le plus cher : trois causes distinctes ont produit exactement le meme
 >     symptome (une PR a 0 fichier), sans qu'aucune ne soit signalee.
 >
-> 0c. **`apply_wires_the_llm_virtual_key_injection_rule_when_configured`
+> 0c. **[RESOLU le 2026-08-31]** Le test passe de nouveau : le correctif du
+>     routage `llm-proxy` -> `identity-proxy` l'a emporte avec lui. Texte
+>     d'origine ci-dessous.
+>
+> 0c-bis. **`apply_wires_the_llm_virtual_key_injection_rule_when_configured`
 >     echoue** (`crates/controller/tests/reconcile.rs`) : la regle
 >     d'injection `llm-proxy` est absente (`[]`). Verifie comme
 >     **preexistant** — l'echec se reproduit a l'identique sur un arbre

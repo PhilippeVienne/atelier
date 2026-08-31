@@ -668,7 +668,7 @@ async fn ensure_image_build_job(
         match client
             .generate_virtual_key(
                 &litellm::build_key_alias(name),
-                &workshop.spec.owner_subject,
+                &workshop.spec.owner_group,
                 workshop.spec.resources.max_llm_budget_usd,
                 litellm::BUILD_VIRTUAL_KEY_TTL,
             )
@@ -1115,7 +1115,7 @@ async fn ensure_parent_pod(
             match client
                 .generate_virtual_key(
                     &litellm::workshop_key_alias(name),
-                    &workshop.spec.owner_subject,
+                    &workshop.spec.owner_group,
                     workshop.spec.resources.max_llm_budget_usd,
                     litellm::VIRTUAL_KEY_TTL,
                 )
@@ -1838,7 +1838,7 @@ mod template_hash_tests {
                 egress_allowlist: vec![],
                 tools: vec![],
                 identity_injection_rules: vec![],
-                owner_group: None,
+                owner_group: "atelier-core".into(),
                 owner_subject: "test-user".into(),
                 desired_state: WorkshopDesiredState::Running,
             },

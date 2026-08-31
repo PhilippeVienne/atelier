@@ -243,41 +243,26 @@ pub(crate) fn resolve_owner_group(
 /// divergeraient laisseraient des lignes accessibles a qui n'a plus acces au
 /// Workshop, ou l'inverse. Voir `docs/specs/07-groupes.md`, section 4.
 pub(crate) fn workshop_tenant(workshop: &Workshop) -> String {
-    workshop
-        .spec
-        .owner_group
-        .clone()
-        .unwrap_or_else(|| workshop.spec.owner_subject.clone())
+    workshop.spec.owner_group.clone()
 }
 
 pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
-    // Le GROUPE donne l'acces des qu'il est renseigne : tout membre pilote le
-    // Workshop, y compris pour reprendre l'environnement d'un collegue
-    // absent. C'est le sens meme de « un Workshop appartient a un groupe ».
-    if let Some(group) = workshop.spec.owner_group.as_deref() {
-        if user.groups.iter().any(|g| g == group) {
-            return Ok(());
-        }
-        tracing::warn!(
-            workshop_group = %group,
-            jwt_user = %user.subject,
-            "acces refuse : le sujet n'appartient pas au groupe proprietaire"
-        );
-        return Err(ApiError::not_found());
+    // Le GROUPE, et lui seul, donne l'acces : tout membre pilote le Workshop,
+    // y compris pour reprendre l'environnement d'un collegue absent. C'est le
+    // sens meme de « un Workshop appartient a un groupe ».
+    //
+    // Plus de repli sur `owner_subject` : deux regles d'autorisation en
+    // parallele finissent par diverger, et c'est celle qu'on oublie qui
+    // decide. Le createur reste enregistre pour l'audit, pas pour l'acces.
+    if user.groups.iter().any(|g| g == &workshop.spec.owner_group) {
+        return Ok(());
     }
-
-    // Repli, le temps de la transition : les Workshops crees avant
-    // l'introduction des groupes n'en portent pas. Disparaitra quand
-    // `owner_group` deviendra obligatoire (voir docs/specs/07-groupes.md).
-    if workshop.spec.owner_subject != user.subject {
-        tracing::warn!(
-            workshop_owner = %workshop.spec.owner_subject,
-            jwt_user = %user.subject,
-            "acces refuse : Workshop sans groupe, et le sujet n'en est pas le createur"
-        );
-        return Err(ApiError::not_found());
-    }
-    Ok(())
+    tracing::warn!(
+        workshop_group = %workshop.spec.owner_group,
+        jwt_user = %user.subject,
+        "acces refuse : le sujet n'appartient pas au groupe proprietaire"
+    );
+    Err(ApiError::not_found())
 }
 
 // --------------------------------------------------------------------------
@@ -539,7 +524,7 @@ async fn create_workshop(
             // Jamais depuis le corps de la requete : c'est l'identite
             // verifiee par le JWT qui devient le proprietaire, pas une
             // valeur que le client pourrait usurper.
-            owner_group: Some(owner_group),
+            owner_group,
             owner_subject: user.subject,
             desired_state: WorkshopDesiredState::Running,
         },

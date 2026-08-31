@@ -152,6 +152,11 @@ impl LiteLlmClient {
     /// metadonnee pour l'observabilite cote LiteLLM (`/key/info`), pas
     /// utilise par LiteLLM lui-meme pour l'enforcement.
     ///
+    /// C'est le GROUPE proprietaire qui y est ecrit, pas le createur : la
+    /// depense d'un Workshop est celle du groupe qui le porte, et c'est cette
+    /// cle-la qui permet a la console d'administration d'agreger un cout par
+    /// equipe plutot que par individu.
+    ///
     /// Pas idempotent au sens strict : un appel avec un `key_alias` deja
     /// utilise cree une Virtual Key SUPPLEMENTAIRE (constate en pratique
     /// contre une vraie instance LiteLLM) — a l'appelant de ne generer

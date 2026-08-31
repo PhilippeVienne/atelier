@@ -40,12 +40,12 @@ pub struct WorkshopSpec {
     /// Workshop, ce qui permet notamment de reprendre l'environnement d'un
     /// collegue absent.
     ///
-    /// `Option` le temps de la transition : les Workshops crees avant
-    /// l'introduction des groupes n'en portent pas, et l'api-server retombe
-    /// alors sur `owner_subject`. Deviendra obligatoire une fois ce repli
-    /// retire.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_group: Option<String>,
+    /// Obligatoire : le repli sur `owner_subject` qui accompagnait la
+    /// transition a ete retire (voir `docs/specs/07-groupes.md`). Un
+    /// Workshop sans groupe n'aurait aucun perimetre d'acces defini, et
+    /// laisser ce cas possible revenait a garder deux regles d'autorisation
+    /// en parallele — celle qui se serait tue en premier.
+    pub owner_group: String,
     /// Sujet JWT qui a CREE ce Workshop.
     ///
     /// Ne donne plus l'acces des lors qu'`owner_group` est renseigne : il
@@ -261,7 +261,7 @@ mod tests {
                 egress_allowlist: vec!["github.com".into()],
                 tools: vec![],
                 identity_injection_rules: vec![],
-                owner_group: None,
+                owner_group: "atelier-core".into(),
                 owner_subject: "user@example.invalid".into(),
                 desired_state: WorkshopDesiredState::Running,
             },

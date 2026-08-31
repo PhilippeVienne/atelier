@@ -231,7 +231,7 @@ impl WorkshopMcpServer {
                 egress_allowlist: params.egress_allowlist,
                 tools: params.tools,
                 identity_injection_rules: Vec::new(),
-                owner_group: Some(owner_group),
+                owner_group,
                 owner_subject: user.subject,
                 desired_state: WorkshopDesiredState::Running,
             },

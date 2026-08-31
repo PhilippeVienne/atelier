@@ -80,8 +80,7 @@ spec:
                 description: |-
                   Groupe proprietaire : c'est LUI qui donne acces (voir `docs/specs/07-groupes.md`). Tout membre du groupe peut piloter ce Workshop, ce qui permet notamment de reprendre l'environnement d'un collegue absent.
 
-                  `Option` le temps de la transition : les Workshops crees avant l'introduction des groupes n'en portent pas, et l'api-server retombe alors sur `owner_subject`. Deviendra obligatoire une fois ce repli retire.
-                nullable: true
+                  Obligatoire : le repli sur `owner_subject` qui accompagnait la transition a ete retire (voir `docs/specs/07-groupes.md`). Un Workshop sans groupe n'aurait aucun perimetre d'acces defini, et laisser ce cas possible revenait a garder deux regles d'autorisation en parallele — celle qui se serait tue en premier.
                 type: string
               ownerSubject:
                 description: |-
@@ -116,6 +115,7 @@ spec:
                 type: array
             required:
             - devcontainer
+            - ownerGroup
             - ownerSubject
             - resources
             type: object
