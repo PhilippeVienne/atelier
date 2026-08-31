@@ -176,11 +176,7 @@ export default async function WorkshopDetailPage({
 
         {budget && <LlmBudgetCard budget={budget} />}
 
-        <Credentials
-          workshopName={name}
-          initial={credentials}
-          needsRestart={phase === "Running"}
-        />
+        <Credentials workshopName={name} initial={credentials} />
 
         <div className="flex flex-wrap gap-2">
           {canConnect && (

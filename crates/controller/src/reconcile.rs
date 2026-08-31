@@ -6,13 +6,13 @@ use atelier_common::{
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, EmptyDirVolumeSource, EnvVar, HostAlias,
-    PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec, ResourceRequirements,
-    SecurityContext, ServiceAccount, Volume, VolumeMount,
+    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
+    HostAlias, PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec,
+    ResourceRequirements, SecurityContext, ServiceAccount, Volume, VolumeMount,
 };
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::finalizer::{self, Event};
 use kube::runtime::watcher;
@@ -1109,6 +1109,38 @@ async fn ensure_parent_pod(
     // `crate::litellm` pour la justification complete de ce choix
     // d'injection (regle d'injection `identity-proxy` generique,
     // reutilisee telle quelle, plutot qu'un nouveau canal metadata).
+    // La REGLE et le `hostAlias` sont recalcules a CHAQUE reconciliation ; seule
+    // la generation de la cle reste conditionnee a la creation du pod
+    // (`generate_virtual_key` n'est pas idempotent : un second appel cree une
+    // cle SUPPLEMENTAIRE, voir `crate::litellm`).
+    //
+    // Les separer n'est pas cosmetique : les regles sont desormais publiees a
+    // chaque passage dans une ConfigMap relue a chaud. En laissant la regle a
+    // l'interieur de ce garde, la ConfigMap tombait a `[]` des la deuxieme
+    // reconciliation, et le premier rechargement aurait EFFACE l'injection de
+    // la Virtual Key — le guest serait silencieusement retombe sur le jeton
+    // statique partage, sans qu'aucune erreur ne le signale.
+    if let (Some(_), Some(_)) = (&ctx.litellm, &ctx.openbao) {
+        match resolve_llm_cluster_ip(&ctx.client, ctx.llm_proxy_pod_addr.as_deref()).await {
+            Ok(ip) => {
+                effective_identity_injection_rules.push(IdentityInjectionRule {
+                    host: litellm::LLM_PROXY_ALIAS_HOST.to_string(),
+                    header: "Authorization".to_string(),
+                    prefix: "Bearer ".to_string(),
+                    secret_path: litellm::LLM_VIRTUAL_KEY_SECRET_PATH.to_string(),
+                    field: litellm::LLM_VIRTUAL_KEY_SECRET_FIELD.to_string(),
+                });
+                llm_host_alias = Some(HostAlias {
+                    ip: ip.to_string(),
+                    hostnames: Some(vec![litellm::LLM_PROXY_ALIAS_HOST.to_string()]),
+                });
+            }
+            Err(err) => {
+                tracing::warn!(%err, "resolution du ClusterIP de LiteLLM echouee, l'alias llm-proxy reste direct et la Virtual Key ne sera pas injectee");
+            }
+        }
+    }
+
     if pod_will_be_created {
         if let (Some(litellm_config), Some(openbao_config)) = (&ctx.litellm, &ctx.openbao) {
             let client = litellm::LiteLlmClient::new(litellm_config.clone());
@@ -1130,47 +1162,9 @@ async fn ensure_parent_pod(
                     .await
                     {
                         Ok(()) => {
-                            effective_identity_injection_rules.push(IdentityInjectionRule {
-                                host: litellm::LLM_PROXY_ALIAS_HOST.to_string(),
-                                header: "Authorization".to_string(),
-                                prefix: "Bearer ".to_string(),
-                                secret_path: litellm::LLM_VIRTUAL_KEY_SECRET_PATH.to_string(),
-                                field: litellm::LLM_VIRTUAL_KEY_SECRET_FIELD.to_string(),
-                            });
-                            // Une regle d'injection ne sert a rien si la
-                            // requete ne passe pas par identity-proxy. C'etait
-                            // precisement le cas : `net-proxy` aiguillait
-                            // l'alias `llm-proxy` DROIT vers LiteLLM, la ou
-                            // l'alias Git pointe vers identity-proxy. La cle
-                            // etait donc creee, plafonnee, ecrite dans
-                            // OpenBao... et jamais utilisee, le guest
-                            // continuant d'envoyer le jeton statique partage.
-                            // On resout ici le ClusterIP de la passerelle pour
-                            // qu'identity-proxy puisse la joindre apres
-                            // injection.
-                            match resolve_llm_cluster_ip(
-                                &ctx.client,
-                                ctx.llm_proxy_pod_addr.as_deref(),
-                            )
-                            .await
-                            {
-                                Ok(ip) => {
-                                    llm_host_alias = Some(HostAlias {
-                                        ip: ip.to_string(),
-                                        hostnames: Some(vec![
-                                            litellm::LLM_PROXY_ALIAS_HOST.to_string()
-                                        ]),
-                                    });
-                                }
-                                Err(err) => {
-                                    // Sans ClusterIP, on LAISSE l'alias pointer
-                                    // vers LiteLLM : le Workshop garde un acces
-                                    // LLM fonctionnel (via le jeton statique),
-                                    // ce qui vaut mieux qu'un agent coupe du
-                                    // modele. La cle reste alors inutilisee.
-                                    tracing::warn!(%err, "resolution du ClusterIP de LiteLLM echouee, l'alias llm-proxy reste direct et la Virtual Key ne sera pas injectee");
-                                }
-                            }
+                            // Regle et `hostAlias` deja poses plus haut : ici
+                            // on ne fait qu'ecrire la cle fraiche dans
+                            // OpenBao, a l'emplacement qu'ils designent.
                         }
                         Err(err) => {
                             tracing::error!(%err, "ecriture de la Virtual Key LiteLLM dans OpenBao echouee, isolation par Workshop desactivee pour cette session");
@@ -1185,6 +1179,25 @@ async fn ensure_parent_pod(
     }
     let identity_injection_rules = serde_json::to_string(&effective_identity_injection_rules)
         .unwrap_or_else(|_| "[]".to_string());
+
+    // Publiees a CHAQUE reconciliation, y compris quand le pod existe deja :
+    // c'est tout l'interet du fichier sur la variable d'environnement, qui
+    // exigeait de recreer le pod — donc d'eteindre la microVM de l'agent —
+    // pour qu'un credential ajoute depuis l'interface prenne effet.
+    if let Err(err) = ensure_injection_rules_config_map(
+        &ctx.client,
+        ns,
+        workshop,
+        name,
+        &identity_injection_rules,
+    )
+    .await
+    {
+        // Non bloquant : sans ConfigMap, `identity-proxy` retombe sur la
+        // variable d'environnement figee. Il perd le rechargement a chaud,
+        // pas l'injection elle-meme.
+        tracing::warn!(%err, "publication des regles d'injection echouee, rechargement a chaud indisponible");
+    }
     let tools = workshop.spec.tools.join(",");
     // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
     // avec le sous-reseau link-local d'index 0 (une seule microVM par pod),
@@ -1299,6 +1312,22 @@ async fn ensure_parent_pod(
                 // "<uds>_<port>" qui recoit les connexions initiees par le
                 // guest (convention Firecracker). `emptyDir` : contenu
                 // ephemere, scope au pod, pas de persistance necessaire.
+                // Regles d'injection, montees en FICHIER et non passees en
+                // variable d'environnement : une variable est figee a la
+                // creation du pod, si bien qu'ajouter un credential depuis
+                // l'interface n'avait d'effet qu'apres une mise en veille
+                // puis une reprise du Workshop — donc apres avoir eteint la
+                // microVM de l'agent. kubelet met a jour ce volume sans
+                // redemarrage, et `identity-proxy` le relit periodiquement.
+                Volume {
+                    name: "injection-rules".to_string(),
+                    config_map: Some(ConfigMapVolumeSource {
+                        name: injection_rules_config_map(name),
+                        optional: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
                 Volume {
                     name: "jailer".to_string(),
                     empty_dir: Some(EmptyDirVolumeSource::default()),
@@ -1469,6 +1498,13 @@ async fn ensure_parent_pod(
                                 &identity_injection_rules,
                             ),
                             env_var("ATELIER_WORKSHOP_NAME", name),
+                            // Le fichier prime sur la variable ci-dessus, qui
+                            // reste comme valeur de depart si la ConfigMap
+                            // n'est pas encore montee.
+                            env_var(
+                                "ATELIER_IDENTITY_INJECTION_RULES_FILE",
+                                INJECTION_RULES_PATH,
+                            ),
                         ]
                         .into_iter()
                         .chain(
@@ -1478,6 +1514,12 @@ async fn ensure_parent_pod(
                         )
                         .collect::<Vec<_>>(),
                     ),
+                    volume_mounts: Some(vec![VolumeMount {
+                        name: "injection-rules".to_string(),
+                        mount_path: INJECTION_RULES_DIR.to_string(),
+                        read_only: Some(true),
+                        ..Default::default()
+                    }]),
                     ..Default::default()
                 },
                 Container {
@@ -1692,6 +1734,58 @@ async fn resolve_llm_cluster_ip(
         .ok_or_else(|| anyhow::anyhow!("Service {namespace}/{name} sans ClusterIP exploitable"))?
         .parse()
         .map_err(|err| anyhow::anyhow!("ClusterIP de {namespace}/{name} illisible: {err}"))
+}
+
+/// Repertoire de montage des regles d'injection dans `identity-proxy`.
+const INJECTION_RULES_DIR: &str = "/etc/atelier/injection";
+/// Fichier lu par `identity-proxy` (`ATELIER_IDENTITY_INJECTION_RULES_FILE`).
+const INJECTION_RULES_PATH: &str = "/etc/atelier/injection/rules.json";
+/// Cle de la ConfigMap : c'est elle qui devient le nom du fichier monte.
+const INJECTION_RULES_KEY: &str = "rules.json";
+
+fn injection_rules_config_map(workshop_name: &str) -> String {
+    format!("{workshop_name}-injection-rules")
+}
+
+/// Publie les regles d'injection dans une ConfigMap, que kubelet propage au
+/// pod sans le redemarrer.
+///
+/// `replace` plutot que `patch` : la liste de regles est remplacee en bloc,
+/// une regle retiree doit disparaitre. Un `merge patch` sur une chaine ne
+/// saurait de toute facon pas faire autrement, mais l'intention merite
+/// d'etre explicite.
+async fn ensure_injection_rules_config_map(
+    client: &Client,
+    namespace: &str,
+    workshop: &Workshop,
+    name: &str,
+    rules_json: &str,
+) -> Result<(), kube::Error> {
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let cm_name = injection_rules_config_map(name);
+    let config_map = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(cm_name.clone()),
+            namespace: Some(namespace.to_string()),
+            // Rattachee au Workshop : elle disparait avec lui, sans passer
+            // par le finalizer.
+            owner_references: workshop.controller_owner_ref(&()).map(|r| vec![r]),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            INJECTION_RULES_KEY.to_string(),
+            rules_json.to_string(),
+        )])),
+        ..Default::default()
+    };
+    match api.create(&PostParams::default(), &config_map).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(err)) if err.code == 409 => api
+            .replace(&cm_name, &PostParams::default(), &config_map)
+            .await
+            .map(|_| ()),
+        Err(err) => Err(err),
+    }
 }
 
 fn carry_forward_status(

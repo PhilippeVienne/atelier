@@ -56,7 +56,10 @@ spec:
                 default: []
                 description: 'Regles d''injection de credentials appliquees par `identity-proxy` aux appels sortants de l''agent (jamais exposees en clair a la VM, voir `docs/architecture/network-security.md`). Vide : identity-proxy relaie sans jamais injecter.'
                 items:
-                  description: 'Une regle d''injection `identity-proxy` : les requetes sortantes de l''agent dont l''hote correspond a `host` (correspondance exacte ou wildcard `*.domaine`, meme syntaxe que `egress_allowlist`) recoivent l''en-tete `header` construit comme `prefix` + la valeur du champ `field` du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`. Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule` (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).'
+                  description: |-
+                    Une regle d'injection `identity-proxy` : les requetes sortantes de l'agent dont l'hote correspond a `host` (correspondance exacte ou wildcard `*.domaine`, meme syntaxe que `egress_allowlist`) recoivent l'en-tete `header` construit comme `prefix` + la valeur du champ `field` du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`. Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule` (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).
+
+                    `PartialEq` : `identity-proxy` compare les regles rechargees aux precedentes pour ne journaliser que les vrais changements.
                   properties:
                     field:
                       default: value

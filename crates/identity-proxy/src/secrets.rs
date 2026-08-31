@@ -27,6 +27,10 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// quelles).
 pub type SecretCache = Arc<RwLock<HashMap<String, String>>>;
 
+/// Regles partagees et MUTABLES : elles peuvent changer en cours de vie
+/// du proxy, sans redemarrage (voir `crate::rules::load`).
+pub type SharedRules = Arc<RwLock<Vec<InjectionRule>>>;
+
 /// Un cycle : login puis lecture de chaque secret reference par une regle.
 /// Une regle dont le secret est illisible (pas encore cree, permission
 /// refusee) est ignoree pour ce cycle (loggee), les autres continuent de
@@ -62,19 +66,41 @@ async fn refresh_once(
 /// secrets references par `rules` toutes les [`REFRESH_INTERVAL`], jusqu'a
 /// ce que le programme s'arrete. Ne retourne jamais en fonctionnement
 /// normal.
-pub async fn refresh_loop(client: OpenBaoClient, rules: Vec<InjectionRule>, cache: SecretCache) {
-    if rules.is_empty() {
-        tracing::info!("aucune regle d'injection configuree, cache de secrets inactif");
-        return;
-    }
+pub async fn refresh_loop(client: OpenBaoClient, rules: SharedRules, cache: SecretCache) {
     loop {
-        match refresh_once(&client, &rules).await {
-            Ok(values) => {
-                tracing::info!(count = values.len(), "secrets injectes rafraichis");
-                *cache.write().await = values;
+        // Les REGLES d'abord, les secrets ensuite : une regle ajoutee depuis
+        // l'interface doit etre connue avant qu'on aille chercher le secret
+        // qu'elle designe, sinon il faudrait deux tours pour qu'un nouveau
+        // credential devienne actif.
+        match crate::rules::load() {
+            // `None` = fichier pas encore monte : on garde les regles
+            // courantes plutot que de relayer sans injecter.
+            Ok(None) => {}
+            Ok(fresh) => {
+                let fresh = fresh.unwrap_or_default();
+                let mut current = rules.write().await;
+                if *current != fresh {
+                    tracing::info!(count = fresh.len(), "regles d'injection rechargees");
+                    *current = fresh;
+                }
             }
             Err(err) => {
-                tracing::error!(%err, "echec du rafraichissement des secrets OpenBao");
+                tracing::error!(%err, "regles d'injection illisibles, les precedentes restent en vigueur");
+            }
+        }
+
+        let snapshot = rules.read().await.clone();
+        if snapshot.is_empty() {
+            tracing::debug!("aucune regle d'injection, cache de secrets inutile");
+        } else {
+            match refresh_once(&client, &snapshot).await {
+                Ok(values) => {
+                    tracing::info!(count = values.len(), "secrets injectes rafraichis");
+                    *cache.write().await = values;
+                }
+                Err(err) => {
+                    tracing::error!(%err, "echec du rafraichissement des secrets OpenBao");
+                }
             }
         }
         tokio::time::sleep(REFRESH_INTERVAL).await;

@@ -14,7 +14,6 @@
 //! les requetes HTTP en clair relayees en forme absolue.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use anyhow::Context;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -29,7 +28,9 @@ const BAD_GATEWAY_RESPONSE: &[u8] =
 
 #[derive(Clone)]
 pub struct ProxyConfig {
-    pub rules: Arc<Vec<InjectionRule>>,
+    /// Partagees et mutables : rechargees en tache de fond, donc lues a
+    /// chaque connexion plutot que capturees une fois pour toutes.
+    pub rules: crate::secrets::SharedRules,
     pub secrets: SecretCache,
 }
 
@@ -53,7 +54,11 @@ pub async fn handle_connection(
         }
     };
 
-    let rule = rules::matching(&config.rules, &host);
+    // Instantane des regles au moment de la requete : elles peuvent avoir
+    // change depuis le demarrage (rechargement a chaud), et on ne garde pas
+    // le verrou pendant tout le relai.
+    let current_rules = config.rules.read().await.clone();
+    let rule = rules::matching(&current_rules, &host);
 
     if head.method.eq_ignore_ascii_case("CONNECT") {
         if let Some(rule) = rule {
@@ -245,6 +250,7 @@ where
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::RwLock;
 
@@ -279,7 +285,7 @@ mod tests {
         secrets.insert(rule.secret_cache_key(), "s3cr3t".to_string());
 
         let config = ProxyConfig {
-            rules: Arc::new(vec![rule]),
+            rules: Arc::new(RwLock::new(vec![rule])),
             secrets: Arc::new(RwLock::new(secrets)),
         };
 

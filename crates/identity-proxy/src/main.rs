@@ -49,15 +49,19 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr = std::env::var("ATELIER_IDENTITY_PROXY_LISTEN_ADDR")
         .unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
 
-    let rules = Arc::new(rules::from_env()?);
+    // Regles MUTABLES : rechargees en tache de fond depuis leur fichier,
+    // pour qu'un credential ajoute depuis l'interface prenne effet sans
+    // redemarrer le pod (donc sans eteindre la microVM de l'agent).
+    let rules: secrets::SharedRules = Arc::new(RwLock::new(rules::load()?.unwrap_or_default()));
     let secret_cache: secrets::SecretCache = Arc::new(RwLock::new(HashMap::new()));
 
-    if rules.is_empty() {
+    let initial_rules = rules.read().await.len();
+    if initial_rules == 0 {
         tracing::warn!(
             "ATELIER_IDENTITY_INJECTION_RULES absente ou vide : identity-proxy relaie sans jamais injecter"
         );
     } else {
-        tracing::info!(count = rules.len(), "regles d'injection chargees");
+        tracing::info!(count = initial_rules, "regles d'injection chargees");
     }
     tracing::info!("atelier-identity-proxy demarre (connexions directes a la destination, l'allowlist a deja ete tranchee par net-proxy en amont)");
 
@@ -66,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         let workshop_name =
             std::env::var("ATELIER_WORKSHOP_NAME").context("ATELIER_WORKSHOP_NAME manquant")?;
         let client = OpenBaoClient::from_env(openbao_addr, workshop_name);
-        let rules_for_refresh = (*rules).clone();
+        let rules_for_refresh = Arc::clone(&rules);
         let cache_for_refresh = Arc::clone(&secret_cache);
         tokio::spawn(secrets::refresh_loop(
             client,

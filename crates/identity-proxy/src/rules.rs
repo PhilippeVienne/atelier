@@ -29,13 +29,43 @@ impl InjectionRuleExt for InjectionRule {
 /// aucune regle, identity-proxy relaie tel quel sans jamais injecter.
 pub fn from_env() -> anyhow::Result<Vec<InjectionRule>> {
     let raw = std::env::var("ATELIER_IDENTITY_INJECTION_RULES").unwrap_or_default();
+    parse(&raw, "ATELIER_IDENTITY_INJECTION_RULES")
+}
+
+/// Chemin d'un FICHIER de regles, relu periodiquement.
+///
+/// L'interet sur la variable d'environnement : une variable est figee a la
+/// creation du pod, si bien qu'ajouter un credential depuis l'interface
+/// n'avait d'effet qu'apres une mise en veille puis une reprise du Workshop.
+/// Un fichier monte depuis une ConfigMap, lui, est mis a jour par kubelet
+/// sans redemarrage.
+pub const RULES_FILE_ENV: &str = "ATELIER_IDENTITY_INJECTION_RULES_FILE";
+
+/// Charge les regles depuis le fichier designe par [`RULES_FILE_ENV`], ou
+/// depuis la variable d'environnement si aucun fichier n'est configure.
+///
+/// Un fichier ABSENT n'est pas une erreur et ne vide pas les regles : kubelet
+/// remplace le contenu d'un volume de ConfigMap de facon atomique, mais le
+/// montage peut n'etre pas encore la au tout premier instant. Renvoyer une
+/// liste vide dans ce cas ferait relayer sans injecter — un credential
+/// silencieusement ignore vaut moins qu'une erreur bruyante.
+pub fn load() -> anyhow::Result<Option<Vec<InjectionRule>>> {
+    let Some(path) = std::env::var(RULES_FILE_ENV).ok().filter(|p| !p.is_empty()) else {
+        return from_env().map(Some);
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => parse(&raw, &path).map(Some),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(anyhow::anyhow!("lecture de {path} : {err}")),
+    }
+}
+
+fn parse(raw: &str, source: &str) -> anyhow::Result<Vec<InjectionRule>> {
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let rules: Vec<InjectionRule> = serde_json::from_str(&raw).map_err(|err| {
-        anyhow::anyhow!("regles d'injection invalides (ATELIER_IDENTITY_INJECTION_RULES) : {err}")
-    })?;
-    Ok(rules)
+    serde_json::from_str(raw)
+        .map_err(|err| anyhow::anyhow!("regles d'injection invalides ({source}) : {err}"))
 }
 
 /// Trouve la premiere regle dont `host` correspond a la destination de la

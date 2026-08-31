@@ -14,12 +14,9 @@ import type { Credential } from "@/lib/api-server";
 export function Credentials({
   workshopName,
   initial,
-  needsRestart,
 }: {
   workshopName: string;
   initial: Credential[];
-  /** Une règle n'atteint `identity-proxy` qu'au (re)démarrage du pod. */
-  needsRestart: boolean;
 }) {
   const [credentials, setCredentials] = useState(initial);
   const [error, setError] = useState<string | null>(null);
@@ -166,15 +163,11 @@ export function Credentials({
         </ul>
       )}
 
-      {needsRestart && credentials.length > 0 && (
-        // Dit ici plutot que laisse a deviner : les regles sont passees a
-        // `identity-proxy` par l'environnement du pod, donc figees a sa
-        // creation. Sans cet avertissement, on croirait un credential actif
-        // alors qu'il ne le sera qu'au prochain reveil.
-        <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
-          Les règles sont fournies à <code>identity-proxy</code> au démarrage du
-          pod : une modification ne prend effet qu&apos;après une mise en veille
-          puis une reprise du Workshop.
+      {credentials.length > 0 && (
+        <p className="text-xs text-muted">
+          Les règles sont relues périodiquement par <code>identity-proxy</code>
+          {" "}: un ajout devient actif en quelques minutes, sans redémarrer le
+          Workshop.
         </p>
       )}
     </div>

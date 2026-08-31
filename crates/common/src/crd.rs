@@ -97,7 +97,10 @@ fn default_devcontainer_path() -> String {
 /// du secret OpenBao stocke sous `secret/workshops/<name>/<secret_path>`.
 /// Meme forme que `crates/identity-proxy/src/rules.rs::InjectionRule`
 /// (serialisee telle quelle vers `ATELIER_IDENTITY_INJECTION_RULES`, JSON).
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+///
+/// `PartialEq` : `identity-proxy` compare les regles rechargees aux
+/// precedentes pour ne journaliser que les vrais changements.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityInjectionRule {
     pub host: String,
