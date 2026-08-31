@@ -10,9 +10,9 @@ interface ChatEntry {
 }
 
 const EXAMPLE_PROMPTS = [
-  "Resume les tickets ouverts cette semaine",
+  "Résume les tickets ouverts cette semaine",
   "Quelles PR attendent une revue humaine ?",
-  "Explique la derniere decision prise sur ce depot",
+  "Explique la dernière décision prise sur ce dépôt",
   "Importe https://github.com/acme/widgets comme nouveau projet",
 ];
 
@@ -131,7 +131,7 @@ export function PmChat({ projects }: { projects: string[] }) {
             onChange={(e) => setRepo(e.target.value)}
             className="flex-1 max-w-xs rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
           >
-            <option value="">Aucun — question generale</option>
+            <option value="">Aucun — question générale</option>
             {projects.map((p) => (
               <option key={p} value={p}>
                 {p}
@@ -150,7 +150,7 @@ export function PmChat({ projects }: { projects: string[] }) {
         <span className="text-xs text-muted">
           {repo
             ? "Les questions et actions portent sur ce projet."
-            : "Reponses generales : choisis un projet pour cibler ses tickets et PR."}
+            : "Réponses générales : choisissez un projet pour cibler ses tickets et PR."}
         </span>
       </div>
 
@@ -166,7 +166,7 @@ export function PmChat({ projects }: { projects: string[] }) {
                 <p className="text-sm text-muted max-w-sm">
                   {projects.length === 0
                     ? "Importe un projet pour que le PM puisse analyser ses tickets, ouvrir des PR et piloter des Workshops. Tu peux aussi lui poser une question des maintenant."
-                    : "Pose une question sur les tickets et PR d'un projet, ou demande-lui d'en importer un nouveau."}
+                    : "Posez une question sur les tickets et PR d'un projet, ou demandez-lui d'en importer un nouveau."}
                 </p>
               </div>
               <div className="flex flex-col gap-2 w-full max-w-md">
@@ -238,7 +238,7 @@ export function PmChat({ projects }: { projects: string[] }) {
               }
             }}
             rows={1}
-            placeholder={repo ? `Ta question sur ${repo}...` : "Ta question..."}
+            placeholder={repo ? `Votre question sur ${repo}…` : "Votre question…"}
             disabled={pending}
             className="flex-1 resize-none rounded-2xl border border-border bg-background px-4 py-2.5 text-sm leading-relaxed max-h-40 disabled:opacity-60"
           />
@@ -254,13 +254,13 @@ export function PmChat({ projects }: { projects: string[] }) {
           </button>
         </div>
         <p className="text-[11px] text-muted text-center mt-2">
-          Entree pour envoyer, Maj+Entree pour un saut de ligne. Pour un depot
-          prive, le jeton d&apos;acces transite par ce chat (donc par le
-          modele) : prefere{" "}
+          Entrée pour envoyer, Maj+Entrée pour un saut de ligne. Pour un dépôt
+          privé, le jeton d&apos;accès transite par ce chat (donc par le
+          modèle) : préférez{" "}
           <a href="/projects/new" className="underline hover:no-underline">
-            le formulaire dedie
+            le formulaire dédié
           </a>{" "}
-          si tu preferes l&apos;eviter.
+          si vous préférez l&apos;éviter.
         </p>
       </div>
     </div>

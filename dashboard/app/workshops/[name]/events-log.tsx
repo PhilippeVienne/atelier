@@ -44,7 +44,7 @@ export function EventsLog({
   }, [name, live]);
 
   if (events.length === 0) {
-    return <p className="text-sm text-muted px-1">Aucun evenement pour le moment.</p>;
+    return <p className="text-sm text-muted px-1">Aucun évènement pour le moment.</p>;
   }
 
   return (

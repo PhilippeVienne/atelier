@@ -38,7 +38,7 @@ export default async function HomePage() {
       <TopNav className="border-b border-border bg-surface/80 backdrop-blur supports-[backdrop-filter]:bg-surface/60">
         <Link
           href="/pm"
-          className="relative text-sm text-muted hover:text-foreground transition-colors px-2"
+          className="relative whitespace-nowrap text-sm text-muted hover:text-foreground transition-colors px-2"
         >
           Revues
           {pendingCount > 0 && (
@@ -48,7 +48,7 @@ export default async function HomePage() {
           )}
         </Link>
         <form action={logout}>
-          <button className="text-sm text-muted hover:text-foreground transition-colors px-2">
+          <button className="whitespace-nowrap text-sm text-muted hover:text-foreground transition-colors px-2">
             Se déconnecter
           </button>
         </form>

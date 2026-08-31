@@ -92,7 +92,7 @@ export function NewWorkshopForm({
         disabled={pending}
         className="rounded-full bg-accent text-accent-foreground px-6 py-2.5 font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
       >
-        {pending ? "Creation..." : "Creer"}
+        {pending ? "Création…" : "Créer"}
       </button>
     </form>
   );

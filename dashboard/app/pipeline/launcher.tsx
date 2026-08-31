@@ -11,9 +11,15 @@ import { useState } from "react";
 // cluster (les microVM n'ont ni le DNS ni le `/etc/hosts` de l'hote) et peut
 // porter des identifiants — deux raisons de ne pas la faire transiter par le
 // navigateur ni de la demander a l'utilisateur.
-export function Launcher({ projects }: { projects: string[] }) {
+export function Launcher({
+  projects,
+  preselected,
+}: {
+  projects: string[];
+  preselected?: string;
+}) {
   const router = useRouter();
-  const [repo, setRepo] = useState(projects[0] ?? "");
+  const [repo, setRepo] = useState(preselected ?? projects[0] ?? "");
   const [issue, setIssue] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);

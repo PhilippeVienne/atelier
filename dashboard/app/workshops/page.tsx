@@ -69,7 +69,7 @@ export default async function WorkshopsPage() {
     <>
       <TopNav>
         <form action={logout}>
-          <button className="text-sm text-muted hover:text-foreground transition-colors px-2">
+          <button className="whitespace-nowrap text-sm text-muted hover:text-foreground transition-colors px-2">
             Se déconnecter
           </button>
         </form>

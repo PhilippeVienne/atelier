@@ -20,11 +20,11 @@ export default async function ProjectsPage() {
           </Link>
         </div>
         <p className="text-sm text-muted max-w-2xl">
-          Un projet est un depot de la forge interne sur lequel le PM peut agir : lire des
-          tickets, ouvrir des PR, provisionner des Workshops. Il peut etre <strong>natif</strong>
-          (cree directement dans la forge) ou <strong>miroir</strong> d&apos;un depot
+          Un projet est un dépôt de la forge interne sur lequel le PM peut agir : lire des
+          tickets, ouvrir des PR, provisionner des Workshops. Il peut être <strong>natif</strong>{" "}
+          (créé directement dans la forge) ou <strong>miroir</strong> d&apos;un dépôt
           GitHub/GitLab, resynchronise automatiquement — dans ce cas le PM et les Workshops
-          travaillent sur le miroir, jamais sur le depot source.
+          travaillent sur le miroir, jamais sur le dépôt source.
         </p>
 
         {!enabled ? (
@@ -61,7 +61,16 @@ export default async function ProjectsPage() {
                   <p className="text-sm text-muted truncate">Source : {project.originalUrl}</p>
                 )}
                 <p className="text-xs text-muted font-mono truncate">{project.cloneUrl}</p>
-                <div className="flex justify-end pt-1">
+                {/* Deux actions, dans l'ordre de ce qu'on veut faire d'un
+                    projet : confier un ticket au PM (le coeur d'Atelier),
+                    ou ouvrir un environnement pour travailler soi-meme. */}
+                <div className="flex flex-wrap justify-end gap-2 pt-1">
+                  <Link
+                    href={`/pipeline?repo=${encodeURIComponent(project.fullName)}`}
+                    className="text-sm rounded-full bg-accent text-accent-foreground px-3 py-1 hover:bg-accent-hover transition-colors"
+                  >
+                    Lancer un ticket
+                  </Link>
                   <Link
                     href={`/workshops/new?repo=${encodeURIComponent(project.cloneUrl)}`}
                     className="text-sm rounded-full border border-border px-3 py-1 hover:bg-surface-hover transition-colors"

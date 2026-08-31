@@ -7,7 +7,15 @@ import { Launcher } from "./launcher";
 
 // Point d'entree de la vue « mission control » : lancer un ticket, ou
 // reprendre le suivi d'un workflow deja demarre.
-export default async function PipelineIndex() {
+export default async function PipelineIndex({
+  searchParams,
+}: {
+  searchParams: Promise<{ repo?: string }>;
+}) {
+  // `?repo=` preselectionne le projet : le lien « Lancer un ticket » de la
+  // page Projets arrive ici avec un projet deja choisi, sans quoi il faudrait
+  // le re-selectionner alors qu'on vient justement de le designer.
+  const { repo: preselected } = await searchParams;
   let workflows: WorkflowSummary[] = [];
   try {
     workflows = await listWorkflows();
@@ -31,19 +39,19 @@ export default async function PipelineIndex() {
       <TopNav className="border-b border-border bg-surface/80 backdrop-blur supports-[backdrop-filter]:bg-surface/60">
         <Link
           href="/pm"
-          className="text-sm text-muted hover:text-foreground transition-colors px-2"
+          className="whitespace-nowrap text-sm text-muted hover:text-foreground transition-colors px-2"
         >
           Revues
         </Link>
         <form action={logout}>
-          <button className="text-sm text-muted hover:text-foreground transition-colors px-2">
+          <button className="whitespace-nowrap text-sm text-muted hover:text-foreground transition-colors px-2">
             Se déconnecter
           </button>
         </form>
       </TopNav>
 
       <div className="mx-auto w-full max-w-5xl px-4 py-6 flex flex-col gap-6">
-        <Launcher projects={projects} />
+        <Launcher projects={projects} preselected={preselected} />
 
         <section className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold text-muted">Workflows récents</h2>

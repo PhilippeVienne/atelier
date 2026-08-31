@@ -137,7 +137,7 @@ export function PipelineView({ threadId, initial }: { threadId: string; initial:
         // dernier etat connu et on le signale, plutot que de vider l'ecran
         // au premier hoquet reseau — en pleine demo, un ecran vide est bien
         // pire qu'une donnee d'il y a trois secondes.
-        setError(err instanceof Error ? err.message : "erreur");
+        setError(err instanceof Error ? err.message : "erreur inconnue");
       }
     }, 3000);
     return () => clearInterval(id);

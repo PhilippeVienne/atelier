@@ -44,7 +44,7 @@ export function NewProjectForm() {
 
       {isPrivate && (
         <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium">Jeton d&apos;acces (PAT)</span>
+          <span className="font-medium">Jeton d&apos;accès (PAT)</span>
           <input
             name="token"
             type="password"
