@@ -228,6 +228,20 @@ pub(crate) fn resolve_owner_group(
     }
 }
 
+/// Locataire (RLS) auquel rattacher les lignes liees a ce Workshop.
+///
+/// Le GROUPE quand il est renseigne, sinon le createur — exactement le meme
+/// repli que `ensure_owner`, et pour la meme raison : deux regles qui
+/// divergeraient laisseraient des lignes accessibles a qui n'a plus acces au
+/// Workshop, ou l'inverse. Voir `docs/specs/07-groupes.md`, section 4.
+pub(crate) fn workshop_tenant(workshop: &Workshop) -> String {
+    workshop
+        .spec
+        .owner_group
+        .clone()
+        .unwrap_or_else(|| workshop.spec.owner_subject.clone())
+}
+
 pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Result<(), ApiError> {
     // Le GROUPE donne l'acces des qu'il est renseigne : tout membre pilote le
     // Workshop, y compris pour reprendre l'environnement d'un collegue

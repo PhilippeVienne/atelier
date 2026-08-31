@@ -95,7 +95,14 @@ Découpage tel qu'il sera implémenté, chaque étape étant vérifiable seule :
 3. **api-server** : autorisation par groupe avec repli sur `ownerSubject`
    tant que `ownerGroup` est absent ; création qui exige et valide le groupe.
 4. **pm-engine** : les Workshops du PM naissent dans le groupe du ticket.
-5. **RLS** : bascule du tenant, avec la migration de données.
+5. **RLS** : bascule du tenant, avec la migration de données. ✅ *Fait le
+   2026-08-31* — colonne `owner_subject` renommée en `tenant` sur
+   `exec_commands`, `session_logs` et `audit_events`, politiques réécrites.
+   Le renommage plutôt que la réutilisation est délibéré : un
+   `owner_subject` contenant un nom de groupe aurait piégé le prochain
+   lecteur. Vérifié en réel : une exécution lancée par le bot dans un
+   Workshop du groupe `atelier-core` s'enregistre avec `tenant =
+   atelier-core`, et un autre membre du groupe relit son flux.
 
 Les étapes 1 à 3 sont indépendantes des suivantes et livrables telles quelles.
 Le repli de l'étape 3 est ce qui permet de ne pas tout casser en un commit :

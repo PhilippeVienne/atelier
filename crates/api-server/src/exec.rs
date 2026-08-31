@@ -10,7 +10,7 @@
 //! directe au pod, tout passe deja par `net-proxy`.
 //!
 //! La commande est enregistree dans `exec_commands` (PostgreSQL, RLS par
-//! `owner_subject`) AVANT de retourner : l'appelant recoit un
+//! `tenant`) AVANT de retourner : l'appelant recoit un
 //! `execution_id` immediatement, l'execution continue en arriere-plan
 //! (`tokio::spawn`) meme si le client se deconnecte. `stdout`/`stderr` sont
 //! appendes chunk par chunk (jamais bufferises entierement en memoire cote
@@ -28,7 +28,7 @@
 //! l'adressage par IP de pod).
 
 use crate::auth::AuthenticatedUser;
-use crate::routes::{ensure_owner, workshops_api, ApiError, AppState};
+use crate::routes::{ensure_owner, workshop_tenant, workshops_api, ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
@@ -76,7 +76,7 @@ impl client::Handler for ExecClientHandler {
 /// connexion SSH ne soit etablie).
 pub async fn spawn(
     state: AppState,
-    owner_subject: String,
+    tenant: String,
     workshop_name: String,
     pod_ip: String,
     private_key_pem: String,
@@ -84,9 +84,9 @@ pub async fn spawn(
     devcontainer_repo: String,
 ) -> Result<Uuid, sqlx::Error> {
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO exec_commands (owner_subject, workshop_name, command) VALUES ($1, $2, $3) RETURNING id",
+        "INSERT INTO exec_commands (tenant, workshop_name, command) VALUES ($1, $2, $3) RETURNING id",
     )
-    .bind(&owner_subject)
+    .bind(&tenant)
     .bind(&workshop_name)
     .bind(&command)
     .fetch_one(&state.db_pool)
@@ -95,7 +95,7 @@ pub async fn spawn(
     tokio::spawn(run_and_persist(
         state,
         id,
-        owner_subject,
+        tenant,
         pod_ip,
         private_key_pem,
         command,
@@ -108,7 +108,7 @@ pub async fn spawn(
 async fn run_and_persist(
     state: AppState,
     id: Uuid,
-    owner_subject: String,
+    tenant: String,
     pod_ip: String,
     private_key_pem: String,
     command: String,
@@ -117,7 +117,7 @@ async fn run_and_persist(
     let outcome = run_over_ssh(
         &state,
         id,
-        &owner_subject,
+        &tenant,
         &pod_ip,
         &private_key_pem,
         &command,
@@ -126,19 +126,19 @@ async fn run_and_persist(
     .await;
     match outcome {
         Ok(exit_code) => {
-            finalize(&state.db_pool, id, &owner_subject, "Completed", exit_code).await;
+            finalize(&state.db_pool, id, &tenant, "Completed", exit_code).await;
         }
         Err(err) => {
             tracing::warn!(%err, %id, workshop = %pod_ip, "exec_in_workshop echoue");
             append_chunk(
                 &state.db_pool,
                 id,
-                &owner_subject,
+                &tenant,
                 OutputStream::Stderr,
                 format!("\n[atelier] execution echouee: {err}\n").as_bytes(),
             )
             .await;
-            finalize(&state.db_pool, id, &owner_subject, "Failed", None).await;
+            finalize(&state.db_pool, id, &tenant, "Failed", None).await;
         }
     }
 }
@@ -182,7 +182,7 @@ fn in_workspace(workspace_dir: &str, command: &str) -> String {
 async fn run_over_ssh(
     state: &AppState,
     id: Uuid,
-    owner_subject: &str,
+    tenant: &str,
     pod_ip: &str,
     private_key_pem: &str,
     command: &str,
@@ -226,24 +226,10 @@ async fn run_over_ssh(
     while let Some(msg) = channel.wait().await {
         match msg {
             ChannelMsg::Data { data } => {
-                append_chunk(
-                    &state.db_pool,
-                    id,
-                    owner_subject,
-                    OutputStream::Stdout,
-                    &data,
-                )
-                .await;
+                append_chunk(&state.db_pool, id, tenant, OutputStream::Stdout, &data).await;
             }
             ChannelMsg::ExtendedData { data, ext: 1 } => {
-                append_chunk(
-                    &state.db_pool,
-                    id,
-                    owner_subject,
-                    OutputStream::Stderr,
-                    &data,
-                )
-                .await;
+                append_chunk(&state.db_pool, id, tenant, OutputStream::Stderr, &data).await;
             }
             ChannelMsg::ExitStatus { exit_status } => {
                 exit_code = Some(exit_status as i32);
@@ -274,7 +260,7 @@ enum OutputStream {
 async fn append_chunk(
     pool: &sqlx::PgPool,
     id: Uuid,
-    owner_subject: &str,
+    tenant: &str,
     stream: OutputStream,
     data: &[u8],
 ) {
@@ -286,7 +272,7 @@ async fn append_chunk(
         return;
     };
     if sqlx::query("SELECT set_config('app.current_tenant', $1, true)")
-        .bind(owner_subject)
+        .bind(tenant)
         .execute(&mut *tx)
         .await
         .is_err()
@@ -312,7 +298,7 @@ async fn append_chunk(
 async fn finalize(
     pool: &sqlx::PgPool,
     id: Uuid,
-    owner_subject: &str,
+    tenant: &str,
     status: &str,
     exit_code: Option<i32>,
 ) {
@@ -320,7 +306,7 @@ async fn finalize(
         return;
     };
     if sqlx::query("SELECT set_config('app.current_tenant', $1, true)")
-        .bind(owner_subject)
+        .bind(tenant)
         .execute(&mut *tx)
         .await
         .is_err()
@@ -380,27 +366,27 @@ pub async fn stream_handler(
     ensure_owner(&workshop, &user)?;
 
     let stream = stream::unfold(
-        (state, user.subject, name, id, 0usize, 0usize, false),
-        |(state, owner_subject, name, id, mut stdout_sent, mut stderr_sent, done)| async move {
+        (
+            state,
+            workshop_tenant(&workshop),
+            name,
+            id,
+            0usize,
+            0usize,
+            false,
+        ),
+        |(state, tenant, name, id, mut stdout_sent, mut stderr_sent, done)| async move {
             if done {
                 return None;
             }
-            let row = fetch_row(&state.db_pool, &owner_subject, &name, id).await;
+            let row = fetch_row(&state.db_pool, &tenant, &name, id).await;
             let Some(row) = row else {
                 let event: Result<Event, Infallible> = Ok(Event::default()
                     .event("error")
                     .data("execution introuvable"));
                 return Some((
                     event,
-                    (
-                        state,
-                        owner_subject,
-                        name,
-                        id,
-                        stdout_sent,
-                        stderr_sent,
-                        true,
-                    ),
+                    (state, tenant, name, id, stdout_sent, stderr_sent, true),
                 ));
             };
 
@@ -458,7 +444,7 @@ pub async fn stream_handler(
                 Ok(event),
                 (
                     state,
-                    owner_subject,
+                    tenant,
                     name,
                     id,
                     stdout_sent,
@@ -474,13 +460,13 @@ pub async fn stream_handler(
 
 async fn fetch_row(
     pool: &sqlx::PgPool,
-    owner_subject: &str,
+    tenant: &str,
     workshop_name: &str,
     id: Uuid,
 ) -> Option<ExecRow> {
     let mut tx = pool.begin().await.ok()?;
     sqlx::query("SELECT set_config('app.current_tenant', $1, true)")
-        .bind(owner_subject)
+        .bind(tenant)
         .execute(&mut *tx)
         .await
         .ok()?;

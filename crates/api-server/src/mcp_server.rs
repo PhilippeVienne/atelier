@@ -375,7 +375,9 @@ impl WorkshopMcpServer {
 
         let execution_id = crate::exec::spawn(
             self.state.clone(),
-            user.subject,
+            // Locataire = groupe du Workshop : l'historique d'execution suit
+            // la meme frontiere que l'acces au Workshop lui-meme.
+            crate::routes::workshop_tenant(&workshop),
             name.clone(),
             pod_ip,
             private_key,
