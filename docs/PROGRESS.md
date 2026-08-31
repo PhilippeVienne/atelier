@@ -57,7 +57,13 @@ attendus et font partie du processus, ils sont consignes dans
 > **Points ouverts laisses par la session du 2026-08-30** (voir "Premiere
 > execution complete du PM autonome" ci-dessus pour le contexte complet) :
 >
-> 0a. **Course sur `status.imageDigest`** — le plus important, et
+> 0a. **[RESOLU le 2026-08-31]** La course sur `status.imageDigest` etait
+>     deja neutralisee par `skip_serializing_if` (un `None` n'est plus
+>     serialise, donc n'efface plus rien). Le meme defaut restait entier sur
+>     `status.podName`, que `carry_forward_status` remettait a `None` en
+>     dur : corrige. Texte d'origine conserve ci-dessous pour le contexte.
+>
+> 0a-bis. **Course sur `status.imageDigest`** — le plus important, et
 >     independant du PM. `image-builder` patche `status.imageDigest` a la fin
 >     du build, mais le controller ecrit ensuite un statut complet calcule
 >     depuis une copie en memoire anterieure, ce qui **efface le digest**. Le
@@ -82,7 +88,11 @@ attendus et font partie du processus, ils sont consignes dans
 >     **preexistant** — l'echec se reproduit a l'identique sur un arbre
 >     propre, sans les changements de cette session.
 >
-> 0d. **`ATELIER_LLM_PROXY_ADDR` souffre du meme defaut que
+> 0d. **[RESOLU le 2026-08-31]** `ATELIER_LLM_PROXY_POD_ADDR` separe
+>     desormais l'adresse vue par le controller de celle injectee dans les
+>     pods. Texte d'origine ci-dessous.
+>
+> 0d-bis. **`ATELIER_LLM_PROXY_ADDR` souffrait du meme defaut que
 >     `OPENBAO_ADDR`** (corrige, lui, par `pod_addr`) : la meme valeur sert
 >     aux appels du controller et a ce qui est injecte dans les pods. En dev,
 >     la generation de Virtual Key echoue donc toujours et retombe sur le
