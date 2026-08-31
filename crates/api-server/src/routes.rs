@@ -61,6 +61,24 @@ pub struct AppState {
 /// role `admin` du realm Keycloak de dev (`deploy/dev/keycloak/`), a cote de
 /// `developer` qui, lui, ne donne aucun privilege particulier.
 const ADMIN_ROLE: &str = "admin";
+/// Role minimal pour PROVISIONNER un Workshop. Correspond au role
+/// `developer` du realm de dev, dont `atelier-pm-bot` est titulaire — le PM
+/// provisionne des Workshops comme un utilisateur.
+///
+/// Seule la CREATION est soumise a un role : c'est elle qui alloue du calcul
+/// (une microVM Firecracker). Les autres operations portent sur une
+/// ressource qu'on possede deja, et la propriete suffit — retirer un role ne
+/// doit pas empecher quelqu'un de suspendre ou supprimer ses propres
+/// Workshops, sous peine de laisser tourner des microVM que plus personne ne
+/// peut arreter.
+const DEVELOPER_ROLE: &str = "developer";
+
+/// Le sujet peut-il provisionner ? `admin` vaut `developer` : un role
+/// d'administration qui ne permettrait pas ce que permet le role ordinaire
+/// serait un piege.
+fn may_provision(claims: &Claims) -> bool {
+    claims.has_role(DEVELOPER_ROLE) || claims.has_role(ADMIN_ROLE)
+}
 
 pub fn router(state: AppState, auth: AuthState) -> Router {
     let health_state = state.clone();
@@ -274,8 +292,18 @@ struct CreateWorkshopRequest {
 async fn create_workshop(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
+    Extension(claims): Extension<Claims>,
     Json(req): Json<CreateWorkshopRequest>,
 ) -> Result<(StatusCode, Json<Workshop>), ApiError> {
+    // Provisionner alloue une microVM : jusqu'ici, TOUT sujet authentifie
+    // pouvait le faire, y compris un compte du realm sans aucun rapport avec
+    // Atelier. Le role est donc exige ici, et nulle part ailleurs (voir
+    // `DEVELOPER_ROLE`).
+    if !may_provision(&claims) {
+        return Err(ApiError::forbidden(
+            "provisionner un Workshop requiert le role 'developer' ou 'admin'",
+        ));
+    }
     validate_name(&req.name)?;
 
     let workshop = Workshop::new(
@@ -303,14 +331,19 @@ async fn create_workshop(
 async fn list_workshops(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
+    Extension(claims): Extension<Claims>,
 ) -> Result<Json<Vec<Workshop>>, ApiError> {
     let all = workshops_api(&state).list(&Default::default()).await?;
-    let mine = all
+    // Un administrateur voit tous les Workshops de l'instance : c'est le sens
+    // meme de ce role, et sans cela il ne peut ni constater ce qui tourne ni
+    // rattacher une depense LLM a son environnement. Les autres ne voient que
+    // les leurs, comme avant.
+    let visible = all
         .items
         .into_iter()
-        .filter(|w| w.spec.owner_subject == user.0)
+        .filter(|w| claims.has_role(ADMIN_ROLE) || w.spec.owner_subject == user.0)
         .collect();
-    Ok(Json(mine))
+    Ok(Json(visible))
 }
 
 async fn get_workshop(

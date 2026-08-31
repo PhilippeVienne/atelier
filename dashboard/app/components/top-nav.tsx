@@ -50,7 +50,30 @@ export async function TopNav({
             {isAdmin && <NavLink href="/admin/llm">LLM</NavLink>}
           </nav>
         </div>
-        <div className="flex items-center gap-3 shrink-0">{children}</div>
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Qui suis-je, et avec quels droits ? Le role change ce que
+              l'instance autorise (provisionner, voir tous les Workshops) :
+              le laisser invisible obligeait a deviner pourquoi une action
+              echouait. Le libelle est masque sous `sm` pour ne pas encombrer
+              une barre deja dense sur telephone. */}
+          {user && (
+            <span
+              className="hidden sm:flex items-center gap-2 text-sm text-muted"
+              title={`Rôles : ${user.roles.join(", ") || "aucun"}`}
+            >
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface-hover text-[11px] font-semibold uppercase">
+                {(user.username ?? "?").slice(0, 2)}
+              </span>
+              {user.username}
+              {isAdmin && (
+                <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  admin
+                </span>
+              )}
+            </span>
+          )}
+          {children}
+        </div>
       </div>
     </header>
   );
