@@ -42,6 +42,19 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **Un flux SSE ne doit pas se fermer sur « le travail est fini », mais sur
+  « j'ai emis l'evenement final ».** `stream_handler` (`api-server`)
+  s'arretait des que la commande etait terminee, quel que soit l'evenement
+  qu'il venait d'emettre. Les branches etant ordonnees stdout -> stderr ->
+  status, un sondage trouvant a la fois de la sortie neuve ET une commande
+  finie — le cas courant — envoyait la sortie puis fermait, **sans jamais
+  emettre `status`**. Cote client, `exitCode` restait `null` : `pm-engine`
+  comparait `None != 0` et concluait a l'echec de TOUTE execution, tests
+  verts compris, consommant les trois tours d'auto-correction a chaque run.
+  **Ce qui l'a rendu visible** : faire figurer le code de sortie dans la
+  trace (`exit code None` saute alors aux yeux). Un `None` silencieusement
+  traite comme un echec est indistinguable d'un vrai echec — toujours
+  afficher la valeur brute.
 - **`--permission-mode acceptEdits` n'autorise PAS les commandes `Bash`.**
   Il auto-approuve les editions de fichiers, rien de plus. En mode `--print`
   (non interactif), personne n'est la pour approuver le reste : `git add`,
