@@ -135,3 +135,197 @@ mod tests {
         );
     }
 }
+
+// --------------------------------------------------------------------------
+// Vue d'administration
+// --------------------------------------------------------------------------
+
+/// Etat de la passerelle LiteLLM, destine aux seuls administrateurs.
+///
+/// Ce qui est volontairement ABSENT : le jeton des cles. LiteLLM ne le rend
+/// d'ailleurs pas (`/key/list` renvoie un hachage et un nom tronque), et
+/// c'est tres bien ainsi — une console d'administration n'a aucune raison de
+/// pouvoir rejouer les appels d'un Workshop. Les cles d'API des fournisseurs
+/// ne sont pas exposees non plus : `/model/info` ne renvoie que `model` et
+/// `api_base`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmOverview {
+    /// Depense cumulee de TOUTES les cles, y compris le jeton statique
+    /// partage — donc superieure a la somme des Workshops.
+    pub global_spend_usd: Option<f64>,
+    pub models: Vec<LlmModel>,
+    pub keys: Vec<LlmKey>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmModel {
+    /// Nom expose aux clients (`claude-3-5-sonnet-20241022`, `*`...).
+    pub name: String,
+    /// Modele reellement appele derriere cet alias.
+    pub target: Option<String>,
+    pub api_base: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmKey {
+    pub alias: String,
+    /// Sujet OIDC proprietaire, propage en metadonnee a la generation.
+    pub owner: Option<String>,
+    pub spend_usd: f64,
+    pub max_budget_usd: Option<f64>,
+    pub expires_at: Option<String>,
+    /// Calcule ici plutot que dans l'interface : la comparaison depend de
+    /// l'horloge, et celle du serveur fait davantage autorite que celle du
+    /// navigateur.
+    pub expired: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminKeyInfo {
+    #[serde(default)]
+    key_alias: Option<String>,
+    #[serde(default)]
+    spend: Option<f64>,
+    #[serde(default)]
+    max_budget: Option<f64>,
+    #[serde(default)]
+    expires: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminKeyList {
+    #[serde(default)]
+    keys: Vec<AdminKeyInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlobalSpend {
+    #[serde(default)]
+    spend: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelInfoList {
+    #[serde(default)]
+    data: Vec<ModelInfoEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelInfoEntry {
+    #[serde(default)]
+    model_name: Option<String>,
+    #[serde(default)]
+    litellm_params: Option<serde_json::Value>,
+}
+
+impl LlmBudgetClient {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Option<T> {
+        self.http
+            .get(format!("http://{}{path}", self.addr))
+            .bearer_auth(&self.master_key)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .await
+            .ok()
+    }
+
+    /// Vue d'ensemble de la passerelle.
+    ///
+    /// Chaque partie est recuperee independamment et son absence est toleree
+    /// (`Option`, listes vides) : une console d'administration qui ne
+    /// s'affiche pas du tout parce qu'un seul de ses trois panneaux est
+    /// indisponible est moins utile qu'une console partielle qui le dit.
+    pub async fn overview(&self) -> LlmOverview {
+        let global_spend_usd = self
+            .get_json::<GlobalSpend>("/global/spend")
+            .await
+            .and_then(|s| s.spend);
+
+        let models = self
+            .get_json::<ModelInfoList>("/model/info")
+            .await
+            .map(|list| {
+                list.data
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let params = entry.litellm_params.unwrap_or(serde_json::Value::Null);
+                        Some(LlmModel {
+                            name: entry.model_name?,
+                            target: params
+                                .get("model")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                            api_base: params
+                                .get("api_base")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let now = chrono::Utc::now();
+        // `size` est plafonne a 100 par LiteLLM : au-dela il repond `422`, que
+        // `get_json` transformait silencieusement en liste vide. Les Virtual
+        // Keys ayant un TTL court, cette premiere page couvre tout ce qui est
+        // actif ; c'est l'historique expire qui serait tronque.
+        let keys = self
+            .get_json::<AdminKeyList>("/key/list?return_full_object=true&size=100")
+            .await
+            .map(|list| {
+                let mut keys: Vec<LlmKey> = list
+                    .keys
+                    .into_iter()
+                    .filter_map(|key| {
+                        let alias = key.key_alias?;
+                        let expires_at = key.expires;
+                        let expired = expires_at
+                            .as_deref()
+                            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+                            .is_some_and(|d| d < now);
+                        Some(LlmKey {
+                            alias,
+                            owner: key
+                                .metadata
+                                .as_ref()
+                                .and_then(|m| m.get("owner"))
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                            spend_usd: key.spend.unwrap_or(0.0),
+                            max_budget_usd: key.max_budget,
+                            expires_at,
+                            expired,
+                        })
+                    })
+                    .collect();
+                // Les cles actives d'abord, puis par depense decroissante :
+                // ce qu'un administrateur cherche, c'est ce qui consomme
+                // maintenant, pas l'ordre interne de LiteLLM.
+                keys.sort_by(|a, b| {
+                    a.expired.cmp(&b.expired).then(
+                        b.spend_usd
+                            .partial_cmp(&a.spend_usd)
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    )
+                });
+                keys
+            })
+            .unwrap_or_default();
+
+        LlmOverview {
+            global_spend_usd,
+            models,
+            keys,
+        }
+    }
+}

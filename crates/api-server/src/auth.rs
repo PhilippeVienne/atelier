@@ -234,6 +234,32 @@ pub struct Claims {
     /// quasi jamais garantie presente : `Option`.
     #[serde(default)]
     pub groups: Option<Vec<String>>,
+    /// Roles de realm, au format Keycloak (`{"roles": ["admin", ...]}`).
+    /// Pas une claim OIDC standard : d'autres fournisseurs les exposent
+    /// autrement, d'ou l'`Option` et l'absence de toute exigence de presence
+    /// — un jeton sans roles est parfaitement valide, il n'a simplement
+    /// aucun privilege d'administration.
+    #[serde(default)]
+    pub realm_access: Option<RealmAccess>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RealmAccess {
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+impl Claims {
+    /// Le sujet porte-t-il ce role de realm ?
+    ///
+    /// L'autorisation se joue ICI, cote serveur, jamais sur ce que
+    /// l'interface choisit d'afficher : masquer un bouton n'empeche personne
+    /// d'appeler la route directement.
+    pub fn has_role(&self, role: &str) -> bool {
+        self.realm_access
+            .as_ref()
+            .is_some_and(|access| access.roles.iter().any(|r| r == role))
+    }
 }
 
 pub async fn require_auth(

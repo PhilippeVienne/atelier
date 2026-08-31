@@ -161,3 +161,31 @@ export async function getLlmBudget(name: string): Promise<LlmBudget | null> {
     throw err;
   }
 }
+
+export interface LlmModel {
+  name: string;
+  target: string | null;
+  apiBase: string | null;
+}
+
+export interface LlmKey {
+  alias: string;
+  owner: string | null;
+  spendUsd: number;
+  maxBudgetUsd: number | null;
+  expiresAt: string | null;
+  expired: boolean;
+}
+
+export interface LlmOverview {
+  globalSpendUsd: number | null;
+  models: LlmModel[];
+  keys: LlmKey[];
+}
+
+/** Vue d'administration de la passerelle LiteLLM. Reservee au role `admin`,
+ *  ce que l'api-server verifie lui-meme (`403` sinon). */
+export async function getLlmOverview(): Promise<LlmOverview> {
+  const res = await call("/v1/admin/llm");
+  return (await res.json()) as LlmOverview;
+}

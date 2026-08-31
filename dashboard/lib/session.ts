@@ -197,3 +197,41 @@ export async function consumePkceParams(): Promise<{ state: string; verifier: st
     return null;
   }
 }
+
+/** Identite de l'utilisateur connecte, telle que la porte son jeton.
+ *
+ * Lue par decodage du JWT SANS verification de signature : ce jeton vient de
+ * notre propre cookie httpOnly, et c'est l'api-server qui le valide vraiment
+ * a chaque appel. Ce qui est lu ici ne sert qu'a l'AFFICHAGE (nom, entree de
+ * menu) — jamais a autoriser quoi que ce soit, l'autorisation etant refaite
+ * cote serveur (voir `ADMIN_ROLE` dans `crates/api-server`). */
+export interface CurrentUser {
+  subject: string;
+  username: string | null;
+  roles: string[];
+}
+
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  const token = await getAccessToken();
+  if (!token) return null;
+  try {
+    const payload = token.split(".")[1];
+    const json = Buffer.from(
+      payload.replace(/-/g, "+").replace(/_/g, "/"),
+      "base64",
+    ).toString("utf8");
+    const claims = JSON.parse(json) as {
+      sub?: string;
+      preferred_username?: string;
+      realm_access?: { roles?: string[] };
+    };
+    if (!claims.sub) return null;
+    return {
+      subject: claims.sub,
+      username: claims.preferred_username ?? null,
+      roles: claims.realm_access?.roles ?? [],
+    };
+  } catch {
+    return null;
+  }
+}

@@ -3,7 +3,7 @@
 //! sujet JWT authentifie (`WorkshopSpec.owner_subject`) : un client ne voit
 //! et ne peut agir que sur ses propres Workshops.
 
-use crate::auth::{require_auth, AuthState, AuthenticatedUser};
+use crate::auth::{require_auth, AuthState, AuthenticatedUser, Claims};
 use atelier_common::{
     DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopResources, WorkshopSpec,
 };
@@ -57,6 +57,11 @@ pub struct AppState {
     pub storage: Option<std::sync::Arc<crate::storage::S3StorageBackend>>,
 }
 
+/// Role de realm requis pour les routes d'administration. Correspond au
+/// role `admin` du realm Keycloak de dev (`deploy/dev/keycloak/`), a cote de
+/// `developer` qui, lui, ne donne aucun privilege particulier.
+const ADMIN_ROLE: &str = "admin";
+
 pub fn router(state: AppState, auth: AuthState) -> Router {
     let health_state = state.clone();
     let mcp_service = crate::mcp_server::streamable_http_service(state.clone());
@@ -70,6 +75,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/events", get(list_workshop_events))
         .route("/v1/workshops/{name}/llm-budget", get(workshop_llm_budget))
+        .route("/v1/admin/llm", get(admin_llm_overview))
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
             get(crate::exec::stream_handler),
@@ -181,6 +187,28 @@ pub(crate) fn ensure_owner(workshop: &Workshop, user: &AuthenticatedUser) -> Res
 
 /// IP du pod parent d'un Workshop en cours d'execution — precondition
 /// commune a `portforward` et `vscode` (les deux relaient vers un port
+/// Vue d'administration de la passerelle LiteLLM.
+///
+/// Premiere route du projet reservee a un ROLE, et non a un proprietaire :
+/// elle montre les cles et la depense de TOUS les Workshops, ce qui n'a de
+/// sens que pour qui administre l'instance. Le controle se fait ici, cote
+/// serveur — masquer l'entree de menu cote navigateur n'empeche personne
+/// d'appeler la route directement.
+async fn admin_llm_overview(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<crate::llm_budget::LlmOverview>, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+    Ok(Json(client.overview().await))
+}
+
 /// Consommation LLM d'un Workshop (`crate::llm_budget`).
 ///
 /// Lecture seule et soumise a la meme regle de propriete que le reste de
@@ -469,6 +497,16 @@ impl ApiError {
     /// Fonctionnalite optionnelle non configuree, ou dependance externe
     /// momentanement injoignable : ni une erreur du client, ni un defaut de
     /// ce serveur — d'ou `503` plutot que `400` ou `500`.
+    /// Le sujet est authentifie mais n'a pas le privilege requis — `403`, a
+    /// distinguer d'un `401` (pas d'identite du tout) et d'un `404` (que l'on
+    /// reserve a ce qui n'existe pas ou ne lui appartient pas).
+    pub(crate) fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn service_unavailable(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,

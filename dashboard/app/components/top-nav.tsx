@@ -2,12 +2,24 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { SessionKeepAlive } from "@/app/components/session-keepalive";
 import { NavLink } from "@/app/components/nav-link";
+import { getCurrentUser } from "@/lib/session";
 
 // `className` optionnel : le chat plein ecran (app/page.tsx) a besoin que
 // ce header ne prenne pas part au calcul de la hauteur scrollable (voir
 // commentaire dans app/page.tsx) - les autres pages gardent le
 // comportement par defaut (largeur max, page qui scroll normalement).
-export function TopNav({ children, className }: { children?: ReactNode; className?: string }) {
+export async function TopNav({
+  children,
+  className,
+}: {
+  children?: ReactNode;
+  className?: string;
+}) {
+  // Entree reservee aux administrateurs. Purement cosmetique : c'est
+  // l'api-server qui refuse la route aux autres (`403`), masquer un lien
+  // n'autorise ni n'interdit rien.
+  const user = await getCurrentUser();
+  const isAdmin = user?.roles.includes("admin") ?? false;
   return (
     <header
       className={
@@ -35,6 +47,7 @@ export function TopNav({ children, className }: { children?: ReactNode; classNam
             <NavLink href="/pipeline">Pipeline</NavLink>
             <NavLink href="/projects">Projets</NavLink>
             <NavLink href="/workshops">Workshops</NavLink>
+            {isAdmin && <NavLink href="/admin/llm">LLM</NavLink>}
           </nav>
         </div>
         <div className="flex items-center gap-3 shrink-0">{children}</div>
