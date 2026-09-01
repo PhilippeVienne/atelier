@@ -1,0 +1,43 @@
+# Valeurs de CI : le deploiement « infrastructure existante ».
+#
+# Le chemin par defaut (tout embarque) est celui de la dev locale et se
+# rend a chaque `helm template` sans effort. Celui-ci est l'inverse : tous
+# les composants d'infrastructure sont EXTERNES, ce qui remplace des
+# Deployments entiers par des `Service`/`ExternalName` et change les URL
+# injectees dans presque tous les conteneurs. C'est le mode que deploiera
+# un administrateur qui a deja son Postgres, son IdP et sa forge — et
+# c'est celui que personne n'exerce en developpant.
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "pg.exemple.internal"
+    port: 5432
+    sslMode: "require"
+keycloak:
+  enabled: false
+  external:
+    enabled: true
+    url: "https://auth.exemple.com"
+forgejo:
+  enabled: false
+  external:
+    enabled: true
+    url: "https://git.exemple.com"
+registry:
+  enabled: false
+  external:
+    enabled: true
+    addr: "registry.exemple.com"
+openbao:
+  enabled: false
+  external:
+    enabled: true
+    url: "https://bao.exemple.internal:8200"
+s3Storage:
+  rustfs:
+    enabled: false
+  external:
+    enabled: true
+    endpoint: "https://s3.eu-west-1.amazonaws.com"
+    region: "eu-west-1"

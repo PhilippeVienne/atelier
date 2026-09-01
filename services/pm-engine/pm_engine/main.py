@@ -28,8 +28,9 @@ import base64
 import json
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Literal
+from typing import Literal
 
 import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -397,7 +398,7 @@ async def decide_review(
         raise HTTPException(status_code=400, detail="decision doit etre 'approved' ou 'rejected'")
     try:
         result = await resume_review(graph, deps, thread_id, body.decision)
-    except Exception as exc:  # noqa: BLE001 - remonte comme 404/500 explicite au BFF
+    except Exception as exc:  # remonte comme 404/500 explicite au BFF
         logger.warning("echec de reprise du thread %s: %s", thread_id, exc)
         raise HTTPException(status_code=404, detail=f"thread {thread_id} introuvable ou invalide") from exc
     return {"thread_id": thread_id, "status": result.get("status", "unknown")}
@@ -462,7 +463,7 @@ async def launch_workflow(
             await start_workflow(
                 graph, deps, thread_id, body.repo, body.issue_number, devcontainer_repo
             )
-        except Exception as exc:  # noqa: BLE001 - journalise, jamais avale en silence
+        except Exception as exc:  # journalise, jamais avale en silence
             logger.exception("workflow %s interrompu: %s", thread_id, exc)
 
     asyncio.create_task(_run())

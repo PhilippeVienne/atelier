@@ -252,8 +252,20 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
 
     assert_eq!(status, "Completed", "l'execution doit reussir");
     assert_eq!(exit_code, Some(7));
-    assert_eq!(stdout, "echo echo hello");
-    assert_eq!(stderr, "stderr from echo hello");
+    // Le serveur SSH mock renvoie `echo <commande recue>` : `stdout` montre
+    // donc la commande TELLE QU'ELLE EST ARRIVEE dans le guest. Elle est
+    // enrobee par `exec::in_workspace` (`cd /workspaces/<repo>` derive de
+    // l'URL du depot, ici `repo.git`), et c'est precisement ce que ce test
+    // doit constater : une commande d'agent qui s'executerait a la racine
+    // du guest plutot que dans le workspace ne trouverait pas les sources.
+    assert_eq!(
+        stdout,
+        "echo cd /workspaces/repo 2>/dev/null || true; echo hello"
+    );
+    assert_eq!(
+        stderr,
+        "stderr from cd /workspaces/repo 2>/dev/null || true; echo hello"
+    );
 
     net_proxy.start_kill().ok();
 }

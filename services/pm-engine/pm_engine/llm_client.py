@@ -9,7 +9,8 @@ la tache 5.0.2 pour le modele `embedding-dev-local`).
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 

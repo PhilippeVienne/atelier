@@ -10,7 +10,7 @@ tout l'etat.
 
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 
 class SubTask(TypedDict):

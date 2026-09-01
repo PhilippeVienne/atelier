@@ -18,9 +18,8 @@ situer l'avancement sans inventer de pourcentage.
 
 from __future__ import annotations
 
-from typing import Any
-
 import asyncio
+from typing import Any
 
 from .deps import PmEngineDeps
 from .mcp_client import atelier_mcp_session, call_tool_json
@@ -86,7 +85,7 @@ async def list_workflows(
     async def _summary(thread_id: str) -> dict[str, Any] | None:
         try:
             snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-        except Exception:
+        except Exception:  # noqa: BLE001 - un thread illisible est simplement omis
             return None
         values = getattr(snapshot, "values", None) or {}
         if not values.get("repo") or not values.get("issue_number"):
@@ -144,7 +143,7 @@ async def _workshop_phase(deps: PmEngineDeps, name: str) -> dict[str, Any]:
             "phase": (status or {}).get("phase"),
             "pod_name": (status or {}).get("podName"),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 - phase inconnue, jamais une erreur d'affichage
         return {"name": name, "phase": None, "pod_name": None}
 
 

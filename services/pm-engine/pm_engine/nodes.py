@@ -18,7 +18,6 @@ import re
 import shlex
 
 import httpx
-
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
@@ -241,7 +240,7 @@ async def _workshop_exists(deps: PmEngineDeps, workshop_name: str) -> bool:
         async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
             await call_tool_json(session, "get_workshop_status", {"name": workshop_name})
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - se tromper cote « absent » est sans danger
         return False
 
 

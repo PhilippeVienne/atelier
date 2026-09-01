@@ -44,7 +44,7 @@ fn generate_test_key() -> TestKey {
     }
 }
 
-fn sign_jwt(key: &TestKey, sub: &str) -> String {
+fn sign_jwt(key: &TestKey, sub: &str, group: &str) -> String {
     let header = Header {
         kid: Some(key.kid.clone()),
         ..Header::new(Algorithm::RS256)
@@ -53,7 +53,26 @@ fn sign_jwt(key: &TestKey, sub: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let claims = json!({ "sub": sub, "iss": ISSUER, "aud": AUDIENCE, "exp": now + 3600 });
+    // `aud` inclus deliberement (contrairement a une version anterieure de
+    // ce test) : un vrai token Kanidm en porte toujours un, et
+    // `jsonwebtoken` valide `aud` des qu'elle est presente — sans ce champ
+    // ici, ce test ne peut pas detecter une regression sur cette
+    // validation (constate en pratique, voir docs/PROGRESS.md).
+    //
+    // `groups` et `realm_access` ne sont pas decoratifs : depuis que le
+    // proprietaire d'un Workshop est un GROUPE et non une personne, un
+    // jeton sans groupe ne peut plus rien provisionner, et un jeton sans
+    // role `developer`/`admin` non plus. Les emettre ici est ce qui fait
+    // que ces tests exercent le vrai chemin d'autorisation plutot qu'un
+    // chemin qui n'existe plus.
+    let claims = json!({
+        "sub": sub,
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "exp": now + 3600,
+        "groups": [group],
+        "realm_access": { "roles": ["developer"] },
+    });
     jsonwebtoken::encode(&header, &claims, &key.encoding_key).expect("signature JWT")
 }
 
@@ -169,7 +188,7 @@ async fn mcp_lifecycle_tools_drive_a_real_workshop() {
     )
     .await;
 
-    let jwt = sign_jwt(&key, "mcp-owner@test.atelier");
+    let jwt = sign_jwt(&key, "mcp-owner@test.atelier", "equipe-mcp");
     let transport = mcp_client_transport(&base_url, &jwt);
     let mcp_client = ().serve(transport).await.expect("connexion/handshake MCP");
 
@@ -333,7 +352,7 @@ async fn mcp_tools_enforce_ownership_isolation() {
     )
     .await;
 
-    let owner_jwt = sign_jwt(&key, "mcp-owner-2@test.atelier");
+    let owner_jwt = sign_jwt(&key, "mcp-owner-2@test.atelier", "equipe-mcp-2");
     let owner_client =
         ().serve(mcp_client_transport(&base_url, &owner_jwt))
             .await
@@ -356,7 +375,7 @@ async fn mcp_tools_enforce_ownership_isolation() {
         .await
         .expect("appel create_workshop (owner)");
 
-    let intruder_jwt = sign_jwt(&key, "mcp-intruder@test.atelier");
+    let intruder_jwt = sign_jwt(&key, "mcp-intruder@test.atelier", "equipe-intruse");
     let intruder_client =
         ().serve(mcp_client_transport(&base_url, &intruder_jwt))
             .await
@@ -430,7 +449,7 @@ async fn mcp_create_workshop_fast_fails_when_litellm_unreachable() {
     )
     .await;
 
-    let jwt = sign_jwt(&key, "mcp-fastfail@test.atelier");
+    let jwt = sign_jwt(&key, "mcp-fastfail@test.atelier", "equipe-fastfail");
     let mcp_client =
         ().serve(mcp_client_transport(&base_url, &jwt))
             .await

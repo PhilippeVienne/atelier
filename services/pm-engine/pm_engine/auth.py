@@ -36,7 +36,7 @@ class TrustedIssuer:
     audience: str
 
     @classmethod
-    def from_env(cls) -> "TrustedIssuer | None":
+    def from_env(cls) -> TrustedIssuer | None:
         issuer = os.environ.get("ATELIER_JWT_ISSUER")
         if not issuer:
             return None
@@ -61,7 +61,7 @@ class AuthState:
     _jwk_client: PyJWKClient | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "AuthState":
+    def from_env(cls) -> AuthState:
         trusted = TrustedIssuer.from_env()
         if trusted is None:
             logger.warning(

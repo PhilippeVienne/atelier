@@ -42,6 +42,24 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **Un test qui se saute en CI pourrit sans que rien ne le dise.** Les tests
+  qui exigent de la vraie infrastructure (cluster, Postgres, Forgejo) se
+  sautent d'eux-memes en CI faute de connexion : ils ne deviennent donc
+  jamais rouges quand le code change sous eux. Constate le 2026-09-01 : sept
+  d'entre eux etaient casses, dont six par le passage a la propriete par
+  GROUPE de la veille (jeton sans `groups` ni role -> `403`) et un par
+  l'enrobage `cd /workspaces/<repo>` des commandes deleguees. La CI etait
+  verte du debut a la fin. Apres tout changement touchant l'autorisation ou
+  la forme des commandes, lancer `cargo test --workspace` sur une machine
+  qui A l'infrastructure — la CI ne peut pas le faire a votre place.
+- **Un binaire de dev laisse tourner corrompt les tests d'integration.** Un
+  `target/debug/atelier-controller` oublie en arriere-plan reconcilie TOUS
+  les Workshops du cluster, y compris ceux que les tests viennent de creer :
+  il supprime le pod que le test s'apprete a verifier. Symptome le
+  2026-09-01 : `apply_suspend_then_resume` echouait une fois sur deux en
+  suite complete et passait 3/3 seul — ce qui ressemble exactement a une
+  course dans le code, et n'en etait pas une. `pgrep -af target/debug`
+  avant de diagnostiquer un test intermittent.
 - **`cargo clippy` ne produit pas d'executable.** Verifier avec clippy puis
   relancer `target/debug/<binaire>` fait tourner l'ANCIEN binaire : le
   correctif compile, passe le lint, et ne s'execute pas. Constate le

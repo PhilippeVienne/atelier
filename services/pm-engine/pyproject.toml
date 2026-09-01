@@ -44,6 +44,7 @@ dependencies = [
 dev = [
   "pytest>=8.3,<9.0",
   "pytest-asyncio>=0.24,<1.0",
+  "ruff>=0.6,<1.0",
 ]
 
 [build-system]
@@ -56,3 +57,25 @@ packages = ["pm_engine"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# Jeu de regles ruff CHOISI, pas celui par defaut. Le defaut signale ici
+# une majorite de faux positifs ou de churn (`SIM117` sur les `async with`
+# imbriques, `TRY`/`PL` sur des tournures deliberees) qui rendrait le lint
+# ininteressant a lire, donc ignore. Ne sont retenues que des regles dont
+# une violation est un vrai defaut :
+#   E9  erreurs de syntaxe/indentation
+#   F   pyflakes (import mort, variable non definie, f-string sans champ)
+#   I   ordre des imports (deterministe, evite les diffs de rebase)
+#   UP  modernisation (`typing.AsyncIterator` -> `collections.abc`)
+#   B   bugbear (pieges reels : defaut mutable, `zip` sans `strict`...)
+#   BLE `except Exception:` nu — deja marque `# noqa: BLE001` a plusieurs
+#       endroits de ce service, donc l'intention etait deja d'en faire un
+#       choix explicite ; la regle rend ces marqueurs signifiants
+#   RUF100  `# noqa` devenu inutile (une garde qui ne garde plus rien)
+[tool.ruff.lint]
+select = ["E9", "F", "I", "UP", "B", "BLE", "RUF100"]
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends`/`Security` dans une valeur par defaut est L'IDIOME FastAPI, pas
+# l'appel-dans-le-defaut que B008 cherche a attraper.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "fastapi.Query", "fastapi.Header"]

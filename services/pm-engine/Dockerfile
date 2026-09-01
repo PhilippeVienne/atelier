@@ -7,20 +7,30 @@
 
 FROM python:3.12-slim AS builder
 
-# `uv` accelere l'installation et resout les dependances de maniere
-# deterministe (pas de dependance sur pip/setuptools dans l'image finale).
+# `uv` accelere l'installation et n'ajoute pas pip/setuptools a l'image
+# finale.
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
 WORKDIR /build
 
 # Deux couches Docker separees (metadonnees du projet, puis code source) :
 # le cache d'installation des dependances reste valide tant que
-# pyproject.toml/README.md ne changent pas, meme si pm_engine/ change.
-COPY pyproject.toml README.md ./
+# pyproject.toml/uv.lock ne changent pas, meme si pm_engine/ change.
+COPY pyproject.toml uv.lock README.md ./
 COPY pm_engine ./pm_engine
 
-RUN uv venv /opt/venv --python 3.12 \
-    && uv pip install --python /opt/venv/bin/python --no-cache .
+# `--frozen` : installer EXACTEMENT les versions de `uv.lock`, et echouer
+# si le lock ne correspond plus a pyproject.toml. Sans lui, l'image
+# resolvait les intervalles a chaque build — deux builds du meme commit
+# pouvaient embarquer des versions differentes, et la CI testait autre
+# chose que ce qui partait en production. C'est la meme classe de
+# divergence silencieuse que celle entre le chart et les migrations
+# (voir crates/api-server/tests/chart_migrations.rs).
+#
+# L'extra `dev` (pytest, ruff) n'est simplement pas demande : un extra ne
+# s'installe pas de lui-meme, l'image n'a donc ni l'un ni l'autre.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --frozen --no-cache
 
 FROM python:3.12-slim AS runtime
 

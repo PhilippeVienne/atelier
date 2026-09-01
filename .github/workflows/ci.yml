@@ -57,5 +57,99 @@ jobs:
       - name: Install Dashboard Dependencies
         run: cd dashboard && npm ci
 
+      # Le job s'appelait deja « Lint & Build » sans jamais linter : seul le
+      # build tournait, et un build Next.js passe sur du code qu'ESLint
+      # refuse.
+      - name: Lint Dashboard
+        run: cd dashboard && npm run lint
+
       - name: Build Dashboard
         run: cd dashboard && npm run build
+
+  # `services/pm-engine` avait 17 fichiers de tests que la CI n'executait
+  # pas — aucun job Python n'existait. C'est le composant le plus jeune du
+  # depot et celui dont une regression coute le plus cher a debusquer
+  # (elle ne se voit qu'au milieu d'un run de pipeline, qui consomme du
+  # budget LLM).
+  pm-engine-ci:
+    name: PM Engine Lint & Test (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/pm-engine/uv.lock
+
+      # `--frozen` : les MEMES versions que celles figees dans `uv.lock`,
+      # donc les memes que celles installees par le Dockerfile. Sans le
+      # lock, la CI resolvait les intervalles de son cote et testait autre
+      # chose que ce qui part en production.
+      - name: Install PM Engine Dependencies
+        run: cd services/pm-engine && uv sync --frozen --extra dev
+
+      - name: Lint PM Engine
+        run: cd services/pm-engine && uv run ruff check .
+
+      # Les tests qui exigent de la vraie infrastructure (Forgejo, Keycloak,
+      # LiteLLM) se sautent d'eux-memes faute de variables d'environnement,
+      # comme leurs equivalents Rust. Ce job couvre donc la logique pure :
+      # graphe, quoting des commandes deleguees, decodage JWT, providers Git.
+      # Ce n'est pas tout, c'est ce qui peut etre verifie sans depenser un
+      # centime.
+      - name: Test PM Engine
+        run: cd services/pm-engine && uv run pytest -q -rs
+
+  # Le chart n'etait ni lint ni rendu par la CI : une erreur de template ne
+  # se voyait qu'au `helm install` suivant, sur un vrai cluster.
+  helm-ci:
+    name: Helm Chart Lint & Manifest Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+
+      - name: Lint Chart
+        run: |
+          helm lint charts/atelier
+          helm lint charts/atelier -f charts/atelier/ci/external-values.yaml
+
+      # DEUX jeux de valeurs, parce qu'ils rendent des manifests differents.
+      # Le defaut (tout embarque) est celui de la dev locale, exerce en
+      # permanence. `ci/external-values.yaml` est l'inverse — Postgres,
+      # Keycloak, OpenBao, la forge, le registre et S3 tous externes — donc
+      # le mode que deploiera un administrateur qui a deja son
+      # infrastructure, et celui que personne n'exerce en developpant.
+      #
+      # `helm template` ne prouve que le rendu des templates Go ; il accepte
+      # sans broncher un manifest que Kubernetes refuserait. `kubeconform`
+      # valide la sortie contre les schemas de l'API — c'est lui qui apporte
+      # la garantie, `helm template` n'est que le moyen de la produire.
+      - name: Validate Rendered Manifests
+        run: |
+          set -euo pipefail
+          validate() {
+            kubeconform -strict -summary -ignore-missing-schemas \
+              -kubernetes-version 1.31.0
+          }
+          echo "::group::valeurs par defaut (tout embarque)"
+          helm template atelier charts/atelier | validate
+          echo "::endgroup::"
+          echo "::group::infrastructure externe"
+          helm template atelier charts/atelier \
+            -f charts/atelier/ci/external-values.yaml | validate
+          echo "::endgroup::"

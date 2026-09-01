@@ -11,8 +11,9 @@ atelier.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx2
 from mcp import ClientSession

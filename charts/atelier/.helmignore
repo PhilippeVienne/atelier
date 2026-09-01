@@ -1,0 +1,15 @@
+# Fichiers exclus de l'archive produite par `helm package`.
+
+# Jeux de valeurs de CI : ils servent a rendre le chart sous plusieurs
+# configurations (voir .github/workflows/ci.yml), ils n'ont rien a faire
+# dans le chart distribue a un administrateur.
+ci/
+
+.git/
+.gitignore
+*.tmproj
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tgz

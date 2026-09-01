@@ -66,7 +66,7 @@ fn generate_test_key() -> TestKey {
     }
 }
 
-fn sign_jwt(key: &TestKey, sub: &str) -> String {
+fn sign_jwt(key: &TestKey, sub: &str, group: &str) -> String {
     let header = Header {
         kid: Some(key.kid.clone()),
         ..Header::new(Algorithm::RS256)
@@ -80,7 +80,21 @@ fn sign_jwt(key: &TestKey, sub: &str) -> String {
     // `jsonwebtoken` valide `aud` des qu'elle est presente — sans ce champ
     // ici, ce test ne peut pas detecter une regression sur cette
     // validation (constate en pratique, voir docs/PROGRESS.md).
-    let claims = json!({ "sub": sub, "iss": ISSUER, "aud": AUDIENCE, "exp": now + 3600 });
+    //
+    // `groups` et `realm_access` ne sont pas decoratifs : depuis que le
+    // proprietaire d'un Workshop est un GROUPE et non une personne, un
+    // jeton sans groupe ne peut plus rien provisionner, et un jeton sans
+    // role `developer`/`admin` non plus. Les emettre ici est ce qui fait
+    // que ces tests exercent le vrai chemin d'autorisation plutot qu'un
+    // chemin qui n'existe plus.
+    let claims = json!({
+        "sub": sub,
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "exp": now + 3600,
+        "groups": [group],
+        "realm_access": { "roles": ["developer"] },
+    });
     jsonwebtoken::encode(&header, &claims, &key.encoding_key).expect("signature JWT")
 }
 
@@ -202,8 +216,8 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
         auth,
     );
 
-    let owner_token = sign_jwt(&key, "owner@test.atelier");
-    let other_token = sign_jwt(&key, "someone-else@test.atelier");
+    let owner_token = sign_jwt(&key, "owner@test.atelier", "equipe-proprietaire");
+    let other_token = sign_jwt(&key, "someone-else@test.atelier", "equipe-tierce");
     let name = format!("api-test-{}", std::process::id());
 
     let create_body = json!({
@@ -431,7 +445,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
         AUDIENCE.to_string(),
         JwkSet { keys: vec![jwk] },
     );
-    let owner_token = sign_jwt(&key, "portforward-owner@test.atelier");
+    let owner_token = sign_jwt(&key, "portforward-owner@test.atelier", "equipe-portforward");
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
@@ -464,7 +478,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             egress_allowlist: vec![],
             tools: vec![],
             identity_injection_rules: vec![],
-            owner_group: "atelier-core".into(),
+            owner_group: "equipe-portforward".into(),
             owner_subject: "portforward-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
         },
@@ -683,7 +697,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
         AUDIENCE.to_string(),
         JwkSet { keys: vec![jwk] },
     );
-    let owner_token = sign_jwt(&key, "vscode-owner@test.atelier");
+    let owner_token = sign_jwt(&key, "vscode-owner@test.atelier", "equipe-vscode");
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
@@ -711,7 +725,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             egress_allowlist: vec![],
             tools: vec![],
             identity_injection_rules: vec![],
-            owner_group: "atelier-core".into(),
+            owner_group: "equipe-vscode".into(),
             owner_subject: "vscode-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
         },
@@ -870,7 +884,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
         AUDIENCE.to_string(),
         JwkSet { keys: vec![jwk] },
     );
-    let owner_token = sign_jwt(&key, "vscode-ws-owner@test.atelier");
+    let owner_token = sign_jwt(&key, "vscode-ws-owner@test.atelier", "equipe-vscode-ws");
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
@@ -898,7 +912,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             egress_allowlist: vec![],
             tools: vec![],
             identity_injection_rules: vec![],
-            owner_group: "atelier-core".into(),
+            owner_group: "equipe-vscode-ws".into(),
             owner_subject: "vscode-ws-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
         },
@@ -1303,7 +1317,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
         AUDIENCE.to_string(),
         JwkSet { keys: vec![jwk] },
     );
-    let owner_token = sign_jwt(&key, "vscode-session-auth-owner@test.atelier");
+    let owner_token = sign_jwt(&key, "vscode-session-auth-owner@test.atelier", "equipe-vscode-auth");
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
@@ -1343,7 +1357,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             egress_allowlist: vec![],
             tools: vec![],
             identity_injection_rules: vec![],
-            owner_group: "atelier-core".into(),
+            owner_group: "equipe-vscode-auth".into(),
             owner_subject: "vscode-session-auth-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
         },
