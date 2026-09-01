@@ -25,7 +25,10 @@ async def _skip_if_unavailable() -> redis.Redis:
     client = redis.from_url(REDIS_URL, decode_responses=True)
     try:
         await client.ping()
-    except OSError as exc:
+    # `redis.exceptions.ConnectionError` n'herite pas d'`OSError` : la
+    # garde d'origine laissait le test ECHOUER au lieu de se sauter quand
+    # Redis est absent.
+    except (OSError, redis.RedisError) as exc:
         pytest.skip(f"Redis indisponible pour ce test: {exc}")
     return client
 

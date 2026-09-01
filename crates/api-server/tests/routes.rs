@@ -1317,7 +1317,11 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
         AUDIENCE.to_string(),
         JwkSet { keys: vec![jwk] },
     );
-    let owner_token = sign_jwt(&key, "vscode-session-auth-owner@test.atelier", "equipe-vscode-auth");
+    let owner_token = sign_jwt(
+        &key,
+        "vscode-session-auth-owner@test.atelier",
+        "equipe-vscode-auth",
+    );
 
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);

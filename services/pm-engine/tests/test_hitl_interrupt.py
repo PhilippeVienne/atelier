@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import uuid
 
+import psycopg
 import pytest
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -99,5 +100,9 @@ async def test_await_hitl_approval_interrupts_and_resumes_with_the_real_checkpoi
             assert final["hitl_decision"] == "approved"
             assert final["status"] == "merged"
             assert final["pr_url"] == "http://example.invalid/pr/1"
-    except OSError as exc:
+    # `psycopg.OperationalError` n'herite PAS d'`OSError` : la garde
+    # d'origine ne l'attrapait pas, si bien que ce test ne se sautait pas
+    # faute de PostgreSQL — il ECHOUAIT. Invisible tant qu'aucune CI ne
+    # l'executait sur une machine sans base.
+    except (OSError, psycopg.OperationalError) as exc:
         pytest.skip(f"PostgreSQL atelier_pm indisponible pour ce test: {exc}")
