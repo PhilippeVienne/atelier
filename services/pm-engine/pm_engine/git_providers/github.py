@@ -101,6 +101,13 @@ class GitHubProvider(BaseGitProvider):
             state=data["state"],
         )
 
+    async def list_root_entries(self, repo: str, ref: str) -> list[str] | None:
+        response = await self._client.get(f"/repos/{repo}/contents/", params={"ref": ref})
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return [entry["name"] for entry in response.json()]
+
     async def merge_pr(self, repo: str, pr_number: int) -> None:
         response = await self._client.put(f"/repos/{repo}/pulls/{pr_number}/merge")
         response.raise_for_status()

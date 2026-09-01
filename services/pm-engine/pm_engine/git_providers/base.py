@@ -76,6 +76,24 @@ class BaseGitProvider(ABC):
         """Fusionne une Pull/Merge Request deja approuvee
         (`MergeAndClose`, apres `AwaitHitlApproval`)."""
 
+    async def list_root_entries(self, repo: str, ref: str) -> list[str] | None:
+        """Noms des entrees a la RACINE du depot sur `ref`, ou `None` si le
+        provider ne sait pas repondre.
+
+        Sert au decoupage en sous-taches (`plan_parallel_tasks`) : sans cette
+        information, le planificateur decoupe a l'aveugle un depot dont il
+        ignore le contenu, et decide de repartir du travail entre plusieurs
+        agents alors qu'aucun d'eux n'a de socle commun sur lequel s'appuyer.
+        C'est ainsi qu'on obtient deux points d'entree concurrents pour la
+        meme application.
+
+        Meme convention que [`changed_file_count`] : non abstraite, et `None`
+        (« je ne sais pas ») distinct de `[]` (« le depot est vide »). Les
+        confondre ferait passer un provider muet pour un depot vierge, et
+        brimerait le decoupage sur des depots parfaitement fournis.
+        """
+        return None
+
     async def changed_file_count(self, repo: str, pr_number: int) -> int | None:
         """Nombre de fichiers modifies par une PR, ou `None` si le provider
         ne sait pas repondre.

@@ -152,3 +152,28 @@ async def test_forgejo_provider_create_mirror() -> None:
             timeout=30.0,
         ) as admin_client:
             await admin_client.delete(f"/repos/{FORGEJO_OWNER}/{repo_name}")
+
+
+@pytest.mark.asyncio
+async def test_list_root_entries_sees_what_the_planner_needs(test_repo):
+    """`plan_parallel_tasks` decide de decouper ou non selon ce qu'il y a
+    DEJA dans le depot : un depot vierge ne se decoupe pas, chaque agent
+    devant y inventer son propre socle. Cette lecture est donc la donnee dont
+    depend tout le decoupage, elle doit venir de la vraie forge."""
+    _skip_if_unavailable()
+    provider = ForgejoProvider(FORGEJO_URL, FORGEJO_TOKEN or "")
+    try:
+        entries = await provider.list_root_entries(test_repo, "main")
+        # La fixture cree le depot avec un README initial : c'est exactement
+        # l'etat « vierge » qui doit interdire un decoupage.
+        assert entries is not None
+        assert any(name.lower().startswith("readme") for name in entries)
+
+        # Un depot inexistant renvoie `[]` (vide), jamais `None` (« je ne
+        # sais pas ») : confondre les deux ferait decouper a l'aveugle.
+        absent = await provider.list_root_entries(
+            f"{FORGEJO_OWNER}/depot-qui-n-existe-pas-{uuid.uuid4().hex[:8]}", "main"
+        )
+        assert absent == []
+    finally:
+        await provider.aclose()

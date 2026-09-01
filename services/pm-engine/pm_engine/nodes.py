@@ -92,8 +92,95 @@ async def analyze_issue(state: PMWorkflowState, config: RunnableConfig) -> dict:
 # --------------------------------------------------------------------------
 # 2. PlanParallelTasks
 # --------------------------------------------------------------------------
+
+# Entrees de racine qui ne constituent PAS un socle de projet : leur presence
+# seule laisse le depot vierge du point de vue d'un agent qui doit produire du
+# code executable.
+_NOT_SCAFFOLDING = (
+    "readme",
+    "license",
+    "licence",
+    "copying",
+    "changelog",
+    "contributing",
+    "code_of_conduct",
+    "authors",
+    "notice",
+    "security",
+)
+
+
+def _is_greenfield(root_entries: list[str]) -> bool:
+    """Le depot est-il vierge de tout socle de projet ?
+
+    Un depot vide (ou ne contenant qu'un README et une licence) n'a ni
+    manifeste, ni point d'entree, ni arborescence : chaque agent parti en
+    parallele depuis `main` doit alors inventer ce socle POUR LUI, dans son
+    propre Workshop, sans voir celui des autres. C'est le mecanisme exact qui
+    produit deux serveurs concurrents pour la meme application (constate sur
+    de vrais plans : une sous-tache prenant `index.js`, une autre
+    `server.js`).
+
+    Un depot deja pourvu, lui, se prete a un decoupage : les agents partagent
+    le meme socle et n'ont plus qu'a se repartir des zones disjointes.
+    """
+    for entry in root_entries:
+        name = entry.lower()
+        if name.startswith("."):
+            continue
+        if any(name.startswith(prefix) for prefix in _NOT_SCAFFOLDING):
+            continue
+        return False
+    return True
+
+
+def _describe_root(root_entries: list[str] | None) -> str:
+    """Ce qu'on dit au planificateur du depot. `None` (provider muet) et `[]`
+    (depot vide) ne se disent PAS pareil : annoncer un depot vide alors qu'on
+    n'en sait rien pousserait a tout reecrire."""
+    if root_entries is None:
+        return "inconnu (le contenu du depot n'a pas pu etre lu)"
+    if not root_entries:
+        return "depot VIDE (aucun fichier)"
+    return ", ".join(sorted(root_entries))
+
+
+def _plan_is_credible(plan: list[dict]) -> str | None:
+    """Renvoie la raison pour laquelle un decoupage multi-taches n'est pas
+    tenable, ou `None` s'il l'est.
+
+    Le prompt DEMANDE des perimetres disjoints ; rien ne le verifiait. Une
+    consigne non verifiee finit toujours par etre approximee.
+    """
+    if len(plan) < 2:
+        return None
+    seen: dict[str, str] = {}
+    for task in plan:
+        for entry in task.get("scope") or []:
+            normalised = entry.strip().strip("/")
+            # Un perimetre attrape-tout a cote d'autres sous-taches : elles se
+            # marchent dessus par construction.
+            if normalised in ("**", "*", ""):
+                return f"la sous-tache {task['id']} prend tout le depot ({entry!r})"
+            if normalised in seen and seen[normalised] != task["id"]:
+                return (
+                    f"{entry!r} est revendique par {seen[normalised]} ET par {task['id']}"
+                )
+            seen[normalised] = task["id"]
+    return None
+
+
 async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) -> dict:
     deps = _deps(config)
+
+    # Etat REEL du depot sur la branche de base. Sans lui, le planificateur
+    # decoupe a l'aveugle : il ne peut pas savoir si les agents partageront un
+    # socle ou devront chacun en inventer un.
+    root_entries: list[str] | None = None
+    try:
+        root_entries = await deps.git_provider.list_root_entries(state["repo"], "main")
+    except Exception as exc:  # noqa: BLE001 - le decoupage doit rester possible sans
+        logger.warning("PlanParallelTasks: contenu du depot illisible (%s)", exc)
 
     raw_plan = await deps.llm_client.chat(
         deps.chat_model,
@@ -113,6 +200,17 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     "tests d'un module font partie de la sous-tache qui ecrit ce module. "
                     "De meme, ne cree pas de sous-tache d'integration ou de "
                     "documentation transversale.\n\n"
+                    "Ne decoupe JAMAIS selon des couches qui dependent l'une de "
+                    "l'autre a l'execution (une sous-tache 'API' et une sous-tache "
+                    "'logique metier' du meme service, par exemple) : aucune des deux "
+                    "ne peut tourner sans l'autre. Un decoupage frontend/backend n'est "
+                    "legitime que si chaque cote s'execute et se teste seul, le "
+                    "frontend parlant au backend par HTTP.\n\n"
+                    "Il ne doit exister qu'UN SEUL point d'entree pour l'application, "
+                    "et un seul manifeste (package.json, pyproject.toml...) : s'ils "
+                    "n'existent pas encore, ils appartiennent a une seule sous-tache, "
+                    "et les autres ne peuvent donc pas tourner — c'est le signe que le "
+                    "decoupage n'est pas possible.\n\n"
                     "S'il n'existe pas de decoupage reellement independant, renvoie une "
                     "SEULE sous-tache couvrant tout : mieux vaut une tache unique "
                     "coherente que plusieurs taches qui ne peuvent pas aboutir.\n\n"
@@ -121,7 +219,13 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     '["chemin/vers/fichiers/**"]}, ...].'
                 ),
             },
-            {"role": "user", "content": state.get("analysis", "")},
+            {
+                "role": "user",
+                "content": (
+                    f"{state.get('analysis', '')}\n\n"
+                    f"Contenu actuel de la racine du depot : {_describe_root(root_entries)}"
+                ),
+            },
         ],
     )
 
@@ -130,6 +234,33 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
     except json.JSONDecodeError:
         logger.warning("PlanParallelTasks: reponse LLM non-JSON, repli sur une seule tache")
         raw_tasks = [{"id": "task-1", "title": state.get("issue_title", "task"), "scope": ["**"]}]
+
+    # Garde-fous DETERMINISTES. Le prompt enonce ces regles, mais une consigne
+    # qui n'est pas verifiee finit toujours par etre approximee — et le prix
+    # d'un mauvais decoupage est plusieurs microVM qui produisent chacune leur
+    # version de la meme application, donc du budget LLM brule pour du travail
+    # jete.
+    single_task_reason: str | None = None
+    if root_entries is not None and _is_greenfield(root_entries) and len(raw_tasks) > 1:
+        single_task_reason = (
+            "le depot est vierge : chaque agent devrait inventer son propre socle"
+        )
+    elif (incoherence := _plan_is_credible(raw_tasks)) is not None:
+        single_task_reason = incoherence
+
+    if single_task_reason is not None:
+        logger.info(
+            "PlanParallelTasks: %d sous-taches ramenees a une seule (%s)",
+            len(raw_tasks),
+            single_task_reason,
+        )
+        raw_tasks = [
+            {
+                "id": "task-1",
+                "title": state.get("issue_title", "task"),
+                "scope": ["**"],
+            }
+        ]
 
     plan: list[SubTask] = [
         SubTask(

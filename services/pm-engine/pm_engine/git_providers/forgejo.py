@@ -160,6 +160,16 @@ class ForgejoProvider(BaseGitProvider):
             state=data["state"],
         )
 
+    async def list_root_entries(self, repo: str, ref: str) -> list[str] | None:
+        response = await self._client.get(f"/repos/{repo}/contents", params={"ref": ref})
+        # 404 sur un depot sans commit initial : c'est un depot VIDE, pas une
+        # panne — repondre `[]` et non `None`, la distinction compte (voir
+        # `BaseGitProvider.list_root_entries`).
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return [entry["name"] for entry in response.json()]
+
     async def changed_file_count(self, repo: str, pr_number: int) -> int | None:
         response = await self._client.get(f"/repos/{repo}/pulls/{pr_number}/files")
         response.raise_for_status()
