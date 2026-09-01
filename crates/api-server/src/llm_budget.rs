@@ -18,6 +18,10 @@ use serde::Deserialize;
 /// Meme convention de nommage que `atelier_controller::litellm` — dupliquee
 /// ici plutot que partagee, `api-server` ne dependant pas du controller.
 /// Toute evolution doit rester synchronisee avec lui (voir le test).
+pub fn key_aliases_for(workshop_name: &str) -> [String; 2] {
+    key_aliases(workshop_name)
+}
+
 fn key_aliases(workshop_name: &str) -> [String; 2] {
     [
         format!("atelier-wks-{workshop_name}"),
@@ -327,5 +331,370 @@ impl LlmBudgetClient {
             models,
             keys,
         }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Rapport de depense : qui a consomme quoi, et quand
+// --------------------------------------------------------------------------
+//
+// La depense par Workshop (`workshop_budget`) et le total global existaient
+// deja ; entre les deux, rien. Impossible de repondre a « combien a coute ce
+// groupe cette semaine », ni « qu'est-ce qui consomme le plus », sans lire a
+// la main les journaux de LiteLLM — ce que j'ai fait le 2026-09-01, et qui a
+// pris une douzaine de requetes et failli produire un chiffre FAUX (voir plus
+// bas `TEST_PRICING_MODELS`).
+//
+// Note pour qui chercherait mieux : `/global/spend/report`, qui agregerait
+// tout cela cote LiteLLM, est reserve a l'edition Enterprise (verifie : il
+// repond « You must be a LiteLLM Enterprise user »). L'agregation se fait
+// donc ici, a partir de `/spend/logs`.
+
+/// Modeles dont le TARIF est fictif : ils servent a exercer l'application des
+/// plafonds sans attendre une vraie consommation, et sont donc factures des
+/// dollars par requete. Les compter dans une depense presentee a un humain
+/// donnerait un chiffre faux de deux ordres de grandeur — le 2026-09-01, les
+/// journaux affichaient 211,49 $ dont 210,00 $ venaient de QUATORZE requetes
+/// de test a 15 $ piece. La depense reelle etait de 1,49 $.
+const TEST_PRICING_MODELS: [&str; 2] = ["openai/atelier-plan-test", "openai/atelier-budget-test"];
+
+/// Ce qu'une requete a coute, tel que LiteLLM le journalise.
+#[derive(Debug, Deserialize)]
+struct SpendLogEntry {
+    #[serde(default)]
+    spend: Option<f64>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, rename = "startTime")]
+    start_time: Option<String>,
+    /// Hachage de la cle utilisee : c'est LUI qui permet de rattacher une
+    /// requete a un Workshop (jointure sur `token` de `/key/list`), et donc a
+    /// un groupe. Le jeton statique partage n'y figure pas, d'ou la part
+    /// « non rattachee ».
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendBucket {
+    pub label: String,
+    pub spend_usd: f64,
+    pub request_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendReport {
+    /// Depense reelle, hors modeles a tarif fictif.
+    pub total_usd: f64,
+    /// Ce qui a ete ECARTE du total, dit explicitement plutot que
+    /// silencieusement : un montant qu'on retire sans le montrer est un
+    /// montant qu'on finira par oublier d'expliquer.
+    pub test_pricing_usd: f64,
+    /// Depense qu'aucune Virtual Key ne revendique — le jeton statique
+    /// partage. C'est la part que les plafonds par Workshop NE GOUVERNENT
+    /// PAS : la afficher est tout l'interet de ce rapport.
+    pub unattributed_usd: f64,
+    pub by_day: Vec<SpendBucket>,
+    pub by_group: Vec<SpendBucket>,
+    pub by_model: Vec<SpendBucket>,
+}
+
+/// Rattachement d'une cle a un groupe.
+///
+/// DEUX sources, parce qu'aucune ne suffit seule :
+///
+/// - `group_by_alias` vient des Workshops vivants (`routes.rs` : `llm_budget`
+///   ne connait ni les Workshops ni Kubernetes). C'est la source qui fait
+///   autorite, mais elle disparait avec le Workshop.
+/// - `group_by_token` vient de la metadonnee `owner` que le controller ecrit
+///   dans la Virtual Key elle-meme, et qui SURVIT a la suppression du
+///   Workshop. Sans elle, supprimer un Workshop ferait basculer toute sa
+///   depense passee dans « non rattache » — l'argent ne disparaitrait pas du
+///   total, mais on ne saurait plus qui l'a depense.
+pub struct KeyOwnership {
+    /// Hachage de cle -> alias.
+    pub alias_by_token: std::collections::HashMap<String, String>,
+    /// Alias -> groupe proprietaire, d'apres les Workshops existants.
+    pub group_by_alias: std::collections::HashMap<String, String>,
+    /// Hachage de cle -> groupe, d'apres la metadonnee de la cle.
+    pub group_by_token: std::collections::HashMap<String, String>,
+}
+
+impl KeyOwnership {
+    /// Groupe d'une requete. Le Workshop vivant l'emporte sur la metadonnee :
+    /// il reflete l'etat courant, la metadonnee celui de la generation.
+    fn group_of(&self, token: Option<&String>) -> Option<String> {
+        let token = token?;
+        self.alias_by_token
+            .get(token)
+            .and_then(|alias| self.group_by_alias.get(alias))
+            .or_else(|| self.group_by_token.get(token))
+            .cloned()
+    }
+}
+
+fn sorted_buckets(map: std::collections::HashMap<String, (f64, usize)>) -> Vec<SpendBucket> {
+    let mut buckets: Vec<SpendBucket> = map
+        .into_iter()
+        .map(|(label, (spend_usd, request_count))| SpendBucket {
+            label,
+            spend_usd,
+            request_count,
+        })
+        .collect();
+    buckets.sort_by(|a, b| {
+        b.spend_usd
+            .partial_cmp(&a.spend_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    buckets
+}
+
+/// Agrege des journaux de depense. Separee du client HTTP pour etre testable
+/// sur des journaux reels sans LiteLLM.
+fn aggregate(entries: &[SpendLogEntry], ownership: &KeyOwnership) -> SpendReport {
+    use std::collections::HashMap;
+    let mut total = 0.0;
+    let mut test_pricing = 0.0;
+    let mut unattributed = 0.0;
+    let mut by_day: HashMap<String, (f64, usize)> = HashMap::new();
+    let mut by_group: HashMap<String, (f64, usize)> = HashMap::new();
+    let mut by_model: HashMap<String, (f64, usize)> = HashMap::new();
+
+    for entry in entries {
+        let spend = entry.spend.unwrap_or(0.0);
+        let model = entry.model.clone().unwrap_or_default();
+        if TEST_PRICING_MODELS.contains(&model.as_str()) {
+            test_pricing += spend;
+            continue;
+        }
+        total += spend;
+
+        match ownership.group_of(entry.api_key.as_ref()) {
+            Some(group) => {
+                let slot = by_group.entry(group).or_default();
+                slot.0 += spend;
+                slot.1 += 1;
+            }
+            None => unattributed += spend,
+        }
+
+        if let Some(day) = entry.start_time.as_deref().and_then(|t| t.get(..10)) {
+            let slot = by_day.entry(day.to_string()).or_default();
+            slot.0 += spend;
+            slot.1 += 1;
+        }
+        if !model.is_empty() {
+            let slot = by_model.entry(model).or_default();
+            slot.0 += spend;
+            slot.1 += 1;
+        }
+    }
+
+    // Les jours se lisent dans l'ordre du temps, pas du montant.
+    let mut by_day = sorted_buckets(by_day);
+    by_day.sort_by(|a, b| a.label.cmp(&b.label));
+
+    SpendReport {
+        total_usd: total,
+        test_pricing_usd: test_pricing,
+        unattributed_usd: unattributed,
+        by_day,
+        by_group: sorted_buckets(by_group),
+        by_model: sorted_buckets(by_model),
+    }
+}
+
+impl LlmBudgetClient {
+    /// Hachage de cle -> (alias, groupe d'apres la metadonnee de la cle).
+    #[allow(clippy::type_complexity)]
+    pub async fn key_ownership_from_litellm(
+        &self,
+    ) -> (
+        std::collections::HashMap<String, String>,
+        std::collections::HashMap<String, String>,
+    ) {
+        let Some(list) = self
+            .get_json::<TokenKeyList>("/key/list?return_full_object=true&size=100")
+            .await
+        else {
+            return Default::default();
+        };
+        let mut alias_by_token = std::collections::HashMap::new();
+        let mut group_by_token = std::collections::HashMap::new();
+        for key in list.keys {
+            let Some(token) = key.token else { continue };
+            if let Some(owner) = key
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("owner"))
+                .and_then(|v| v.as_str())
+            {
+                group_by_token.insert(token.clone(), owner.to_string());
+            }
+            if let Some(alias) = key.key_alias {
+                alias_by_token.insert(token, alias);
+            }
+        }
+        (alias_by_token, group_by_token)
+    }
+
+    /// Rapport de depense, ou `None` si LiteLLM est injoignable.
+    pub async fn spend_report(&self, ownership: &KeyOwnership) -> Option<SpendReport> {
+        let entries = self.get_json::<Vec<SpendLogEntry>>("/spend/logs").await?;
+        Some(aggregate(&entries, ownership))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenKeyList {
+    #[serde(default)]
+    keys: Vec<TokenKeyInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenKeyInfo {
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    key_alias: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod spend_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn entry(spend: f64, model: &str, day: &str, token: Option<&str>) -> SpendLogEntry {
+        SpendLogEntry {
+            spend: Some(spend),
+            model: Some(model.to_string()),
+            start_time: Some(format!("{day}T10:00:00.000000Z")),
+            api_key: token.map(str::to_string),
+        }
+    }
+
+    fn ownership() -> KeyOwnership {
+        KeyOwnership {
+            alias_by_token: HashMap::from([
+                ("hash-a".to_string(), "atelier-wks-demo".to_string()),
+                ("hash-b".to_string(), "atelier-build-autre".to_string()),
+            ]),
+            group_by_alias: HashMap::from([
+                ("atelier-wks-demo".to_string(), "equipe-a".to_string()),
+                ("atelier-build-autre".to_string(), "equipe-b".to_string()),
+            ]),
+            // Le Workshop `hash-c` a ete supprime : seule sa cle se souvient
+            // encore de qui a depense.
+            group_by_token: HashMap::from([("hash-c".to_string(), "equipe-disparue".to_string())]),
+        }
+    }
+
+    /// Le cas qui a motive tout ce module : sur de vrais journaux, 210,00 $
+    /// des 211,49 $ affiches venaient de 14 requetes a tarif FICTIF. Les
+    /// inclure donnerait un chiffre faux de deux ordres de grandeur.
+    #[test]
+    fn test_pricing_is_excluded_from_the_total_and_shown_apart() {
+        let entries = vec![
+            entry(15.0, "openai/atelier-budget-test", "2026-08-31", None),
+            entry(0.5, "deepseek/deepseek-chat", "2026-08-31", Some("hash-a")),
+        ];
+        let report = aggregate(&entries, &ownership());
+        assert_eq!(report.total_usd, 0.5);
+        assert_eq!(report.test_pricing_usd, 15.0);
+        // Et le modele de test ne pollue pas non plus la repartition.
+        assert!(report
+            .by_model
+            .iter()
+            .all(|b| b.label != "openai/atelier-budget-test"));
+    }
+
+    /// Ce que le rapport doit rendre visible : la depense qu'aucun plafond
+    /// par Workshop ne gouverne, parce qu'elle passe par le jeton partage.
+    #[test]
+    fn spend_on_the_shared_token_is_reported_as_unattributed() {
+        let entries = vec![
+            entry(1.0, "deepseek/deepseek-chat", "2026-08-31", None),
+            entry(0.25, "deepseek/deepseek-chat", "2026-08-31", Some("hash-a")),
+        ];
+        let report = aggregate(&entries, &ownership());
+        assert_eq!(report.total_usd, 1.25);
+        assert_eq!(report.unattributed_usd, 1.0);
+        assert_eq!(report.by_group.len(), 1);
+        assert_eq!(report.by_group[0].label, "equipe-a");
+        assert_eq!(report.by_group[0].spend_usd, 0.25);
+    }
+
+    /// Une cle dont le Workshop n'existe plus (supprime, cle revoquee) n'est
+    /// rattachee a aucun groupe : sa depense doit rester COMPTEE dans le
+    /// total, sans quoi le total ne serait plus le total.
+    #[test]
+    fn an_unknown_key_still_counts_towards_the_total() {
+        let entries = vec![entry(
+            2.0,
+            "deepseek/deepseek-chat",
+            "2026-08-31",
+            Some("hash-inconnu"),
+        )];
+        let report = aggregate(&entries, &ownership());
+        assert_eq!(report.total_usd, 2.0);
+        assert_eq!(report.unattributed_usd, 2.0);
+    }
+
+    /// Le Workshop a ete supprime, mais la Virtual Key se souvient du groupe
+    /// qui l'a payee. Sans ce repli, supprimer un Workshop ferait basculer
+    /// toute sa depense passee dans « non rattache » — et un cout par equipe
+    /// qui s'efface quand on fait le menage ne vaut rien.
+    #[test]
+    fn a_deleted_workshop_is_still_attributed_through_its_key_metadata() {
+        let entries = vec![entry(
+            0.75,
+            "deepseek/deepseek-chat",
+            "2026-08-31",
+            Some("hash-c"),
+        )];
+        let report = aggregate(&entries, &ownership());
+        assert_eq!(report.unattributed_usd, 0.0);
+        assert_eq!(report.by_group[0].label, "equipe-disparue");
+        assert_eq!(report.by_group[0].spend_usd, 0.75);
+    }
+
+    /// Le Workshop vivant l'emporte sur la metadonnee : il reflete l'etat
+    /// courant, la metadonnee celui de la generation de la cle.
+    #[test]
+    fn a_living_workshop_wins_over_the_key_metadata() {
+        let mut own = ownership();
+        own.alias_by_token
+            .insert("hash-c".to_string(), "atelier-wks-demo".to_string());
+        let entries = vec![entry(
+            0.75,
+            "deepseek/deepseek-chat",
+            "2026-08-31",
+            Some("hash-c"),
+        )];
+        let report = aggregate(&entries, &own);
+        assert_eq!(report.by_group[0].label, "equipe-a");
+    }
+
+    /// Les jours se lisent dans l'ordre du temps ; les groupes et modeles
+    /// dans l'ordre du montant (ce qu'on cherche, c'est ce qui coute).
+    #[test]
+    fn days_are_chronological_and_the_rest_is_by_amount() {
+        let entries = vec![
+            entry(1.0, "modele-b", "2026-08-31", Some("hash-a")),
+            entry(3.0, "modele-a", "2026-08-29", Some("hash-b")),
+            entry(2.0, "modele-a", "2026-08-30", Some("hash-b")),
+        ];
+        let report = aggregate(&entries, &ownership());
+        let days: Vec<_> = report.by_day.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(days, ["2026-08-29", "2026-08-30", "2026-08-31"]);
+        assert_eq!(report.by_model[0].label, "modele-a");
+        assert_eq!(report.by_model[0].spend_usd, 5.0);
+        assert_eq!(report.by_group[0].label, "equipe-b");
     }
 }

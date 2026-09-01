@@ -102,6 +102,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             axum::routing::delete(delete_credential),
         )
         .route("/v1/admin/llm", get(admin_llm_overview))
+        .route("/v1/admin/llm/spend", get(admin_llm_spend))
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
             get(crate::exec::stream_handler),
@@ -403,6 +404,53 @@ async fn patch_injection_rules(
         .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
         .await?;
     Ok(())
+}
+/// Rapport de depense : ce que chaque GROUPE a consomme, jour par jour, et
+/// surtout ce qui n'est rattache a aucun d'eux.
+///
+/// Le rattachement se fait ici et pas dans `llm_budget` : lui ne connait ni
+/// les Workshops ni Kubernetes. On lit les Workshops (dont le `ownerGroup`),
+/// on en derive les alias de cles attendus, et LiteLLM fournit le hachage de
+/// chaque cle. Un Workshop supprime a vu sa cle revoquee : sa depense passee
+/// reste dans le TOTAL mais devient non rattachee — c'est exact, et le dire
+/// vaut mieux que de faire disparaitre l'argent.
+async fn admin_llm_spend(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<crate::llm_budget::SpendReport>, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+
+    let mut group_by_alias = std::collections::HashMap::new();
+    if let Ok(list) = workshops_api(&state).list(&Default::default()).await {
+        for workshop in list {
+            let Some(name) = workshop.metadata.name.as_deref() else {
+                continue;
+            };
+            let group = workshop.spec.owner_group.clone();
+            for alias in crate::llm_budget::key_aliases_for(name) {
+                group_by_alias.insert(alias, group.clone());
+            }
+        }
+    }
+
+    let (alias_by_token, group_by_token) = client.key_ownership_from_litellm().await;
+    let ownership = crate::llm_budget::KeyOwnership {
+        alias_by_token,
+        group_by_alias,
+        group_by_token,
+    };
+    client
+        .spend_report(&ownership)
+        .await
+        .map(Json)
+        .ok_or_else(|| ApiError::service_unavailable("journaux de depense LiteLLM indisponibles"))
 }
 
 /// Vue d'administration de la passerelle LiteLLM.

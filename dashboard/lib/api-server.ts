@@ -190,6 +190,34 @@ export async function getLlmOverview(): Promise<LlmOverview> {
   return (await res.json()) as LlmOverview;
 }
 
+export interface SpendBucket {
+  label: string;
+  spendUsd: number;
+  requestCount: number;
+}
+
+export interface SpendReport {
+  totalUsd: number;
+  testPricingUsd: number;
+  unattributedUsd: number;
+  byDay: SpendBucket[];
+  byGroup: SpendBucket[];
+  byModel: SpendBucket[];
+}
+
+/** Rapport de dépense agrégé depuis les journaux LiteLLM. `null` si la
+ *  passerelle est injoignable : une console partielle vaut mieux qu'une
+ *  console qui refuse de s'afficher. */
+export async function getSpendReport(): Promise<SpendReport | null> {
+  try {
+    const res = await call("/v1/admin/llm/spend");
+    return (await res.json()) as SpendReport;
+  } catch (err) {
+    if (err instanceof ApiServerError && err.status === 503) return null;
+    throw err;
+  }
+}
+
 export interface Credential {
   host: string;
   header: string;

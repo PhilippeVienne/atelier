@@ -42,6 +42,14 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **Un modele a tarif fictif fausse toute lecture de la depense.** Les
+  modeles `atelier-*-test` sont factures des dollars par requete pour exercer
+  l'application des plafonds sans attendre une vraie consommation. Le
+  2026-09-01, les journaux LiteLLM affichaient 211,49 $ dont 210,00 $
+  provenaient de QUATORZE requetes de test a 15 $ piece : la depense reelle
+  etait de 1,49 $. J'ai failli rapporter le premier chiffre. Toute agregation
+  presentee a un humain doit les ecarter — et le DIRE, un montant retire sans
+  etre montre est un montant qu'on finira par ne plus savoir expliquer.
 - **Deux services derriere le meme mot de passe n'acceptent pas la meme
   preuve.** `ttyd --credential` implemente un vrai Basic Auth ; `code-server
   --auth password` l'IGNORE et redirige vers `/login` tant qu'il n'a pas son
