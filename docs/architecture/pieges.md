@@ -42,6 +42,22 @@
   (`crates/net-proxy/src/dns.rs`). Devant un composant qui n'atteint pas un
   service interne alors que `curl` y arrive depuis le meme guest, verifier
   `getent hosts <alias>` avant toute autre piste.
+- **Deux services derriere le meme mot de passe n'acceptent pas la meme
+  preuve.** `ttyd --credential` implemente un vrai Basic Auth ; `code-server
+  --auth password` l'IGNORE et redirige vers `/login` tant qu'il n'a pas son
+  cookie `code-server-session`, meme face a une requete parfaitement
+  authentifiee en Basic. Le pont de l'`api-server` injectait le meme en-tete
+  pour les deux, et son commentaire affirmait que « les deux exigent ce Basic
+  Auth » — mesure le 2026-09-01 : faux pour code-server. Un `302` n'est pas
+  un refus visible, la panne ressemblait a une page de login normale. Quand
+  un service parle un protocole d'authentification, le verifier plutot que
+  le supposer : `curl -u ...` doit rendre `200`, pas `302`.
+- **Une note « verifie absent » se perime.** La ligne `[~]` du plan disait
+  que le devcontainer ne consommait pas `/session-auth`, sur la foi d'une
+  verification faite dans les CLONES LOCAUX. Le depot amont l'avait fait
+  depuis. Une affirmation sur un depot tiers doit nommer ce qui a ete
+  regarde (« clone local a telle date »), sinon elle se lit comme un fait
+  durable et gele une tache qui n'a plus lieu d'etre.
 - **Un test qui se saute en CI pourrit sans que rien ne le dise.** Les tests
   qui exigent de la vraie infrastructure (cluster, Postgres, Forgejo) se
   sautent d'eux-memes en CI faute de connexion : ils ne deviennent donc

@@ -54,6 +54,7 @@ pub async fn vscode_proxy_root(
             port: code_server_port(),
             url_prefix: "vscode",
             record_session: false,
+            auth: GuestAuth::CodeServerCookie,
         },
         req,
     )
@@ -75,6 +76,7 @@ pub async fn vscode_proxy(
             port: code_server_port(),
             url_prefix: "vscode",
             record_session: false,
+            auth: GuestAuth::CodeServerCookie,
         },
         req,
     )
@@ -95,6 +97,91 @@ pub(crate) struct GuestProxyTarget {
     /// dupliquee vers `crate::session_recorder` et archivee sur S3 (voir ce
     /// module) — seul `crate::terminal` l'active, jamais `code-server`.
     pub record_session: bool,
+    /// Comment prouver au service du guest qu'on a le droit d'entrer. Les
+    /// deux services embarques n'acceptent PAS la meme chose (voir
+    /// [`GuestAuth`]).
+    pub auth: GuestAuth,
+}
+
+/// Forme d'authentification attendue par le service vise dans le guest.
+///
+/// Le mot de passe est le meme des deux cotes (secret OpenBao `session_auth`
+/// du Workshop, provisionne par le controller) ; c'est sa PRESENTATION qui
+/// differe, et croire l'inverse a coute cher :
+///
+/// - `ttyd` implemente un vrai Basic Auth (`--credential`) : un en-tete
+///   `Authorization: Basic` suffit.
+/// - `code-server --auth password` **ignore le Basic Auth**. Il repond `302`
+///   vers `/login` a toute requete sans cookie, y compris a une requete
+///   parfaitement authentifiee en Basic — verifie contre une vraie microVM
+///   le 2026-09-01. Il faut donc POSTer le mot de passe sur `/login`, en
+///   recuperer le cookie `code-server-session`, et le presenter ensuite.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuestAuth {
+    /// En-tete `Authorization: Basic atelier:<mot de passe>`.
+    Basic,
+    /// Login formulaire puis cookie `code-server-session`.
+    CodeServerCookie,
+}
+
+/// Nom du cookie de session pose par `code-server` apres un login reussi.
+const CODE_SERVER_COOKIE: &str = "code-server-session";
+
+/// Joue le login formulaire de `code-server` sur la connexion deja ouverte
+/// vers le guest et renvoie la valeur du cookie `code-server-session`.
+///
+/// Le login se fait sur la MEME connexion HTTP/1.1 keep-alive que la requete
+/// qui suit : pas de second tunnel `portforward` a ouvrir, et l'ordre est
+/// garanti.
+async fn code_server_login(
+    sender: &mut hyper::client::conn::http1::SendRequest<Body>,
+    port: u16,
+    password: &str,
+) -> anyhow::Result<String> {
+    let form = format!("password={}", urlencode(password));
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .uri("/login")
+        .header(http::header::HOST, format!("127.0.0.1:{port}"))
+        .header(
+            http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .header(http::header::CONTENT_LENGTH, form.len())
+        .body(Body::from(form))?;
+
+    let response = sender.send_request(request).await?;
+    // `code-server` repond 302 vers `/` ET pose le cookie quand le mot de
+    // passe est bon ; 302 vers `/login?error=...` quand il est mauvais. On
+    // ne se fie donc pas au statut mais a la PRESENCE du cookie.
+    for value in response.headers().get_all(http::header::SET_COOKIE) {
+        let value = value.to_str().unwrap_or_default();
+        if let Some(rest) = value.strip_prefix(&format!("{CODE_SERVER_COOKIE}=")) {
+            let cookie = rest.split(';').next().unwrap_or_default().to_string();
+            if !cookie.is_empty() {
+                return Ok(cookie);
+            }
+        }
+    }
+    anyhow::bail!("code-server n'a pas delivre de cookie de session (mot de passe refuse ?)")
+}
+
+/// Encodage `application/x-www-form-urlencoded` du mot de passe. Ecrit ici
+/// plutot qu'ajoute en dependance : c'est une seule valeur, et le mot de
+/// passe genere par le controller est alphanumerique — mais s'y FIER serait
+/// exactement le genre de supposition qui casse le jour ou le generateur
+/// change.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// Pont HTTP+WebSocket generique vers un port de la microVM agent, reutilise
@@ -115,6 +202,7 @@ pub(crate) async fn proxy_to_guest_port(
         port,
         url_prefix,
         record_session,
+        auth,
     } = target;
     tracing::debug!(name = %name, path = %path, port, user = %user.subject, "proxy_to_guest_port appele");
     let workshop = workshops_api(&state).get(&name).await?;
@@ -166,25 +254,67 @@ pub(crate) async fn proxy_to_guest_port(
     }
     // Mot de passe de session provisionne par le controller
     // (`crates/controller/src/openbao.rs::ensure_session_auth`), injecte
-    // ici plutot que laisse au client : `code-server`/`ttyd` exigent tous
-    // les deux ce Basic Auth (voir `crates/net-proxy/src/metadata.rs`), et
-    // un client externe ne doit jamais avoir besoin de le connaitre — seul
-    // `api-server` (via son role OpenBao cluster-wide `atelier-api-server`,
-    // voir `crate::session_auth`) le lit. Remplace un eventuel `Authorization`
-    // du client (son JWT `Bearer`, deja verifie par `require_auth` pour
-    // atteindre ce handler) : ce n'est de toute facon pas ce que le guest
-    // attend. Si le secret est absent/OpenBao non configure, on relaie tel
-    // quel (comportement degrade, pas d'erreur bloquante).
+    // ici plutot que laisse au client : un client externe ne doit jamais
+    // avoir besoin de le connaitre — seul `api-server` (via son role
+    // OpenBao cluster-wide `atelier-api-server`, voir `crate::session_auth`)
+    // le lit. Remplace un eventuel `Authorization` du client (son JWT
+    // `Bearer`, deja verifie par `require_auth` pour atteindre ce handler) :
+    // ce n'est de toute facon pas ce que le guest attend. Si le secret est
+    // absent/OpenBao non configure, on relaie tel quel (comportement
+    // degrade, pas d'erreur bloquante).
+    //
+    // La FORME de la preuve depend du service vise, voir `GuestAuth` : les
+    // deux ne se contentent pas du meme en-tete.
     if let Some(session_auth) = &state.session_auth {
         if let Some(password) = session_auth.session_password(&name).await {
-            let credentials =
-                base64::engine::general_purpose::STANDARD.encode(format!("atelier:{password}"));
-            match http::HeaderValue::from_str(&format!("Basic {credentials}")) {
-                Ok(value) => {
-                    parts.headers.insert(http::header::AUTHORIZATION, value);
+            match auth {
+                GuestAuth::Basic => {
+                    let credentials = base64::engine::general_purpose::STANDARD
+                        .encode(format!("atelier:{password}"));
+                    match http::HeaderValue::from_str(&format!("Basic {credentials}")) {
+                        Ok(value) => {
+                            parts.headers.insert(http::header::AUTHORIZATION, value);
+                        }
+                        Err(err) => {
+                            tracing::warn!(%err, "en-tete Authorization Basic invalide, requete relayee sans injection");
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!(%err, "en-tete Authorization Basic invalide, requete relayee sans injection");
+                GuestAuth::CodeServerCookie => {
+                    // Le login n'est rejoue que si aucun cookie n'est connu :
+                    // une session VS Code emet des centaines de requetes, et
+                    // `code-server` hache le mot de passe en argon2 a chaque
+                    // login (volontairement lent).
+                    let cookie = match session_auth.code_server_cookie(&name).await {
+                        Some(cookie) => Some(cookie),
+                        None => match code_server_login(&mut sender, port, &password).await {
+                            Ok(cookie) => {
+                                session_auth
+                                    .store_code_server_cookie(&name, cookie.clone())
+                                    .await;
+                                Some(cookie)
+                            }
+                            Err(err) => {
+                                tracing::warn!(%err, "login code-server echoue, requete relayee sans cookie");
+                                None
+                            }
+                        },
+                    };
+                    if let Some(cookie) = cookie {
+                        // Le JWT `Bearer` du client n'a rien a faire dans le
+                        // guest, et `code-server` ignore `Authorization` de
+                        // toute facon.
+                        parts.headers.remove(http::header::AUTHORIZATION);
+                        match http::HeaderValue::from_str(&format!("{CODE_SERVER_COOKIE}={cookie}"))
+                        {
+                            Ok(value) => {
+                                parts.headers.insert(http::header::COOKIE, value);
+                            }
+                            Err(err) => {
+                                tracing::warn!(%err, "cookie code-server invalide, requete relayee sans injection");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -232,6 +362,25 @@ pub(crate) async fn proxy_to_guest_port(
             }
         });
         return Ok(reply);
+    }
+
+    // `code-server` renvoie malgre tout vers `/login` : le cookie en cache
+    // ne vaut plus rien (microVM redemarree avec un autre mot de passe,
+    // secret tourne). On l'oublie pour que la requete suivante — celle que
+    // le navigateur emettra en suivant cette redirection — en obtienne un
+    // neuf. Se soigne tout seul au prix d'un aller-retour.
+    if auth == GuestAuth::CodeServerCookie && upstream_response.status().is_redirection() {
+        let to_login = upstream_response
+            .headers()
+            .get(http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|location| location.contains("/login"));
+        if to_login {
+            if let Some(session_auth) = &state.session_auth {
+                tracing::info!(workshop = %name, "cookie code-server rejete, oublie pour la prochaine requete");
+                session_auth.forget_code_server_cookie(&name).await;
+            }
+        }
     }
 
     let (parts, incoming_body) = upstream_response.into_parts();
@@ -374,4 +523,78 @@ pub(crate) async fn open_forwarded_tcp_stream(
     });
 
     Ok(local)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ouvre un `SendRequest` branche sur un serveur factice qui repond la
+    /// reponse brute fournie — assez pour exercer `code_server_login` sans
+    /// microVM ni `code-server`.
+    async fn sender_replying(
+        raw_response: &'static str,
+    ) -> hyper::client::conn::http1::SendRequest<Body> {
+        let (client_io, mut server_io) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            // Une seule lecture suffit : la requete de login tient largement
+            // dans un segment, et ce stub ne sert qu'a une requete.
+            let _ = server_io.read(&mut buf).await;
+            let _ = server_io.write_all(raw_response.as_bytes()).await;
+            let _ = server_io.flush().await;
+        });
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(client_io))
+            .await
+            .expect("handshake avec le stub");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        sender
+    }
+
+    /// Le cookie est extrait de `Set-Cookie`, attributs (`Path`, `HttpOnly`…)
+    /// exclus : c'est la VALEUR seule qui doit repartir dans l'en-tete
+    /// `Cookie`.
+    #[tokio::test]
+    async fn login_extracts_the_session_cookie() {
+        let mut sender = sender_replying(
+            "HTTP/1.1 302 Found\r\n\
+             Location: /\r\n\
+             Set-Cookie: code-server-session=%24argon2id%24abc; Path=/; HttpOnly; SameSite=Lax\r\n\
+             Content-Length: 0\r\n\r\n",
+        )
+        .await;
+        let cookie = code_server_login(&mut sender, 8080, "secret")
+            .await
+            .expect("cookie attendu");
+        assert_eq!(cookie, "%24argon2id%24abc");
+    }
+
+    /// Mot de passe refuse : `code-server` repond AUSSI un 302 (vers
+    /// `/login`), mais sans cookie. Se fier au statut ferait passer un echec
+    /// pour un succes, d'ou la verification sur la presence du cookie.
+    #[tokio::test]
+    async fn a_refused_password_is_an_error_not_a_cookie() {
+        let mut sender = sender_replying(
+            "HTTP/1.1 302 Found\r\n\
+             Location: /login?error=1\r\n\
+             Content-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(code_server_login(&mut sender, 8080, "mauvais")
+            .await
+            .is_err());
+    }
+
+    /// Le mot de passe part dans un formulaire : tout ce qui n'est pas
+    /// `unreserved` doit etre encode, sans quoi un `&` ou un `+` dans un mot
+    /// de passe futur casserait le login de facon parfaitement obscure.
+    #[test]
+    fn the_password_is_form_encoded() {
+        assert_eq!(super::urlencode("abcXYZ089-_.~"), "abcXYZ089-_.~");
+        assert_eq!(super::urlencode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(super::urlencode("a+b c"), "a%2Bb%20c");
+        assert_eq!(super::urlencode("e\u{0301}"), "e%CC%81");
+    }
 }

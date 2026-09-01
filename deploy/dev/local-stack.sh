@@ -276,12 +276,54 @@ log "Redis: pas encore d'infra de dev (Jalon M5, verrouille [ ] dans docs/specs/
 # des bases distinctes (isolation par base, cf. deploy/dev/postgres/README.md)
 # : deux variables dediees ici, a affecter explicitement a `DATABASE_URL`
 # dans chaque terminal (voir le message final).
+# --- ServiceAccount de l'api-server ---------------------------------------
+# En production le chart cree ce ServiceAccount et Kubernetes monte son
+# jeton dans le pod. En dev l'api-server tourne sur la machine hote : le
+# ServiceAccount doit exister quand meme (c'est LUI que le controller
+# inscrit dans le role Kubernetes-auth d'OpenBao) et son jeton doit etre
+# fabrique a la main. Sans cela, `session_password` echoue en silence et
+# "Ouvrir VS Code"/terminal restent a la porte du guest.
+log "ServiceAccount atelier-api-server + jeton (24 h) pour l'api-server hors cluster"
+kubectl create serviceaccount atelier-api-server --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+SA_TOKEN_FILE="$STACK_DIR/api-server-sa-token"
+kubectl create token atelier-api-server --duration=24h > "$SA_TOKEN_FILE"
+chmod 600 "$SA_TOKEN_FILE"
+
 cat > "$ENV_FILE" <<EOF
 # Genere par $0 — a sourcer avant de lancer controller/api-server/dashboard
 # en local. Ne pas commiter (voir .gitignore).
 export ATELIER_NAMESPACE=default
 export OPENBAO_ADDR=http://127.0.0.1:8200
 export OPENBAO_TOKEN=root
+
+# Adresse d'OpenBao TELLE QUE LA VOIT UN POD. \`OPENBAO_ADDR\` ci-dessus est
+# un port-forward valable depuis cette machine uniquement : le controller
+# tourne hors cluster en dev, mais il INJECTE cette adresse dans les
+# conteneurs du Workshop, ou \`127.0.0.1:8200\` ne designe rien. Sans cette
+# variable, le login Kubernetes de \`net-proxy\` echoue en boucle et, en
+# cascade silencieuse : pas de mot de passe de session (ttyd et code-server
+# tombent sur un mot de passe aleatoire que personne ne connait, donc
+# inaccessibles) et pas de cle SSH autorisee (\`exec_in_workshop\` ne peut
+# plus entrer dans le guest). Le repli de \`config_from_env\` sur
+# \`OPENBAO_ADDR\` n'est correct qu'en production, ou le controller tourne
+# lui-meme dans le cluster.
+export ATELIER_OPENBAO_POD_ADDR=http://atelier-openbao-dev.default.svc.cluster.local:8200
+
+# Namespace du ServiceAccount de l'api-server, tel que le controller
+# l'inscrit dans le role Kubernetes-auth OpenBao. Son defaut est
+# \`atelier-system\` (le namespace de production du chart Helm) : en dev tout
+# vit dans \`default\`, et sans cette variable OpenBao repond
+# "namespace not authorized" a chaque login de l'api-server. Consequence
+# silencieuse : le mot de passe de session n'est jamais lu, donc ni
+# "Ouvrir VS Code" ni le terminal n'entrent dans le guest.
+export ATELIER_API_SERVER_NAMESPACE=default
+
+# Jeton du ServiceAccount \`atelier-api-server\`, pour un api-server lance
+# HORS du cluster (ce que fait la dev locale). Dans un pod, Kubernetes monte
+# ce jeton tout seul ; ici il faut le fabriquer, d'ou
+# \`ATELIER_K8S_SA_TOKEN_PATH\`. Duree de vie 24 h : relancer ce script
+# regenere le jeton.
+export ATELIER_K8S_SA_TOKEN_PATH="$SA_TOKEN_FILE"
 
 # PostgreSQL — une base par composant, meme instance (port-forward 5433
 # cote hote, le 5432 par defaut est deja pris sur cette machine).

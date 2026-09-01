@@ -15,6 +15,8 @@ deploy/dev/kanidm/data/
 
 # jeton API Kanidm + env genere par deploy/dev/local-stack.sh (secrets locaux)
 deploy/dev/local-stack/env.sh
+# jeton ServiceAccount de l'api-server hors cluster (24 h, regenere par le script)
+deploy/dev/local-stack/api-server-sa-token
 
 # binaires/images Firecracker de dev (gros fichiers, recuperes via
 # deploy/dev/firecracker/fetch-test-assets.sh)

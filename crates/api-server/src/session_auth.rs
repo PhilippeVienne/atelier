@@ -40,6 +40,13 @@ const TOKEN_TTL_MARGIN: Duration = Duration::from_secs(12 * 60);
 pub struct SessionAuthClient {
     client: Arc<OpenBaoClient>,
     cached_token: Arc<Mutex<Option<(String, Instant)>>>,
+    /// Cookie de session `code-server` par Workshop (voir
+    /// [`Self::code_server_cookie`]). Partage entre toutes les requetes du
+    /// process : `code-server` refuse le Basic Auth, il faut lui presenter
+    /// le cookie qu'il delivre lui-meme apres un POST sur `/login`, et
+    /// rejouer ce login a chaque requete d'un IDE qui en emet des centaines
+    /// serait absurde.
+    code_server_cookies: Arc<Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl SessionAuthClient {
@@ -52,7 +59,34 @@ impl SessionAuthClient {
         Self {
             client: Arc::new(client),
             cached_token: Arc::new(Mutex::new(None)),
+            code_server_cookies: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Cookie de session `code-server` connu pour ce Workshop, s'il y en a
+    /// un de valide en cache.
+    pub async fn code_server_cookie(&self, workshop_name: &str) -> Option<String> {
+        self.code_server_cookies
+            .lock()
+            .await
+            .get(workshop_name)
+            .cloned()
+    }
+
+    pub async fn store_code_server_cookie(&self, workshop_name: &str, cookie: String) {
+        self.code_server_cookies
+            .lock()
+            .await
+            .insert(workshop_name.to_string(), cookie);
+    }
+
+    /// Oublie le cookie d'un Workshop : appele quand `code-server` renvoie
+    /// malgre tout une redirection vers `/login`, c'est-a-dire quand le
+    /// cookie en cache ne vaut plus rien (microVM redemarree avec un
+    /// nouveau mot de passe, secret tourne...). La requete suivante en
+    /// obtiendra un neuf.
+    pub async fn forget_code_server_cookie(&self, workshop_name: &str) {
+        self.code_server_cookies.lock().await.remove(workshop_name);
     }
 
     async fn client_token(&self, force_refresh: bool) -> anyhow::Result<String> {

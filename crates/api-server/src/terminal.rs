@@ -8,7 +8,7 @@
 
 use crate::auth::AuthenticatedUser;
 use crate::routes::{ApiError, AppState};
-use crate::vscode::{proxy_to_guest_port, GuestProxyTarget};
+use crate::vscode::{proxy_to_guest_port, GuestAuth, GuestProxyTarget};
 use axum::body::Body;
 use axum::extract::{Extension, Path, State};
 use axum::http::Request;
@@ -40,6 +40,7 @@ pub async fn terminal_proxy_root(
             port: terminal_port(),
             url_prefix: "terminal",
             record_session: true,
+            auth: GuestAuth::Basic,
         },
         req,
     )
@@ -61,6 +62,7 @@ pub async fn terminal_proxy(
             port: terminal_port(),
             url_prefix: "terminal",
             record_session: true,
+            auth: GuestAuth::Basic,
         },
         req,
     )
