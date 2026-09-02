@@ -362,6 +362,32 @@ async fn tunnel_inner(
 /// quelles : `uvicorn` repondait `404` a partir du 2e echange, ce qui se
 /// manifestait par un Claude Code qui repond au premier tour puis echoue
 /// (`api_error_status: 404`, `num_turns: 2`) sans ecrire aucun fichier.
+///
+/// La connexion vers la destination est RENOUVELEE quand celle-ci la ferme
+/// entre deux requetes. Une connexion cliente keep-alive vit aussi longtemps
+/// que la session de l'agent — plusieurs minutes, avec de longues pauses
+/// pendant que le modele reflechit — la ou la destination applique son
+/// propre delai d'inactivite, bien plus court (`uvicorn`, sous LiteLLM,
+/// ferme apres quelques secondes). La requete suivante partait alors dans
+/// une socket morte : `relai du corps de la requete` cote net-proxy, et cote
+/// agent un `AI_APICallError: the socket connection was closed unexpectedly`
+/// (constate en Workshop reel le 2026-09-02, sur une connexion ouverte
+/// 2 min 38 s plus tot). Rien n'est rejoue ici : la reconnexion a lieu AVANT
+/// que le moindre octet de la requete suivante ne soit ecrit.
+/// Recopie les reponses d'une connexion a la destination vers le client.
+/// Une tache par connexion : elle se termine a la fermeture du flux
+/// descendant, ce qui sert precisement de detecteur de raccrochage a
+/// [`forward_rewriting`].
+fn spawn_downstream(
+    mut upstream_read: tokio::io::ReadHalf<TcpStream>,
+    client_write: std::sync::Arc<tokio::sync::Mutex<tokio::io::WriteHalf<BufReader<TcpStream>>>>,
+) -> tokio::task::JoinHandle<std::io::Result<u64>> {
+    tokio::spawn(async move {
+        let mut client_write = client_write.lock().await;
+        tokio::io::copy(&mut upstream_read, &mut *client_write).await
+    })
+}
+
 async fn forward_rewriting(
     client: BufReader<TcpStream>,
     first: http::RequestHead,
@@ -379,21 +405,44 @@ async fn forward_rewriting(
         }
     };
 
-    let (client_read, mut client_write) = tokio::io::split(client);
-    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let (client_read, client_write) = tokio::io::split(client);
     let mut client_read = BufReader::new(client_read);
+    // Partage : chaque connexion a la destination a sa propre tache de
+    // recopie des reponses, mais toutes ecrivent vers le meme client. Une
+    // seule est vivante a la fois, la precedente etant attendue avant qu'on
+    // en lance une autre — le mutex n'arbitre donc aucune concurrence
+    // reelle, il transfere la propriete.
+    let client_write = std::sync::Arc::new(tokio::sync::Mutex::new(client_write));
 
-    // Les reponses ne sont pas inspectees : elles repartent telles quelles,
-    // en parallele des requetes (une reponse peut arriver pendant que le
-    // client envoie deja la suivante).
-    let downstream =
-        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut client_write).await });
+    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let mut downstream = spawn_downstream(upstream_read, client_write.clone());
 
     let mut pending = Some(first);
     while let Some(current) = match pending.take() {
         Some(head) => Some(head),
         None => http::read_request_head(&mut client_read).await?,
     } {
+        // La tache de recopie ne se termine qu'a la fermeture du flux
+        // descendant : c'est donc le signal que la destination a raccroche.
+        if downstream.is_finished() {
+            let _ = downstream.await;
+            let upstream = match crate::upstream::connect(host, port, None, &[]).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    tracing::warn!(%peer, host, port, %err, "reconnexion a la destination echouee");
+                    let _ = client_write
+                        .lock()
+                        .await
+                        .write_all(BAD_GATEWAY_RESPONSE)
+                        .await;
+                    return Ok(());
+                }
+            };
+            tracing::debug!(%peer, host, port, "destination reconnectee (keep-alive expire cote destination)");
+            (upstream_read, upstream_write) = tokio::io::split(upstream);
+            downstream = spawn_downstream(upstream_read, client_write.clone());
+        }
+
         upstream_write
             .write_all(&http::to_origin_form(&current))
             .await
@@ -507,6 +556,89 @@ mod tests {
             received.starts_with("GET http://127.0.0.1:9/foo"),
             "identity-proxy doit recevoir la requete GET telle quelle, pas un CONNECT : {received:?}"
         );
+    }
+
+    /// Regression : la destination applique son propre delai d'inactivite,
+    /// bien plus court que la duree de vie de la connexion cliente (une
+    /// session d'agent dure plusieurs minutes, avec de longues pauses de
+    /// reflexion). Quand elle raccroche entre deux requetes, net-proxy doit
+    /// rouvrir une connexion plutot que d'ecrire dans une socket morte —
+    /// sans quoi l'agent recoit un `socket connection was closed
+    /// unexpectedly` et perd le tour.
+    #[tokio::test]
+    async fn a_destination_that_hangs_up_between_requests_is_reconnected() {
+        let alias_server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alias_addr = alias_server.local_addr().unwrap();
+
+        // Deux connexions distinctes attendues : la premiere est fermee par
+        // la destination juste apres avoir repondu, comme le ferait uvicorn
+        // au bout de son `timeout-keep-alive`.
+        let captured = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (socket, _) = alias_server.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let head = crate::http::read_request_head(&mut reader)
+                    .await
+                    .unwrap()
+                    .expect("requete attendue");
+                let framing = crate::http::body_framing(&head);
+                let mut body = Vec::new();
+                crate::http::copy_body(&mut reader, &mut body, framing)
+                    .await
+                    .unwrap();
+                let mut socket = reader.into_inner();
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                socket.shutdown().await.unwrap();
+                seen.push(String::from_utf8_lossy(&body).to_string());
+            }
+            seen
+        });
+
+        let mut internal = InternalRoutes::default();
+        internal.insert_for_test(
+            "llm-proxy",
+            (alias_addr.ip().to_string(), alias_addr.port()),
+        );
+        let mut config = base_config(None);
+        config.internal = Arc::new(internal);
+
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, peer) = client_listener.accept().await.unwrap();
+            let _ = handle_connection(socket, peer, config).await;
+        });
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        client
+            .write_all(
+                b"POST http://llm-proxy/v1/messages HTTP/1.1\r\nHost: llm-proxy\r\nContent-Length: 5\r\n\r\nfirst",
+            )
+            .await
+            .unwrap();
+
+        // Laisse la destination repondre puis raccrocher avant d'envoyer la
+        // suite : c'est exactement la situation d'une pause de reflexion du
+        // modele plus longue que le keep-alive de la destination.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        client
+            .write_all(
+                b"POST http://llm-proxy/v1/messages HTTP/1.1\r\nHost: llm-proxy\r\nContent-Length: 6\r\n\r\nsecond",
+            )
+            .await
+            .unwrap();
+
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(5), captured)
+            .await
+            .expect("la deuxieme requete doit atteindre la destination sur une connexion neuve")
+            .unwrap();
+
+        assert_eq!(seen, vec!["first".to_string(), "second".to_string()]);
     }
 
     /// Regression : un client derriere `HTTP_PROXY` reutilise sa connexion

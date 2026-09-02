@@ -927,3 +927,19 @@
   memes droits, meme acces aux fichiers du workspace, et `sshd` resout bien
   `/home/vscode` — mais il faut le savoir avant de s'alarmer en voyant
   `whoami` repondre `node` dans un Workshop.
+- **Le keep-alive d'une session d'agent survit a celui de la destination**
+  (2026-09-02) : `forward_rewriting` (`crates/net-proxy/src/proxy.rs`)
+  gardait UNE connexion vers la destination pour toute la duree de la
+  connexion cliente. Or celle d'un agent vit des dizaines de minutes, avec de
+  longues pauses pendant que le modele reflechit, la ou `uvicorn` (sous
+  LiteLLM) ferme apres quelques secondes d'inactivite. La requete suivante
+  partait donc dans une socket morte : `relai du corps de la requete` cote
+  net-proxy, `AI_APICallError: the socket connection was closed unexpectedly`
+  cote agent. Constate sur une connexion ouverte 2 min 38 s plus tot.
+  `opencode` retente, ce qui rendait le defaut presque invisible — un seul
+  echec sur dix-huit echanges — mais un client sans retry, ou une requete non
+  idempotente, y perdrait le tour. net-proxy rouvre desormais une connexion
+  quand la destination a raccroche ENTRE deux requetes, donc avant d'avoir
+  ecrit le moindre octet de la suivante : aucun rejeu, aucune requete
+  dupliquee. Le test de regression a ete verifie dans les deux sens (il
+  echoue si l'on neutralise la detection).
