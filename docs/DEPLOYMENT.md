@@ -20,6 +20,11 @@ Toutes les images Docker d'Atelier sont construites et publiées automatiquement
 | **Image Builder** | `ghcr.io/philippevienne/atelier-image-builder:latest` | Builder de rootfs Firecracker depuis devcontainer.json |
 | **Builder VM Init** | `ghcr.io/philippevienne/atelier-builder-vm-init:latest` | Daemon d'init pour la VM de build d'image |
 | **KVM Device Plugin** | `ghcr.io/philippevienne/atelier-kvm-device-plugin:latest` | Kubernetes Device Plugin pour `/dev/kvm` |
+| **PM Engine** | `ghcr.io/philippevienne/atelier-pm-engine:latest` | Moteur DevFactory autonome (LangGraph, Python) |
+
+`crates/guest-init` n'apparaît volontairement pas dans ce tableau : il n'est
+jamais déployé comme conteneur Kubernetes, mais posé comme `/sbin/init`
+dans le rootfs des devcontainers par `image-builder` lui-même.
 
 ---
 
@@ -35,7 +40,7 @@ Le projet intègre 2 workflows automatisés dans `.github/workflows/` :
 
 2. **`docker-ghcr.yml`** :
    - Se déclenche automatiquement lors d'un `push` sur la branche principale (`main`/`master`) ou la création d'un tag de version (`v*`).
-   - Construit les 10 images conteneurisées avec mise en cache GHA (`type=gha`).
+   - Construit les 11 images conteneurisées avec mise en cache GHA (`type=gha`).
    - Publie chaque image sur **GHCR** sous les tags `:latest`, `:sha-<commit>` et `:vX.Y.Z`.
 
 ---
@@ -50,6 +55,17 @@ Le projet intègre 2 workflows automatisés dans `.github/workflows/` :
 ---
 
 ## 4. Déploiement Étape par Étape
+
+!!! tip "Voie recommandée en production : le chart Helm `charts/atelier`"
+    Les manifestes bruts ci-dessous couvrent le control plane minimal
+    (CRD, controller, api-server, dashboard) mais **pas** les dépendances
+    (PostgreSQL, Keycloak, OpenBao, S3, Redis, LiteLLM) ni les Jobs
+    d'initialisation. Pour un déploiement complet, préférer le chart Helm
+    monolithique `charts/atelier` (Jalon M6) — voir le
+    [Guide Administrateur](admin-guide.md) pour la procédure détaillée
+    (domaines, identités cloud natives, séquencement, dépannage). Les
+    étapes manuelles restent utiles pour un environnement minimal où ces
+    dépendances sont déjà gérées ailleurs.
 
 ### Étape 1 : Appliquer la Définition CRD `Workshop`
 ```bash

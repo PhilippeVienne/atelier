@@ -38,10 +38,12 @@ besoin d'un acces a `/dev/kvm` sur le noeud. Deux cas :
 Le DaemonSet `kvm-device-plugin` (`templates/infra/kvm-device-plugin-daemonset.yaml`,
 `kvmDevicePlugin.enabled: true`) expose ensuite `/dev/kvm` comme ressource
 Kubernetes standard (`atelier.dev/kvm`) consommee par
-`spec.resources.disk`/`cpu` du `Workshop`. Sur un cluster sans acces KVM du
-tout (ex: environnement de CI pur), desactiver ce composant
-(`kvmDevicePlugin.enabled: false`) : les Workshops resteront alors bloques
-en `Pending`, ce qui est le comportement attendu.
+`spec.resources.disk`/`cpu` du `Workshop`.
+
+!!! tip "Cluster sans acces KVM (ex: CI pur)"
+    Desactiver ce composant (`kvmDevicePlugin.enabled: false`) : les
+    Workshops resteront alors bloques en `Pending`, ce qui est le
+    comportement attendu.
 
 ### 1.2. Cluster Kubernetes
 
@@ -204,6 +206,14 @@ HMAC generees via `gcloud storage hmac create`.
 soit un endpoint MinIO Gateway devant Azure Blob (deploiement separe, hors
 perimetre de ce chart), soit un fork RustFS/adaptateur compatible Azure.
 
+**Bucket `atelier-qa-evidence` (preuves du validateur QA post-merge,
+`services/pm-engine`, noeud `QAValidation`)** : non provisionne par ce
+chart aujourd'hui — voir section 8 "Limites Connues". En attendant, creer
+manuellement ce bucket sur le backend S3 choisi et positionner
+`S3_BUCKET_QA_EVIDENCE` (en plus de `S3_ENDPOINT`/`S3_REGION`/
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) sur le Deployment
+`pm-engine` — voir `deploy/dev/s3/README.md` pour la convention de dev.
+
 ## 6. Sequencement au Premier Demarrage
 
 Les 5 Jobs d'initialisation (`templates/jobs/*.yaml`) sont **tous** des
@@ -280,11 +290,14 @@ memoire).
 ### 7.2. Mode production (`openbao.devMode: false`)
 
 OpenBao demarre **scelle** avec un stockage Raft persistant
-(`templates/infra/openbao-statefulset.yaml`). `bao operator init` reste
-**deliberement manuel**, hors du cycle de vie Helm (ne doit JAMAIS etre
-automatise dans un hook — un `helm upgrade` ne doit pas pouvoir
-re-initialiser silencieusement un coffre de secrets existant), mais le
-**descellement** peut etre automatique via KMS (`openbao.seal.type: awskms`,
+(`templates/infra/openbao-statefulset.yaml`).
+
+!!! warning "`bao operator init` reste deliberement manuel"
+    Hors du cycle de vie Helm — ne JAMAIS l'automatiser dans un hook, un
+    `helm upgrade` ne doit pas pouvoir re-initialiser silencieusement un
+    coffre de secrets existant.
+
+Le **descellement** peut etre automatique via KMS (`openbao.seal.type: awskms`,
 voir `deploy/terraform/aws/modules/cluster/openbao-unseal.tf`) - fortement
 recommande sur AWS : sans lui, chaque redemarrage du pod (upgrade EKS,
 scale-down/up du node group, reschedule) exige de redescelle manuellement,
@@ -395,6 +408,12 @@ dans le Job.
   parents des Workshops, qui sont des ressources independantes possedees
   par le controller, pas par ce chart), meme si la fonctionnalite de
   notification explicite reste a batir.
+- **Bucket `atelier-qa-evidence`** : le noeud `QAValidation` du PM Engine
+  (tache 5.7.x, validation dynamique post-merge sur preuve S3) attend un
+  4e bucket S3 dedie (`S3_BUCKET_QA_EVIDENCE`), deja cree dans la stack de
+  dev (`deploy/dev/s3/dev-pod.yaml`) mais **absent de `s3-init-job.yaml`
+  et de `values.yaml`** (`s3Storage.buckets`) dans ce chart — a provisionner
+  manuellement en attendant (voir section 5).
 - **Deploiement complet non valide de bout en bout avec TLS/cert-manager
   reel** : le test empirique documente dans `docs/PROGRESS.md` desactive
   `tls.enabled` (pas de domaine public reel/certificat Let's Encrypt

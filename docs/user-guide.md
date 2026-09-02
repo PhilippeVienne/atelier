@@ -113,6 +113,9 @@ Chaque agent exécuté dans un Workshop est soumis à des règles de sécurité 
 - **Allowlist Egress** : Tous les appels sortants (HTTP/HTTPS et DNS) sont interceptés par `net-proxy`. Seuls les domaines explicitement autorisés dans la politique réseau sont accessibles.
 - **Injection d'Identité OpenBao** : L'agent N'A PAS d'accès direct aux clés privées ou aux jetons d'API sensibles. `identity-proxy` intercepte les requêtes sortantes pour y injecter les tokens d'authentification à la volée.
 
+!!! tip "Zéro secret dans la microVM"
+    Même un agent IA compromis ou détourné ne peut ni lire ni exfiltrer un token brut : il ne voit jamais que des requêtes déjà authentifiées, injectées à la volée à la frontière du sandbox.
+
 ---
 
 ## 🤖 5. Utilisation par un Agent IA (Claude Code / Gemini CLI)
@@ -121,3 +124,32 @@ Les agents IA peuvent interagir directement avec le Workshop grâce à la passer
 
 1. L'agent se connecte à `mcp-gateway` sur le port interne dédié.
 2. Il peut exécuter des commandes shell, lire des fichiers ou inspecter les logs dans le bac à sable Firecracker sans pouvoir compromettre l'hôte Kubernetes.
+
+---
+
+## 🏭 6. DevFactory Autonome (PM Engine)
+
+Au-delà du pilotage manuel d'un Workshop, Atelier peut prendre en charge un
+ticket de bout en bout via le **PM Engine** (`services/pm-engine`), un
+moteur d'orchestration LangGraph qui joue le rôle de chef de projet
+autonome :
+
+1. Ouvrez une **issue** sur votre dépôt Forgejo (ou tout autre forge
+   connectée). Le webhook correspondant est empilé dans un Redis Stream
+   (`atelier:webhooks`) et consommé au moins une fois par le PM Engine.
+2. Le PM Engine analyse le ticket, planifie les sous-tâches, provisionne
+   un ou plusieurs Workshops, délègue le travail à un agent de code, fait
+   tourner les tests du devcontainer et boucle sur l'auto-correction en
+   cas d'échec.
+3. Une fois le code prêt, il exécute des revues automatisées (code,
+   sécurité, ops), ouvre une **Pull Request**, et attend une **validation
+   humaine (HITL)** avant de fusionner.
+4. Après la fusion, un dernier passage (`QAValidation`) vérifie
+   dynamiquement le résultat en environnement réel à partir de preuves
+   déposées dans un bucket S3 dédié (captures d'écran, sorties de
+   requêtes) avant de clore le ticket.
+
+Cette automatisation reste optionnelle : elle ne s'active que si le PM
+Engine est déployé et connecté à votre forge (voir le guide
+administrateur). Elle ne remplace pas l'usage manuel des Workshops décrit
+dans les sections précédentes, qui reste disponible à tout moment.

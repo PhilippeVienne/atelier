@@ -53,3 +53,62 @@
   background-color: var(--md-primary-fg-color--dark);
   color: #ffffff;
 }
+
+/* Lead paragraph: the intro line right under the H1 reads like a tagline */
+.md-content__inner > p:first-of-type {
+  font-size: 1.15rem;
+  line-height: 1.6;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Grid cards: subtle lift on hover, consistent border radius with the rest of the theme */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > .card {
+  border-radius: 0.75rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px -4px rgba(79, 70, 229, 0.25);
+  border-color: var(--md-accent-fg-color);
+}
+
+/* Buttons: match the brand gradient instead of the flat default primary color */
+.md-typeset .md-button--primary {
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  border-color: transparent;
+}
+
+.md-typeset .md-button--primary:hover {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  border-color: transparent;
+}
+
+/* Admonitions: align the accent bar with the brand accent instead of Material defaults */
+.md-typeset .admonition.tip,
+.md-typeset .admonition.note {
+  border-color: var(--md-accent-fg-color);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .note > .admonition-title {
+  background-color: rgba(6, 182, 212, 0.1);
+}
+
+/* Mobile: dense reference tables (ex. "Composants du Système") wrap onto
+   very narrow columns otherwise — force horizontal scroll instead of
+   letting cell content crush itself unreadable. */
+@media screen and (max-width: 44.9375em) {
+  .md-typeset table:not([class]) {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .md-typeset table:not([class]) td,
+  .md-typeset table:not([class]) th {
+    white-space: normal;
+    min-width: 7.5rem;
+  }
+}

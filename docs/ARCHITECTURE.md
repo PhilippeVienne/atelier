@@ -7,7 +7,7 @@
 Ce document donne la vue d'ensemble. Les sujets denses ont leur propre fichier d'architecture :
 
 - [`architecture/identity-secrets.md`](architecture/identity-secrets.md) —
-  Kanidm + OpenBao, pont d'identite, `identity-proxy`.
+  OIDC + OpenBao, pont d'identite, `identity-proxy`.
 - [`architecture/network-security.md`](architecture/network-security.md) —
   modele de securite et isolation reseau de la microVM (mecanisme concret,
   regles iptables).
@@ -71,7 +71,7 @@ pour reproduire ce pipeline en local.
 
 ```mermaid
 flowchart TB
-    Client(["Client externe\n(JWT Kanidm)"]) -->|"CRUD Workshop"| API["api-server"]
+    Client(["Client externe\n(JWT OIDC)"]) -->|"CRUD Workshop"| API["api-server"]
     API -->|"cree/lit"| CR[("CR Workshop")]
     CR <-->|"reconcile"| Controller["controller"]
 
@@ -100,9 +100,8 @@ flowchart TB
     Cache -.->|"lecture seule"| VMS
     Controller -->|"ServiceAccount dedie"| Pod
     IdProxy -->|"auth Kubernetes"| OpenBao[("OpenBao")]
-    Controller -->|"provisionne entite +\nrole OpenBao"| OpenBao
-    Controller -->|"provisionne entite"| Kanidm[("Kanidm")]
-    API -->|"valide JWT"| Kanidm
+    Controller -->|"provisionne policy +\nrole OpenBao"| OpenBao
+    API -->|"valide JWT (JWKS)"| OIDC[("Fournisseur OIDC\n(Keycloak en dev)")]
 ```
 
 ## Composants
@@ -111,8 +110,8 @@ flowchart TB
 
 | Composant | Role |
 |---|---|
-| **api-server** (`crates/api-server`) | API HTTP externe. Authentifie via JWT dont l'issuer est [Kanidm](https://kanidm.com/) (JWKS recuperes au demarrage). Cree/lit/detruit des CR `Workshop`. |
-| **controller** (`crates/controller`) | Operateur Kubernetes (kube-rs) qui reconcilie les CR `Workshop` en ressources concretes (pod parent, Job de build, PVC, ServiceAccount) et met a jour leur statut. Un finalizer (`atelier.dev/cleanup`) bloque la suppression effective d'un Workshop tant que ses ressources externes (entite Kanidm, role OpenBao) n'ont pas ete nettoyees ; les ressources Kubernetes owned (Job, ServiceAccount, Pod) n'en ont pas besoin, le garbage collector standard suffit. |
+| **api-server** (`crates/api-server`) | API HTTP externe. Authentifie via JWT dont l'issuer est un fournisseur OIDC generique (`ATELIER_OIDC_ISSUER_URL`, Keycloak en dev ; JWKS mis en cache avec refresh en tache de fond). Cree/lit/detruit des CR `Workshop`. |
+| **controller** (`crates/controller`) | Operateur Kubernetes (kube-rs) qui reconcilie les CR `Workshop` en ressources concretes (pod parent, Job de build, PVC, ServiceAccount) et met a jour leur statut. Un finalizer (`atelier.dev/cleanup`) bloque la suppression effective d'un Workshop tant que sa ressource externe (role OpenBao) n'a pas ete nettoyee ; les ressources Kubernetes owned (Job, ServiceAccount, Pod) n'en ont pas besoin, le garbage collector standard suffit. |
 | **CRD `Workshop`** (`crates/common/src/crd.rs` → `crds/workshop.yaml`) | Source de verite declarative pour un environnement (source devcontainer, ressources, allowlist reseau, outils/simulateurs actifs, proprietaire). |
 | **image-builder** (`crates/image-builder`) | Construit le rootfs Firecracker a partir de `WorkshopSpec.devcontainer` (voir pipeline ci-dessus) et le publie dans le cache content-addressed. |
 
@@ -145,7 +144,7 @@ stateDiagram-v2
     Resuming --> Running: pod parent recree
     Running --> Terminating: suppression demandee
     Suspended --> Terminating: suppression demandee
-    Terminating --> [*]: finalizer leve (Kanidm/OpenBao nettoyes)
+    Terminating --> [*]: finalizer leve (role OpenBao nettoye)
 ```
 
 Chaque flèche correspond a un pas de la boucle de reconciliation

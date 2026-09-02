@@ -3,9 +3,15 @@ site_description: Documentation et site officiel du projet Atelier (Firecracker,
 site_author: Philippe Vienne
 site_url: https://philippevienne.github.io/atelier/
 
+repo_url: https://github.com/PhilippeVienne/atelier
+repo_name: PhilippeVienne/atelier
+edit_uri: edit/main/docs/
+
 theme:
   name: material
   language: fr
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   font:
     text: Plus Jakarta Sans
     code: JetBrains Mono
@@ -26,6 +32,7 @@ theme:
         name: Mode clair
   features:
     - navigation.instant
+    - navigation.instant.progress
     - navigation.tracking
     - navigation.tabs
     - navigation.tabs.sticky
@@ -39,6 +46,8 @@ theme:
     - search.share
     - content.code.copy
     - content.code.annotate
+    - content.action.edit
+    - content.tooltips
 
 markdown_extensions:
   - admonition
@@ -60,6 +69,9 @@ markdown_extensions:
   - tables
   - attr_list
   - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra_javascript:
   - https://unpkg.com/mermaid@10/dist/mermaid.min.js
@@ -97,3 +109,12 @@ nav:
       - Directives Agents IA (Claude / Gemini): agents-guide.md
       - Accord de Licence CLA: cla.md
       - Journal des Modifications (Changelog): changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/PhilippeVienne/atelier
+      name: Atelier sur GitHub
+    - icon: fontawesome/brands/github-alt
+      link: https://github.com/PhilippeVienne/atelier/discussions
+      name: GitHub Discussions

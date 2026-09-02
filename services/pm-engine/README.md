@@ -9,10 +9,13 @@ PostgreSQL, RAG `pgvector` avec RLS multi-tenant).
 
 - **5.1.1/5.1.2** : scaffolding (dependances, `/health`).
 - **5.2.1/5.2.2** : machine d'etats LangGraph complete (`pm_engine.graph`),
-  les 11 noeuds (`pm_engine.nodes`) decrits par
-  `docs/specs/05-devfactory-pm-engine.md`, section 8.2. Pilote Atelier via
-  le vrai serveur MCP externe (`pm_engine.mcp_client`, Jalon M4), avec sa
-  propre identite de service OIDC (`atelier-pm-bot`, `pm_engine.oidc`).
+  les 20 noeuds (`pm_engine.nodes`) decrits par
+  `docs/specs/05-devfactory-pm-engine.md`, section 8.2 — dont, depuis la
+  tache 5.7.x, `QAValidation` (`nodes.run_qa_validation`), noeud de
+  validation dynamique post-merge sur preuve S3 (`pm_engine.evidence_store`).
+  Pilote Atelier via le vrai serveur MCP externe (`pm_engine.mcp_client`,
+  Jalon M4), avec sa propre identite de service OIDC (`atelier-pm-bot`,
+  `pm_engine.oidc`).
   **Limite assumee** : `DelegateToOpencode`/`RunDevcontainerTests`
   (`exec_in_workshop`) ne sont pas testes de bout en bout avec une vraie
   microVM Firecracker (aucun `atelier-controller` actif dans

@@ -44,7 +44,7 @@ L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 en veille manuelle ou une politique d'auto-suspend sur inactivite (a
 definir).
 
-L'entite Kanidm et le role OpenBao du Workshop sont deliberement **laisses
-intacts** a travers ce cycle (pas reprovisionnes a chaque resume) : un
-Workshop suspendu reste "le meme" Workshop du point de vue identite/secrets
-(voir [`identity-secrets.md`](identity-secrets.md)).
+Le role OpenBao du Workshop est deliberement **laisse intact** a travers ce
+cycle (pas reprovisionne a chaque resume) : un Workshop suspendu reste "le
+meme" Workshop du point de vue identite/secrets (voir
+[`identity-secrets.md`](identity-secrets.md)).

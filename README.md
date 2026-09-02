@@ -71,6 +71,7 @@ flowchart TD
 - **`crates/net-proxy`** : Médiation réseau egress stricte (filtrage HTTP CONNECT avec allowlist dynamique, serveur DNS interne link-local et bypass pour `git.atelier.internal`).
 - **`crates/identity-proxy`** : Courtier de secrets OpenBao injectant à la volée les identifiants et tokens (Personal Access Tokens Forgejo/GitHub/GitLab, credentials cloud) sans jamais exposer de clés privées dans la VM.
 - **`crates/mcp-gateway`** : Serveur MCP link-local fournissant à l'agent in-VM les outils de diagnostic, de compilation et d'accès aux services autorisés.
+- **`crates/guest-init`** : Init minimal (PID 1) posé dans le rootfs des devcontainers dépourvus de `systemd` — monte les pseudo-filesystems, lance et relance les services `atelier-*` en arrière-plan, reap les zombies et surveille les process orphelins.
 
 ### 3. Intelligence & Gestion Autonome (Python 3.12 / LangGraph)
 - **`services/pm-engine`** : Moteur DevFactory basé sur LangGraph et FastAPI. Consomme les événements tickets/issues en mode at-least-once via **Redis Streams**, gère la mémoire sémantique du projet dans PostgreSQL avec **`pgvector`** et RLS multi-tenant étanche, et interagit avec les microVMs via le serveur MCP externe.
@@ -95,6 +96,7 @@ atelier/
 │   ├── net-proxy/             # Proxy egress filtrant & résolveur DNS interne
 │   ├── identity-proxy/        # Injection transparente de credentials & tokens Git
 │   ├── mcp-gateway/           # Serveur MCP local in-VM
+│   ├── guest-init/            # Init PID 1 minimal (devcontainers sans systemd)
 │   └── kvm-device-plugin/     # Kubernetes Device Plugin pour /dev/kvm
 ├── services/
 │   └── pm-engine/             # Moteur DevFactory LangGraph (Python 3.12, Redis, pgvector)

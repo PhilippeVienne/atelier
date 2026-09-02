@@ -1,21 +1,17 @@
-# Identite et secrets : Kanidm + OpenBao
+# Identite et secrets : OIDC + OpenBao
 
 > Retour a la [vue d'ensemble](../ARCHITECTURE.md). Etat d'avancement et
 > preuves de test : voir [`PROGRESS.md`](../PROGRESS.md).
 
-Deux notions d'identite bien distinctes :
-
-- **L'utilisateur humain** proprietaire d'un Workshop
-  (`WorkshopSpec.owner_subject`). Son identite est geree par
-  [Kanidm](https://kanidm.com/), fournisseur d'identite pour l'ensemble
-  d'Atelier (`api-server` ne valide que des JWT dont l'issuer est Kanidm),
-  qui peut lui-meme federer vers un provider externe (OIDC/LDAP
-  d'entreprise) sans qu'Atelier ait a gerer cette integration directement.
-- **L'environnement lui-meme** : chaque `Workshop` recoit sa propre entite
-  machine dans Kanidm (`WorkshopStatus.kanidmEntityId`), distincte du sujet
-  humain proprietaire. Cette identite reste la reference cote
-  utilisateur/dashboard, mais ce n'est **pas** elle qui sert de pont vers
-  OpenBao (choix deliberement explique ci-dessous).
+**L'utilisateur humain** proprietaire d'un Workshop
+(`WorkshopSpec.owner_subject`) est authentifie via un JWT **OIDC
+generique** : `api-server` valide la signature (JWKS, cache rafraichi en
+tache de fond) et l'audience du token aupres de l'issuer configure
+(`ATELIER_OIDC_ISSUER_URL`), sans dependre d'un fournisseur d'identite
+particulier — Keycloak sert de reference en developpement, mais tout
+IdP conforme OIDC/OAuth2 (RFC 7517 JWKS, RFC 7636 PKCE) convient. L'agent
+IA execute dans la microVM, lui, n'a **aucune** identite propre aupres de
+ce fournisseur : il herite du contexte du Workshop qui l'heberge.
 
 Les secrets destines aux environnements (credentials/tokens injectes par
 `identity-proxy`) sont stockes dans [OpenBao](https://openbao.org/) —
@@ -27,29 +23,37 @@ l'environnement (ex: une cle d'API presentee a un service externe) :
 microVM n'y a jamais acces directement, meme indirectement via les
 variables d'environnement ou le systeme de fichiers de la VM.
 
-## Pont d'identite vers OpenBao : auth Kubernetes, pas Kanidm
+## Pont d'identite vers OpenBao : auth Kubernetes, pas OIDC
 
 `identity-proxy` s'authentifie aupres d'OpenBao via la **methode d'auth
-Kubernetes** d'OpenBao, pas via une federation JWT/OIDC avec Kanidm. Le pod
-parent de chaque Workshop recoit son propre ServiceAccount Kubernetes
-(`<name>-parent`) ; `identity-proxy` presente le token projete de ce
-ServiceAccount, qu'OpenBao verifie en direct aupres de l'API Kubernetes
-(TokenReview) — aucun secret a distribuer ou stocker pour amorcer cette
-confiance.
+Kubernetes** d'OpenBao, pas via une federation JWT/OIDC avec le
+fournisseur d'identite humain. Le pod parent de chaque Workshop recoit son
+propre ServiceAccount Kubernetes (`<name>-parent`) ; `identity-proxy`
+presente le token projete de ce ServiceAccount, qu'OpenBao verifie en
+direct aupres de l'API Kubernetes (TokenReview) — aucun secret a
+distribuer ou stocker pour amorcer cette confiance, et aucune entite
+dediee a provisionner cote fournisseur d'identite pour chaque
+environnement (une precedente version provisionnait une entite machine
+par Workshop cote fournisseur d'identite ; ce mecanisme a ete retire, la
+seule identite du Workshop pertinente pour OpenBao est desormais son
+ServiceAccount Kubernetes).
 
 Le `controller` provisionne, par Workshop, une policy OpenBao et un role
 `auth/kubernetes/role/workshop-<name>` scopant l'acces au chemin KV
 `secret/{data,metadata}/workshops/<name>/*` au seul ServiceAccount de ce
-Workshop (`crates/controller/src/openbao.rs`), ce qui borne le rayon
-d'action d'un Workshop compromis aux seuls secrets qui lui ont ete
-explicitement destines.
+Workshop (`crates/controller/src/openbao.rs::ensure_workshop_role`), ce
+qui borne le rayon d'action d'un Workshop compromis aux seuls secrets qui
+lui ont ete explicitement destines. Un role cluster-wide distinct
+(`ensure_api_server_role`) couvre `api-server`, qui a besoin de lire tous
+les Workshops.
 
-> **Pourquoi pas une federation Kanidm → OpenBao ?** Ce serait plus
-> coherent conceptuellement ("Kanidm = identite pour tout"), mais
-> demanderait de configurer un Resource Server OAuth2 cote Kanidm et un
-> backend JWT/OIDC cote OpenBao (JWKS, client credentials grant) — une
-> integration nettement plus lourde et une surface de panne plus grande que
-> l'auth Kubernetes, deja standard.
+> **Pourquoi pas une federation OIDC → OpenBao ?** Ce serait plus
+> coherent conceptuellement ("un seul IdP pour tout"), mais demanderait de
+> configurer un Resource Server OAuth2 cote IdP et un backend JWT/OIDC
+> cote OpenBao (JWKS, client credentials grant) — une integration
+> nettement plus lourde et une surface de panne plus grande que l'auth
+> Kubernetes, deja standard et deja necessaire pour tout le reste
+> (ServiceAccounts, RBAC).
 
 ## `identity-proxy` : injection de credentials
 
@@ -71,8 +75,12 @@ connecte toujours directement a la destination.
   chaque regle associe un hote (correspondance exacte ou wildcard
   `*.domaine`) a un en-tete a poser (ex: `Authorization`), un prefixe
   (ex: `Bearer `) et un champ d'un secret KV v2 OpenBao
-  (`secret/workshops/<name>/<secret_path>`). Pas encore alimentees depuis
-  `Workshop.spec` par le `controller` — a cabler (voir `PROGRESS.md`).
+  (`secret/workshops/<name>/<secret_path>`). Alimentees par le
+  `controller` a partir de `Workshop.spec.identity_injection_rules`, en
+  y ajoutant a la volee la regle Git calculee (`crate::git_identity`,
+  quand `ATELIER_GIT_HOST_SERVICE` est configure) et la regle LiteLLM
+  (Virtual Key) — voir `ensure_parent_pod` dans
+  `crates/controller/src/reconcile.rs`.
 - **Cache de secrets** rafraichi en tache de fond (login OpenBao +
   relecture des champs references par les regles) toutes les 5 minutes,
   avant expiration du token client OpenBao (TTL 15 min cote serveur). Les

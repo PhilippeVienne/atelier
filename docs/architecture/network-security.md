@@ -10,7 +10,8 @@
   ci-dessous). Aucun acces direct de la VM au reste du cluster.
 - Isolation memoire/noyau assuree par Firecracker (jailer, seccomp,
   cgroups) plutot que par la seule isolation de conteneur d'un Pod.
-- Authentification externe : JWT emis par Kanidm, seule source de verite
+- Authentification externe : JWT emis par le fournisseur OIDC configure
+  (`ATELIER_OIDC_ISSUER_URL`, Keycloak en dev), seule source de verite
   identite. Pas de gestion d'utilisateurs locale dans Atelier lui-meme.
 
 ## Isolation reseau de la microVM : mecanisme concret
