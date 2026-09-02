@@ -9,8 +9,8 @@ license = { text = "SEE LICENSE IN ../../LICENSE" }
 dependencies = [
   "fastapi>=0.115,<1.0",
   "uvicorn[standard]>=0.32,<1.0",
-  "langgraph>=0.2,<1.0",
-  "langgraph-checkpoint-postgres>=2.0,<3.0",
+  "langgraph>=1.0.10,<2.0",
+  "langgraph-checkpoint-postgres>=3.1.1,<4.0",
   # `langgraph-checkpoint-postgres` ne fixe pas de driver psycopg par
   # defaut (aucune implementation "pq" n'est installee sinon, voir
   # verification empirique dans docs/PROGRESS.md) : `binary` evite une
@@ -48,8 +48,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.3,<9.0",
-  "pytest-asyncio>=0.24,<1.0",
+  "pytest>=9.0.3,<10.0",
+  "pytest-asyncio>=1.4,<2.0",
   "ruff>=0.6,<1.0",
 ]
 
