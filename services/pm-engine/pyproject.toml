@@ -38,6 +38,12 @@ dependencies = [
   # en-tete non verifie provenant d'un autre service). `[crypto]` fournit
   # le support RS256/ES256 via `cryptography` (JWK RFC 7517).
   "pyjwt[crypto]>=2.9,<3.0",
+  # Client S3 pour `pm_engine.evidence_store` (docs/specs/
+  # 09-qa-validation-post-merge.md, tache 5.7.1) : le premier cote
+  # `pm-engine` (jusqu'ici seul `crates/api-server` en avait un, en Rust —
+  # `aws-sdk-s3`). Async, coherent avec le reste du service (asyncpg,
+  # httpx...), meme instance S3/RustFS que `crates/api-server::storage`.
+  "aioboto3>=15.0,<16.0",
 ]
 
 [project.optional-dependencies]

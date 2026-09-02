@@ -22,7 +22,7 @@ spec:
       command:
         - "sh"
         - "-c"
-        - "mkdir -p /data/atelier-sessions /data/atelier-snapshots /data/forgejo-lfs-attachments && chown -R 10001:10001 /data && chmod -R 775 /data"
+        - "mkdir -p /data/atelier-sessions /data/atelier-snapshots /data/forgejo-lfs-attachments /data/atelier-qa-evidence && chown -R 10001:10001 /data && chmod -R 775 /data"
       volumeMounts:
         - name: data
           mountPath: /data

@@ -18,6 +18,7 @@ kubectl port-forward svc/atelier-s3-dev 9000:9000 &
 | `atelier-sessions` | Enregistrements de sessions VS Code / terminal compressés (zstd) | M2 |
 | `atelier-snapshots` | Snapshots mémoire microVMs déchargés sur S3 | M2 / M5 |
 | `forgejo-lfs-attachments` | Stockage LFS / attachements Forgejo | M2 |
+| `atelier-qa-evidence` | Preuves du validateur QA post-merge (captures d'écran, sorties de requêtes) | M5 (`services/pm-engine`, spec 09) |
 
 ## Variables d'Environnement pour les Tests & Composants
 
@@ -28,5 +29,6 @@ export AWS_ACCESS_KEY_ID="atelier-rustfs-access-key"
 export AWS_SECRET_ACCESS_KEY="atelier-rustfs-secret-key"
 export S3_BUCKET_SESSIONS="atelier-sessions"
 export S3_BUCKET_SNAPSHOTS="atelier-snapshots"
+export S3_BUCKET_QA_EVIDENCE="atelier-qa-evidence"
 export S3_FORCE_PATH_STYLE="true"
 ```
