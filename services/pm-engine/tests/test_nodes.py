@@ -276,6 +276,24 @@ def test_parse_qa_verdict_ignores_an_earlier_unrelated_json_object() -> None:
     assert verdict["evidence_files"] == []  # absent du JSON -> repli sur une liste vide
 
 
+def test_parse_qa_verdict_handles_literal_braces_inside_a_comment() -> None:
+    """Regression REELLE (2026-09-02, run de validation, ticket #29) : un
+    commentaire qui cite litteralement une reponse JSON de l'application
+    testee (`{"status":"ok"}`) faisait rater l'objet entier a une
+    precedente version naive (regex interdisant toute accolade interne) —
+    l'agent avait pourtant produit un verdict parfaitement valide."""
+    transcript = (
+        "```json\n"
+        '{"verdict": "pass", "comments": ["corps exact {\\"status\\":\\"ok\\"} recu"], '
+        '"evidence_files": [".qa-evidence/health_evidence.txt"]}\n'
+        "```"
+    )
+    verdict = nodes._parse_qa_verdict(transcript)
+    assert verdict["verdict"] == "pass"
+    assert verdict["comments"] == ['corps exact {"status":"ok"} recu']
+    assert verdict["evidence_files"] == [".qa-evidence/health_evidence.txt"]
+
+
 def test_parse_qa_verdict_falls_back_to_fail_when_no_json_found() -> None:
     """Repli INVERSE de `_parse_review_verdict` : `"fail"`, jamais
     `"pass"` — ce noeud terminal ne bloque plus rien, un repli optimiste

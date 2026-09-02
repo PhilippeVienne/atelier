@@ -1568,43 +1568,78 @@ def _qa_prompt(state: PMWorkflowState) -> str:
     )
 
 
-# Le verdict n'a, par construction (voir `_qa_prompt`), que des champs
-# scalaires/listes de chaines — jamais d'objet imbrique. Une expression
-# reguliere qui interdit toute accolade INTERNE suffit donc a isoler le
-# DERNIER bloc JSON d'une transcription d'agent autonome (des dizaines de
-# lignes de raisonnement/appels d'outils avant le verdict final), sans
-# exiger — contrairement a `_parse_review_verdict`/`_strip_code_fences` —
-# que la reponse ENTIERE soit ce seul objet : cette derniere contrainte,
-# vraie pour un appel de complétion direct (`ReviewCode` et les autres
-# roles de la spec 08), ne l'est plus ici, `opencode run` produisant une
-# transcription complete, pas une reponse unique.
-_QA_VERDICT_RE = re.compile(r'\{[^{}]*"verdict"[^{}]*\}', re.DOTALL)
+# Bug REEL constate le 2026-09-02 (run de validation, ticket #29) : une
+# premiere version isolait le verdict par une simple expression reguliere
+# interdisant toute accolade INTERNE (`\{[^{}]*"verdict"[^{}]*\}`), en
+# supposant qu'un objet {verdict, comments, evidence_files} n'en contient
+# jamais. Fausse en pratique — RIEN n'empeche un COMMENTAIRE (texte libre
+# redige par l'agent) de citer litteralement une reponse JSON de
+# l'application testee, ex: `"corps exact {\"status\":\"ok\"}"` : ces
+# accolades, a l'interieur d'une chaine, ne sont pas structurelles, mais
+# une regex naive ne le sait pas et rate l'objet entier — l'agent avait
+# pourtant produit un verdict parfaitement valide, silencieusement pris
+# pour une reponse inexploitable. `_find_json_objects` scanne caractere
+# par caractere en suivant si on est DANS une chaine (guillemets non
+# echappes), pour ne compter que les accolades reellement structurelles.
+def _find_json_objects(text: str) -> list[str]:
+    """Sous-chaines correspondant a des objets JSON de plus haut niveau
+    (accolades equilibrees), dans l'ordre d'apparition. Ignore les
+    accolades a l'interieur des chaines — voir le commentaire ci-dessus."""
+    objects: list[str] = []
+    depth = 0
+    start = 0
+    in_string = False
+    escaped = False
+    for i, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                objects.append(text[start : i + 1])
+    return objects
 
 
 def _parse_qa_verdict(raw: str) -> dict:
     """Repli INVERSE de `_parse_review_verdict` : une reponse non
     exploitable degrade vers `"fail"`, jamais `"pass"` — ce noeud terminal
     ne bloque plus rien (spec 09, section 6), un repli optimiste
-    masquerait une incertitude reelle plutot que de la rendre visible."""
+    masquerait une incertitude reelle plutot que de la rendre visible.
+
+    Essaie les objets JSON de plus haut niveau du DERNIER au premier (le
+    verdict est cense etre le dernier message de l'agent, mais un objet
+    JSON cite plus tot dans son raisonnement — ex: la sortie d'un `cat
+    package.json` — ne doit jamais etre pris pour le verdict, voir le
+    test correspondant) et retient le premier qui parse ET porte un
+    `verdict` reconnu."""
     fallback = {
         "verdict": "fail",
         "comments": ["reponse de l'agent QA non exploitable"],
         "evidence_files": [],
     }
-    matches = _QA_VERDICT_RE.findall(raw)
-    if not matches:
-        logger.warning("QAValidation: aucun verdict JSON trouve dans la reponse de l'agent")
-        return fallback
-    try:
-        verdict = json.loads(matches[-1])
-        if verdict.get("verdict") not in ("pass", "fail"):
-            raise ValueError("verdict inattendu")
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("QAValidation: dernier bloc JSON de l'agent non exploitable")
-        return fallback
-    verdict.setdefault("comments", [])
-    verdict.setdefault("evidence_files", [])
-    return verdict
+    for candidate in reversed(_find_json_objects(raw)):
+        try:
+            verdict = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(verdict, dict) and verdict.get("verdict") in ("pass", "fail"):
+            verdict.setdefault("comments", [])
+            verdict.setdefault("evidence_files", [])
+            return verdict
+    logger.warning("QAValidation: aucun verdict JSON exploitable dans la reponse de l'agent")
+    return fallback
 
 
 async def _exec_and_wait(deps: PmEngineDeps, workshop_name: str, command: str) -> ExecResult:
