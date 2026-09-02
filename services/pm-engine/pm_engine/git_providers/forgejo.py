@@ -37,6 +37,11 @@ class ForgejoProvider(BaseGitProvider):
             timeout=30.0,
         )
         self._owner: str | None = None
+        # Conserve pour `git_push_credential` : le meme jeton qui autorise
+        # ce provider a ouvrir des PR/creer des branches donne acces en
+        # ecriture au depot, exactement ce dont l'agent delegue a besoin
+        # pour son propre `git push` depuis le Workshop.
+        self._token = token
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -181,3 +186,11 @@ class ForgejoProvider(BaseGitProvider):
             json={"Do": "merge"},
         )
         response.raise_for_status()
+
+    def git_push_credential(self) -> tuple[str, str] | None:
+        # Convention Forgejo/Gitea (identique a GitHub) : un jeton d'acces
+        # personnel s'utilise comme mot de passe HTTP Basic, avec n'importe
+        # quel nom d'utilisateur non vide — `x-access-token` est celui deja
+        # utilise comme defaut cote `crates/image-builder` (voir
+        # `resolve_git_credentials`), reutilise ici pour la coherence.
+        return ("x-access-token", self._token)

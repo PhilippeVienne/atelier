@@ -157,13 +157,36 @@ impl OpenBaoClient {
         field: &str,
         value: &str,
     ) -> anyhow::Result<()> {
+        self.write_fields_for(client_token, workshop_name, secret_path, &[(field, value)])
+            .await
+    }
+
+    /// Depose PLUSIEURS champs d'un secret EN UNE SEULE ecriture.
+    ///
+    /// KV v2 (l'API `secret/data/...` utilisee ici) REMPLACE integralement
+    /// le contenu d'un secret a chaque `POST` — ce n'est pas une fusion avec
+    /// la version precedente. Deux appels successifs a
+    /// [`Self::write_field_for`] sur le MEME secret (un par champ) ecrivent
+    /// donc deux VERSIONS DISTINCTES, la seconde ne contenant que son propre
+    /// champ : le premier champ ecrit disparait de la version courante,
+    /// silencieusement. Un secret a plusieurs champs (`username`+`password`
+    /// pour `workshops/<name>/git`, par exemple) doit donc etre ecrit en une
+    /// seule fois, tous ses champs ensemble.
+    pub async fn write_fields_for(
+        &self,
+        client_token: &str,
+        workshop_name: &str,
+        secret_path: &str,
+        fields: &[(&str, &str)],
+    ) -> anyhow::Result<()> {
+        let data: std::collections::HashMap<&str, &str> = fields.iter().copied().collect();
         self.http
             .post(format!(
                 "{}/v1/secret/data/workshops/{}/{}",
                 self.addr, workshop_name, secret_path
             ))
             .header("X-Vault-Token", client_token)
-            .json(&serde_json::json!({ "data": { field: value } }))
+            .json(&serde_json::json!({ "data": data }))
             .send()
             .await
             .context("requete d'ecriture de secret OpenBao")?
@@ -194,5 +217,109 @@ impl OpenBaoClient {
             .error_for_status()
             .context("suppression de secret OpenBao refusee")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenBaoClient;
+
+    /// Ignore si aucun OpenBao de dev n'est joignable (le token racine, seul
+    /// utilisable ici sans authentification Kubernetes reelle, n'existe que
+    /// sur une instance de dev) — meme convention que les tests pm-engine
+    /// contre une vraie infra (`OPENBAO_TEST_TOKEN` absent = test ignore,
+    /// jamais un mock).
+    /// Nom de Workshop unique pour isoler chaque test (evite qu'ils se
+    /// marchent dessus s'ils tournent en parallele, ou d'une execution a
+    /// l'autre) — un compteur atomique suffit, pas besoin d'une dependance
+    /// `uuid` (absente du workspace) pour un simple test.
+    fn unique_test_workshop_name(prefix: &str) -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{prefix}-{nanos}-{n}")
+    }
+
+    fn client_and_token() -> Option<(OpenBaoClient, String)> {
+        let token = std::env::var("OPENBAO_TEST_TOKEN").ok()?;
+        let addr =
+            std::env::var("OPENBAO_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
+        Some((
+            OpenBaoClient::from_env_with_role(addr, "test".to_string(), "unused".to_string()),
+            token,
+        ))
+    }
+
+    /// Regression (2026-09-02) : `write_field_for` appele deux fois de
+    /// suite sur le MEME secret (un par champ) perdait le premier champ,
+    /// KV v2 remplacant tout le contenu a chaque ecriture plutot que de
+    /// fusionner. `write_fields_for` doit ecrire les deux ensemble et les
+    /// deux doivent survivre a une relecture.
+    #[tokio::test]
+    async fn write_fields_for_writes_both_fields_atomically() {
+        let Some((client, token)) = client_and_token() else {
+            eprintln!("OPENBAO_TEST_TOKEN absent, test ignore");
+            return;
+        };
+        let workshop = unique_test_workshop_name("test-atomic");
+
+        client
+            .write_fields_for(
+                &token,
+                &workshop,
+                "git",
+                &[("username", "u"), ("password", "p")],
+            )
+            .await
+            .expect("ecriture atomique des deux champs");
+
+        assert_eq!(
+            client
+                .read_field_for(&token, &workshop, "git", "username")
+                .await
+                .expect("username doit avoir survecu"),
+            "u"
+        );
+        assert_eq!(
+            client
+                .read_field_for(&token, &workshop, "git", "password")
+                .await
+                .expect("password doit avoir survecu"),
+            "p"
+        );
+    }
+
+    /// Preuve du bug que `write_fields_for` corrige : deux appels SEPARES a
+    /// `write_field_for` sur le meme secret perdent bien le premier champ.
+    /// Sans ce test, rien ne garantit que la comprehension du comportement
+    /// KV v2 documentee ci-dessus reste vraie si OpenBao change de version.
+    #[tokio::test]
+    async fn two_separate_writes_lose_the_first_field_proving_the_bug_it_fixes() {
+        let Some((client, token)) = client_and_token() else {
+            eprintln!("OPENBAO_TEST_TOKEN absent, test ignore");
+            return;
+        };
+        let workshop = unique_test_workshop_name("test-separate");
+
+        client
+            .write_field_for(&token, &workshop, "git", "username", "u")
+            .await
+            .expect("premiere ecriture");
+        client
+            .write_field_for(&token, &workshop, "git", "password", "p")
+            .await
+            .expect("seconde ecriture");
+
+        let username_after = client
+            .read_field_for(&token, &workshop, "git", "username")
+            .await;
+        assert!(
+            username_after.is_err(),
+            "le bug documente doit encore reproduire : username devrait avoir disparu, \
+             a obtenu {username_after:?}"
+        );
     }
 }

@@ -177,3 +177,13 @@ async def test_list_root_entries_sees_what_the_planner_needs(test_repo):
         assert absent == []
     finally:
         await provider.aclose()
+
+
+def test_git_push_credential_reuses_the_same_token_as_a_basic_auth_password() -> None:
+    """Pas d'appel reseau : `git_push_credential` ne fait que reexposer le
+    jeton deja fourni a la construction — c'est CE MEME jeton, deja utilise
+    pour ouvrir des PR/creer des branches, qui doit permettre a l'agent
+    delegue d'authentifier son propre `git push` (voir la docstring de
+    `BaseGitProvider.git_push_credential`)."""
+    provider = ForgejoProvider("http://forge.invalid", "un-jeton-de-test")
+    assert provider.git_push_credential() == ("x-access-token", "un-jeton-de-test")

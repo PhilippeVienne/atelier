@@ -33,6 +33,7 @@ class GitLabProvider(BaseGitProvider):
             headers={"PRIVATE-TOKEN": token},
             timeout=30.0,
         )
+        self._token = token
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -110,3 +111,12 @@ class GitLabProvider(BaseGitProvider):
             f"/projects/{project}/merge_requests/{pr_number}/merge"
         )
         response.raise_for_status()
+
+    def git_push_credential(self) -> tuple[str, str] | None:
+        if not self._token:
+            return None
+        # Convention GitLab : un jeton (personnel ou de projet) s'utilise
+        # comme mot de passe HTTP Basic, avec `oauth2` comme nom
+        # d'utilisateur — contrairement a Forgejo/GitHub, un nom arbitraire
+        # n'est PAS accepte ici.
+        return ("oauth2", self._token)

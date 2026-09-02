@@ -31,3 +31,15 @@ async def test_get_issue_reads_a_real_public_gitlab_issue() -> None:
         assert issue.author
     finally:
         await provider.aclose()
+
+
+def test_git_push_credential_uses_the_oauth2_username_convention() -> None:
+    """GitLab, contrairement a Forgejo/GitHub, exige `oauth2` exactement
+    comme nom d'utilisateur HTTP Basic pour un jeton de projet/personnel."""
+    provider = GitLabProvider("un-jeton-de-test")
+    assert provider.git_push_credential() == ("oauth2", "un-jeton-de-test")
+
+
+def test_git_push_credential_is_none_without_a_token() -> None:
+    provider = GitLabProvider("")
+    assert provider.git_push_credential() is None

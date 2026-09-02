@@ -407,6 +407,29 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
                     ),
                 },
             )
+            # Sans ce depot, `delegate_to_opencode` echouait plus tard avec
+            # `fatal: could not read Username ... No such device or address`
+            # (constate en Workshop reel le 2026-09-02) : `create_workshop`
+            # n'avait aucun moyen de transmettre un identifiant git en
+            # ecriture au Workshop, alors que ce provider en detient DEJA
+            # un — le meme jeton qui lui sert a creer des branches/ouvrir
+            # des PR donne acces en ecriture au depot. `git_push_credential`
+            # renvoie `None` pour un provider qui ne sait pas en fournir
+            # (voir sa docstring) : dans ce cas, on n'appelle simplement pas
+            # cet outil, l'agent devra s'authentifier lui-meme si son
+            # `git push` en a besoin.
+            git_credential = deps.git_provider.git_push_credential()
+            if git_credential is not None:
+                git_username, git_password = git_credential
+                await call_tool_json(
+                    session,
+                    "set_workshop_git_credential",
+                    {
+                        "name": task["workshop_name"],
+                        "username": git_username,
+                        "password": git_password,
+                    },
+                )
 
 
     # Attente hors de la session MCP de creation : elle dure plusieurs

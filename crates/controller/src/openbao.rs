@@ -143,9 +143,11 @@ pub const API_SERVER_ROLE: &str = "atelier-api-server";
 /// `secret/data|metadata/workshops/+/{session_auth,ssh_key}` — le `+` est
 /// un wildcard OpenBao/Vault KV v2 pour un seul segment de chemin : couvre
 /// `session_auth`/`ssh_key` de n'importe quel Workshop, mais rien d'autre
-/// (`secret/workshops/<name>/git`, `secret/workshops/<name>/<injection
-/// rule>` restent hors de portee, reserves aux composants qui tournent
-/// dans le pod du Workshop concerne). `ssh_key` ajoute pour `exec_in_workshop`
+/// (`secret/workshops/<name>/<injection rule>` reste hors de portee,
+/// reserve aux composants qui tournent dans le pod du Workshop concerne).
+/// `git` fait exception (voir plus bas dans le corps de cette fonction) :
+/// api-server y ecrit, en `create`/`update` seul, jamais `read` — meme
+/// discipline que `credentials/*`. `ssh_key` ajoute pour `exec_in_workshop`
 /// (Jalon M4, tache 4.2.3, voir `crate::openbao::ensure_ssh_key`) :
 /// `api-server` y lit la cle PRIVEE pour s'authentifier en SSH aupres du
 /// guest, jamais la cle publique seule (deja servie au guest par net-proxy).
@@ -180,6 +182,21 @@ pub async fn ensure_api_server_role(
     // ces chemins.
     policy_hcl.push_str(
         "\npath \"secret/data/workshops/+/credentials/*\" { capabilities = [\"create\", \"update\"] }\npath \"secret/metadata/workshops/+/credentials/*\" { capabilities = [\"delete\", \"list\"] }",
+    );
+
+    // Identifiant git en ecriture (`set_workshop_git_credential`, tache
+    // ajoutee le 2026-09-02) : meme discipline que `credentials/*`
+    // ci-dessus (`create`/`update` seul, jamais `read`), mais chemin FIXE
+    // plutot que `credentials/*` — c'est le meme "git" que lisent deja
+    // `crates/image-builder::resolve_git_credentials` et
+    // `crates/controller::git_identity` (leurs roles a EUX couvrent deja ce
+    // chemin, via `secret/data/workshops/<name>/*` — voir
+    // `ensure_workshop_role` plus bas). Sans cette ligne, l'ecriture
+    // serait refusee en 403 : la policy precedente excluait explicitement
+    // ce chemin, reserve jusqu'ici aux composants tournant dans le pod du
+    // Workshop lui-meme.
+    policy_hcl.push_str(
+        "\npath \"secret/data/workshops/+/git\" { capabilities = [\"create\", \"update\"] }",
     );
 
     client

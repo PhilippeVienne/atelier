@@ -146,6 +146,23 @@ impl SessionAuthClient {
             .await
     }
 
+    /// Meme contrat que [`Self::write_secret_field`], pour un secret a
+    /// PLUSIEURS champs ecrits ATOMIQUEMENT — voir
+    /// `OpenBaoClient::write_fields_for` pour la raison exacte (KV v2
+    /// remplace tout le secret a chaque ecriture, deux ecritures separees
+    /// pour deux champs d'un meme secret en perdraient un).
+    pub async fn write_secret_fields(
+        &self,
+        workshop_name: &str,
+        secret_path: &str,
+        fields: &[(&str, &str)],
+    ) -> anyhow::Result<()> {
+        let token = self.client_token(false).await?;
+        self.client
+            .write_fields_for(&token, workshop_name, secret_path, fields)
+            .await
+    }
+
     /// Supprime definitivement un secret du Workshop.
     pub async fn delete_secret(
         &self,

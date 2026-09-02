@@ -36,6 +36,7 @@ class GitHubProvider(BaseGitProvider):
             headers=headers,
             timeout=30.0,
         )
+        self._token = token
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -111,3 +112,10 @@ class GitHubProvider(BaseGitProvider):
     async def merge_pr(self, repo: str, pr_number: int) -> None:
         response = await self._client.put(f"/repos/{repo}/pulls/{pr_number}/merge")
         response.raise_for_status()
+
+    def git_push_credential(self) -> tuple[str, str] | None:
+        if not self._token:
+            return None
+        # Convention GitHub : un jeton s'utilise comme mot de passe HTTP
+        # Basic, avec n'importe quel nom d'utilisateur non vide.
+        return ("x-access-token", self._token)

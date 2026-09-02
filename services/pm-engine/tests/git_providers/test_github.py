@@ -31,3 +31,19 @@ async def test_get_issue_reads_a_real_public_github_issue() -> None:
         assert issue.author
     finally:
         await provider.aclose()
+
+
+def test_git_push_credential_reuses_the_same_token_as_a_basic_auth_password() -> None:
+    """Meme raisonnement que pour Forgejo : reexpose sans appel reseau le
+    jeton deja fourni a la construction."""
+    provider = GitHubProvider("un-jeton-de-test")
+    assert provider.git_push_credential() == ("x-access-token", "un-jeton-de-test")
+
+
+def test_git_push_credential_is_none_without_a_token() -> None:
+    """Un jeton vide n'est PAS equivalent a l'omettre pour l'API GitHub
+    elle-meme (voir le commentaire de `__init__`) : `git_push_credential`
+    doit refleter cette meme absence plutot que de fournir un mot de passe
+    vide, inutilisable."""
+    provider = GitHubProvider("")
+    assert provider.git_push_credential() is None

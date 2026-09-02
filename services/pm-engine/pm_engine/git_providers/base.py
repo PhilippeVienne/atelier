@@ -101,9 +101,35 @@ class BaseGitProvider(ABC):
         Volontairement NON abstraite, et `None` plutot que `0` par defaut :
         une PR vide et une PR dont on ignore le contenu sont deux choses
         differentes, et faire passer la seconde pour la premiere declencherait
-        de fausses alertes. `OpenPullRequest` s'en sert uniquement pour
-        avertir — une PR a 0 fichier est presque toujours le signe que le
-        travail de l'agent n'a pas atteint la branche. Ce symptome a ete
-        produit par trois causes distinctes sans que rien ne le signale (voir
-        `docs/architecture/pieges.md`), d'ou ce garde-fou."""
+        de fausses alertes. `OpenPullRequest` en fait desormais un ECHEC DUR
+        (`RuntimeError`), pas un simple avertissement (2026-09-02) : une PR a
+        0 fichier signifie que la sous-tache n'a rien produit — voir
+        `docs/architecture/pieges.md` pour l'historique des causes qui ont
+        produit ce symptome sans que rien ne le signale."""
+        return None
+
+    def git_push_credential(self) -> tuple[str, str] | None:
+        """`(username, password)` a deposer dans le Workshop pour que
+        l'agent delegue puisse authentifier son propre `git push` vers ce
+        depot — ou `None` si le provider ne peut/veut pas en fournir un.
+
+        Volontairement NON abstraite, meme convention que
+        [`changed_file_count`]/[`list_root_entries`] : un provider qui ne
+        sait pas repondre degrade la fonctionnalite (l'agent devra alors
+        s'authentifier lui-meme, ou le push echouera avec un message clair),
+        il ne casse pas le reste du graphe.
+
+        Ce provider detient DEJA le jeton qui lui sert a ouvrir des PR/creer
+        des branches — c'est le MEME jeton qui donne acces en ecriture au
+        depot, exactement ce dont l'agent a besoin pour son propre `push`.
+        Sans cette methode, RIEN ne relie ce jeton, deja present cote
+        pm-engine, au Workshop ou tourne l'agent : `create_workshop` n'a
+        aucun parametre de credential, et le seul mecanisme d'ecriture cote
+        `atelier-api-server` (`crates/api-server/src/credentials.rs`) est
+        concu pour etre pilote par un humain depuis le dashboard, jamais
+        appele par pm-engine. Un `git push` depuis le guest echouait alors
+        avec `fatal: could not read Username ... No such device or address`
+        (constate en Workshop reel le 2026-09-02) — pas un bug d'infra a
+        proprement parler, plutot une piece manquante entre deux mecanismes
+        qui existaient deja chacun de leur cote."""
         return None

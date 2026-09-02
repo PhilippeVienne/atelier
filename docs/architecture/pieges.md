@@ -1098,3 +1098,25 @@
   pm-engine appelle un nouvel outil MCP dedie avant de deleguer — non
   implemente cette session, une decision de conception qui merite d'etre
   prise consciemment plutot que corrigee dans l'urgence.
+
+  **Corrige dans la meme session, une fois le vrai run de bout en bout
+  obtenu** : `BaseGitProvider` gagne une methode `git_push_credential()`
+  (non abstraite, `None` par defaut, meme convention que
+  `changed_file_count`/`list_root_entries`) qui reexpose le jeton QUE LE
+  PROVIDER DETIENT DEJA (le meme qui lui sert a ouvrir des PR/creer des
+  branches) sous la forme d'un couple `(username, password)` HTTP Basic.
+  `provision_workshop` l'appelle juste apres `create_workshop`, via un
+  nouvel outil MCP `set_workshop_git_credential` (`crates/api-server`), qui
+  ecrit dans le MEME secret OpenBao
+  (`secret/data/workshops/<name>/git`, champs `username`/`password`) que
+  lisent deja `image-builder` et `identity-proxy`. Piege au passage dans
+  l'implementation : la policy OpenBao d'`api-server`
+  (`ensure_api_server_role`) EXCLUAIT EXPLICITEMENT ce chemin (reserve
+  jusque-la aux composants tournant dans le pod du Workshop) — sans
+  l'etendre, la nouvelle ecriture aurait echoue en 403. Et KV v2 remplace
+  tout le contenu d'un secret a chaque ecriture (pas de fusion) : ecrire
+  `username` puis `password` en deux appels separes aurait perdu le
+  premier — d'ou `write_fields_for`, qui ecrit plusieurs champs
+  ATOMIQUEMENT, teste dans les deux sens (le bug REPRODUIT reellement en
+  test, contre la vraie instance OpenBao de dev, pas seulement corrige a
+  l'aveugle).

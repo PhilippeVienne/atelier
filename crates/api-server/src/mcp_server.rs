@@ -186,6 +186,21 @@ struct WorkshopNameParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+struct SetWorkshopGitCredentialParams {
+    /// Nom du Workshop cible.
+    name: String,
+    /// Nom d'utilisateur HTTP Basic. Convention Forgejo/GitHub : accepte
+    /// n'importe quelle valeur non vide des lors que `password` est un
+    /// jeton d'acces valide. Convention GitLab : `oauth2` exactement.
+    username: String,
+    /// Jeton d'acces (mot de passe HTTP Basic). Jamais journalise, jamais
+    /// relisible par cette API une fois depose (voir `crate::credentials`,
+    /// meme garantie).
+    password: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 struct ExecInWorkshopParams {
     /// Nom du Workshop cible.
     name: String,
@@ -242,6 +257,54 @@ impl WorkshopMcpServer {
             .await
             .map_err(|err| api_error_to_mcp(err.into()))?;
         serde_json::to_string_pretty(&created)
+            .map_err(|err| ErrorData::internal_error(format!("serialisation: {err}"), None))
+    }
+
+    #[tool(
+        description = "Depose un identifiant git (username/password HTTP Basic, generalement un jeton d'acces) pour ce Workshop, afin que l'agent qui y tourne puisse authentifier ses propres `git push` vers l'alias `git.atelier.internal` (voir crates/controller/src/git_identity.rs). Jamais relisible ensuite, meme par cette API. Refuse (Fast-Fail) si OpenBao, configure, est injoignable."
+    )]
+    async fn set_workshop_git_credential(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(SetWorkshopGitCredentialParams {
+            name,
+            username,
+            password,
+        }): Parameters<SetWorkshopGitCredentialParams>,
+    ) -> Result<String, ErrorData> {
+        let user = authenticated_user(&parts)?;
+        let workshop = workshops_api(&self.state)
+            .get(&name)
+            .await
+            .map_err(|err| api_error_to_mcp(err.into()))?;
+        ensure_owner(&workshop, &user).map_err(api_error_to_mcp)?;
+
+        let session_auth = self.state.session_auth.as_ref().ok_or_else(|| {
+            ErrorData::internal_error(
+                "OPENBAO_ADDR non configure : set_workshop_git_credential indisponible",
+                None,
+            )
+        })?;
+        // "git" et les champs "username"/"password" : meme chemin/meme forme
+        // que ce que lisent deja `crates/image-builder::resolve_git_credentials`
+        // (clone authentifie au build) et `crates/controller::git_identity`
+        // (injection par `identity-proxy` au runtime de l'agent) — un seul
+        // secret pour les deux usages, voir le commentaire de tete de
+        // `git_identity.rs` pour la justification complete. Ecrits ENSEMBLE
+        // (pas deux appels separes) : KV v2 remplace tout le secret a
+        // chaque ecriture, deux ecritures pour deux champs en perdraient un.
+        session_auth
+            .write_secret_fields(
+                &name,
+                "git",
+                &[("username", &username), ("password", &password)],
+            )
+            .await
+            .map_err(|err| {
+                ErrorData::internal_error(format!("ecriture du credential git: {err}"), None)
+            })?;
+
+        serde_json::to_string_pretty(&serde_json::json!({ "name": name, "status": "stored" }))
             .map_err(|err| ErrorData::internal_error(format!("serialisation: {err}"), None))
     }
 
