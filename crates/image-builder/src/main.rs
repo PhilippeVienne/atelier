@@ -611,8 +611,16 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     if !environment.is_empty() && !environment.ends_with('\n') {
         environment.push('\n');
     }
+    // `localhost,127.0.0.1` dans NO_PROXY : sans eux, tester son propre
+    // serveur depuis l'interieur du guest (`curl http://localhost:3000/`,
+    // reflexe le plus banal qui soit pour un agent qui vient d'ecrire un
+    // service HTTP) part vers net-proxy, qui ne connait "localhost" que
+    // comme lui-meme et repond 502 — l'agent croit alors son propre serveur
+    // casse. Constate en Workshop reel le 2026-09-02 : un agent qui venait
+    // de faire passer sa suite de tests (3/3) a conclu, sur la foi de ce
+    // faux 502, que son serveur ne repondait pas.
     environment.push_str(&format!(
-        "HTTP_PROXY={proxy_url}\nHTTPS_PROXY={proxy_url}\nhttp_proxy={proxy_url}\nhttps_proxy={proxy_url}\nNO_PROXY=169.254.0.1\nno_proxy=169.254.0.1\n"
+        "HTTP_PROXY={proxy_url}\nHTTPS_PROXY={proxy_url}\nhttp_proxy={proxy_url}\nhttps_proxy={proxy_url}\nNO_PROXY=169.254.0.1,localhost,127.0.0.1\nno_proxy=169.254.0.1,localhost,127.0.0.1\n"
     ));
     // LLM Proxy (service global du cluster, `deploy/dev/llm-proxy/`), route
     // vers `net-proxy` (alias `llm-proxy`, `crates/net-proxy/src/internal.rs`),

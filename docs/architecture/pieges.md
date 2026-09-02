@@ -980,3 +980,11 @@
   independamment garder une connexion persistante trop longtemps vivante.
   Corriger le premier hop sans verifier les suivants laisse le meme defaut
   intact, juste plus loin dans la chaine.
+- **`NO_PROXY` ne couvrait pas `localhost`** (2026-09-02) : seul
+  `169.254.0.1` (net-proxy lui-meme) y figurait. Le reflexe le plus banal
+  qui soit pour un agent qui vient d'ecrire un service HTTP — `curl
+  http://localhost:3000/` pour verifier qu'il repond — partait donc vers
+  net-proxy, qui ne connait "localhost" que comme LUI-MEME et repond `502`.
+  Constate en Workshop reel : un agent dont la suite de tests venait de
+  passer (3/3) a conclu, sur la foi de ce faux `502`, que son propre serveur
+  ne repondait pas. `localhost,127.0.0.1` ajoutes a `NO_PROXY`/`no_proxy`.
