@@ -868,3 +868,62 @@
   (`POST /v1/auth/kubernetes/login`) : le message y est explicite
   (`token is expired`), contrairement au `login OpenBao refuse` cote
   api-server.
+- **Une chaine de bugs silencieux entre le PM et son agent** (2026-09-02) :
+  faire tourner le graphe complet du PM sur un depot greenfield, avec un
+  devcontainer ORDINAIRE (`mcr.microsoft.com/devcontainers/javascript-node:20`,
+  aucune surcouche atelier), a fait tomber six defauts d'affilee. Aucun ne
+  produisait de message utile ; tous se presentaient sous le meme deguisement,
+  `connexion SSH echouee: Disconnected` ou `Unexpected server error`. Ils sont
+  listes ici dans l'ordre ou il a fallu les demeler, parce que chacun masquait
+  le suivant :
+  1. **`export LD_LIBRARY_PATH` global dans le script de demarrage de `sshd`.**
+     Nos bibliotheques viennent de bookworm, l'image cible est plus recente :
+     `mkdir`, `chmod`, `chown`, `seq` mouraient tous en `stack smashing
+     detected` / `GLIBC_2.38 not found`. Le script s'arretait a sa premiere
+     ligne utile. La variable ne doit etre posee que sur `sshd`/`ssh-keygen`,
+     via `env`.
+  2. **`sshd` se re-execute par connexion.** Le re-exec repart du chemin brut,
+     donc avec l'editeur de liens de l'image cible et nos bibliotheques
+     bookworm : mort immediate, connexion coupee avant l'echange de versions
+     (`kex_exchange_identification`), alors que `sshd` annonce tranquillement
+     `Server listening on port 2222`. `-r` desactive ce re-exec.
+  3. **Le port SSH.** `crate::exec` (api-server) visait `22` par defaut, herite
+     de l'epoque ou seul le devcontainer de demo fournissait SSH, via le
+     service systeme. Notre `sshd` injecte ecoute sur `2222`. Sur toute image
+     ordinaire, l'exec frappait donc a une porte que personne n'ecoutait.
+  4. **`UsePAM no` prive le guest de `/etc/environment`.** C'est `pam_env` qui
+     lit ce fichier, et une session SSH non interactive n'ouvre ni
+     `/etc/profile` ni `~/.bashrc`. L'agent demarrait sans
+     `OPENCODE_CONFIG_CONTENT` ni jeton LLM : `opencode` ne connaissait aucun
+     fournisseur et mourait sur `Unexpected server error`. Corrige par
+     `~/.ssh/environment` + `PermitUserEnvironment yes`.
+  5. **`git clone` ignorait le proxy.** libcurl, sous `git`, ne lit
+     deliberement que `http_proxy` en MINUSCULES pour les URL `http://`
+     (protection historique contre l'en-tete CGI `Proxy:`). Avec les seules
+     majuscules, le clone tentait de resoudre `git.atelier.internal` lui-meme
+     et echouait ; le workspace etait livre vide, sans code ni depot git, et
+     l'agent n'avait rien sur quoi travailler.
+  6. **Le Workshop s'annoncait `Running` trop tot.** La sonde ne verifiait que
+     `ttyd`, qui ecoute avant `sshd` : tout `exec_in_workshop` lance dans la
+     foulee echouait. Elle verifie desormais les deux portes d'entree.
+  La lecon commune : chacun de ces defauts etait invisible en test unitaire et
+  invisible avec le devcontainer de demo — lequel apportait son propre `sshd`
+  systeme, avec PAM, sur le port 22, et masquait donc a lui seul les points
+  1 a 4. Un composant qu'on rend generique doit etre exerce sur une image
+  ORDINAIRE, pas sur celle qui a servi a l'ecrire.
+- **Le snapshot d'un Workshop survit au Workshop** (2026-09-02) : les
+  snapshots persistants sont indexes par NOM
+  (`/cache/snapshots/default_<nom>/`). Recreer un Workshop portant un nom
+  deja utilise ne reconstruit rien : `vm-supervisor` restaure l'ancien
+  snapshot, donc l'ancien rootfs — sans les binaires fraichement injectes, et
+  avec l'ancienne cle SSH. Symptome : un Workshop qui semble ignorer une
+  image tout juste reconstruite. En debug, prendre un nom neuf (ou supprimer
+  le repertoire de snapshot) plutot que de rejouer le meme.
+- **Deux comptes pour un meme uid, et c'est tres bien ainsi** (2026-09-02) :
+  beaucoup d'images de devcontainer utilisent deja l'uid 1000 (`node` sur les
+  images Node, `ubuntu` ailleurs). `ensure_vscode_user` cree malgre tout
+  `vscode` avec ce meme uid : `/etc/passwd` porte alors deux noms pour un
+  seul uid, et `whoami` affiche le nom de l'image. Ce n'est pas un bug —
+  memes droits, meme acces aux fichiers du workspace, et `sshd` resout bien
+  `/home/vscode` — mais il faut le savoir avant de s'alarmer en voyant
+  `whoami` repondre `node` dans un Workshop.
