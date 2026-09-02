@@ -62,6 +62,27 @@ def _jwt_subject(token: str) -> str:
     return json.loads(base64.urlsafe_b64decode(payload))["sub"]
 
 
+def _qa_evidence_s3_config_or_none():
+    """`s3_config_from_env` leve une `RuntimeError` si `S3_ENDPOINT` est
+    present mais la configuration incomplete (bucket/region/cles absents)
+    — un garde-fou utile pour `evidence_store` lui-meme, mais qui ne doit
+    JAMAIS faire planter le demarrage de TOUT `pm-engine` pour une
+    fonctionnalite censee etre optionnelle (`QAValidation` degrade deja
+    proprement quand `qa_evidence_s3` est `None`, voir sa docstring) —
+    contrairement aux variables de `required` ci-dessous, dont l'absence
+    coupe reellement `/chat`/`/reviews`. Une erreur de configuration S3 ne
+    doit couter que les preuves QA, jamais le reste du service."""
+    try:
+        return s3_config_from_env()
+    except RuntimeError as exc:
+        logger.warning(
+            "configuration S3 incomplete (%s) : QAValidation degradera sans "
+            "televerser de preuves",
+            exc,
+        )
+        return None
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     auth_state = AuthState.from_env()
@@ -136,7 +157,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # (`s3_config_from_env` — voir sa docstring pour la degradation
         # explicite si `S3_ENDPOINT` est absent : `QAValidation` produit
         # alors un verdict mais ne televerse aucune preuve).
-        qa_evidence_s3=s3_config_from_env(),
+        qa_evidence_s3=_qa_evidence_s3_config_or_none(),
         qa_workshop_devcontainer_repo=os.environ.get(
             "PM_ENGINE_QA_WORKSHOP_DEVCONTAINER_REPO", ""
         ),
