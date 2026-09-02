@@ -91,11 +91,23 @@ async fn main() -> Result<()> {
     tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
     inject_net_proxy_config(&rootfs_dir).await?;
 
+    tracing::info!("injecting the opencode binary");
+    inject_opencode_binary(&rootfs_dir).await?;
+
     tracing::info!("cloning target repository into the workspace");
     ensure_workspace_clone(&rootfs_dir, &source, git_credentials.as_ref()).await?;
 
     tracing::info!("installing the boot-time workspace refresh service");
     inject_workspace_refresh(&rootfs_dir, &source).await?;
+
+    tracing::info!("installing terminal (ttyd) and web IDE (code-server)");
+    inject_terminal_and_ide(&rootfs_dir, &source).await?;
+
+    tracing::info!("installing sshd");
+    inject_sshd(&rootfs_dir).await?;
+
+    tracing::info!("checking for an init system, installing a minimal fallback if absent");
+    ensure_init_system(&rootfs_dir).await?;
 
     tracing::info!("packaging rootfs as ext4");
     let ext4_path = work_dir.join("rootfs.ext4");
@@ -589,9 +601,9 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     let proxy_url = format!("http://169.254.0.1:{net_proxy_port}");
 
     // /etc/environment est lu par pam_env pour toute session de login
-    // (SSH/terminal interactif, ex: code-server, Claude Code) : on complete
-    // le fichier existant plutot que de l'ecraser, une image de base pouvant
-    // deja y definir d'autres variables.
+    // (SSH/terminal interactif, ex: code-server, un CLI d'agent) : on
+    // complete le fichier existant plutot que de l'ecraser, une image de
+    // base pouvant deja y definir d'autres variables.
     let environment_path = rootfs_dir.join("etc/environment");
     let mut environment = tokio::fs::read_to_string(&environment_path)
         .await
@@ -602,18 +614,74 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     environment.push_str(&format!(
         "HTTP_PROXY={proxy_url}\nHTTPS_PROXY={proxy_url}\nhttp_proxy={proxy_url}\nhttps_proxy={proxy_url}\nNO_PROXY=169.254.0.1\nno_proxy=169.254.0.1\n"
     ));
-    // LLM Proxy (service global du cluster, `deploy/dev/llm-proxy/`) :
-    // route les appels Anthropic Messages API de Claude Code vers
-    // `net-proxy` (alias `llm-proxy`, `crates/net-proxy/src/internal.rs`),
+    // LLM Proxy (service global du cluster, `deploy/dev/llm-proxy/`), route
+    // vers `net-proxy` (alias `llm-proxy`, `crates/net-proxy/src/internal.rs`),
     // jamais un nom DNS reel — rien a ajouter a l'allowlist egress.
-    // `ANTHROPIC_API_KEY` vide desactive explicitement toute cle locale
-    // eventuellement presente sur l'image de base, pour forcer le passage
-    // par `ANTHROPIC_AUTH_TOKEN`. N'ecrit rien si le service n'est pas
-    // configure cote controller (`ATELIER_LLM_PROXY_AUTH_TOKEN` absent) —
-    // meme convention que le reste des fonctionnalites optionnelles.
-    if let Ok(llm_proxy_auth_token) = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN") {
+    // N'ecrit rien si le service n'est pas configure cote controller
+    // (`ATELIER_LLM_PROXY_AUTH_TOKEN` absent) — meme convention que le
+    // reste des fonctionnalites optionnelles.
+    // Valeur VIDE traitee comme absente (voir la meme garde dans
+    // `crates/controller/src/reconcile.rs`) : injecter un jeton vide donnait
+    // un guest qui parlait a LiteLLM sans s'authentifier, sans erreur
+    // visible — pire qu'une absence franche de configuration.
+    if let Some(llm_proxy_auth_token) = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        // `ANTHROPIC_API_KEY` vide desactive explicitement toute cle locale
+        // eventuellement presente sur l'image de base, pour forcer le
+        // passage par `ANTHROPIC_AUTH_TOKEN` — utile a un CLI Anthropic
+        // qu'un developpeur choisirait d'installer lui-meme dans son
+        // devcontainer (usage interactif, hors du chemin automatise
+        // ci-dessous).
         environment.push_str(&format!(
             "ANTHROPIC_BASE_URL=http://llm-proxy\nANTHROPIC_AUTH_TOKEN={llm_proxy_auth_token}\nANTHROPIC_API_KEY=\n"
+        ));
+        // `opencode` (sst/opencode, licence MIT) : agent delegue par
+        // `pm_engine.nodes.delegate_to_opencode` (remplace Claude Code le
+        // 2026-09-01, voir docs/architecture/pieges.md — segfault
+        // reproductible du binaire Bun `claude.exe`, sans rapport avec
+        // cette infrastructure, et volonte de ne pas maintenir de
+        // dependance de premier plan a un CLI en licence fermee dans un
+        // outil qu'on veut entierement open source).
+        // `OPENCODE_CONFIG_CONTENT` : config JSON inline plutot qu'un
+        // fichier separe — evite de supposer un repertoire home fixe sur
+        // une image de base arbitraire (meme raison que le choix
+        // `/etc/environment` plutot qu'un profil utilisateur). Le
+        // fournisseur `atelier` (`@ai-sdk/openai-compatible`) parle a
+        // `llm-proxy` en API OpenAI standard — LiteLLM expose les deux
+        // formes (`/v1/chat/completions` et `/v1/messages`) quel que soit
+        // le fournisseur reel derriere l'alias `atelier-workshop-agent`
+        // (voir `deploy/dev/llm-proxy/config.yaml`).
+        let opencode_config = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "atelier": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Atelier LLM Proxy",
+                    "options": {
+                        "baseURL": "http://llm-proxy/v1",
+                        "apiKey": "{env:ATELIER_LLM_PROXY_AUTH_TOKEN}",
+                    },
+                    // `models` est OBLIGATOIRE, meme pour un fournisseur
+                    // OpenAI-compatible : `opencode` ne decouvre pas les
+                    // modeles en interrogeant `/v1/models`, il ne connait
+                    // que ceux du catalogue models.dev et ceux declares
+                    // ici. Sans cette section, `opencode models` ne liste
+                    // rien pour `atelier` et `opencode run --model
+                    // atelier/atelier-workshop-agent` se bloque sans le
+                    // moindre message (constate en Workshop reel).
+                    "models": {
+                        "atelier-workshop-agent": {
+                            "name": "Atelier Workshop Agent",
+                        },
+                    },
+                },
+            },
+        })
+        .to_string();
+        environment.push_str(&format!(
+            "ATELIER_LLM_PROXY_AUTH_TOKEN={llm_proxy_auth_token}\nOPENCODE_CONFIG_CONTENT={opencode_config}\n"
         ));
     }
     tokio::fs::write(&environment_path, environment)
@@ -628,6 +696,55 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     tokio::fs::write(&resolv_conf_path, "nameserver 169.254.0.1\n")
         .await
         .with_context(|| format!("ecriture de {resolv_conf_path:?}"))?;
+
+    Ok(())
+}
+
+/// Copie le binaire `opencode` (baque dans CETTE image `atelier-image-builder`,
+/// voir `Dockerfile`) dans le rootfs du devcontainer construit.
+///
+/// Decision (2026-09-01) : ne JAMAIS compter sur le devcontainer.json du
+/// depot cible (ni sur une Feature, ni sur un `postCreateCommand`) pour
+/// installer `opencode` — un telechargement depuis l'interieur de la
+/// microVM builder passe par `net-proxy`, dont le tunnel CONNECT reste
+/// bloque sans erreur sur un gros binaire externe
+/// (`release-assets.githubusercontent.com`, plusieurs minutes sans
+/// avancer, cause non identifiee — voir docs/architecture/pieges.md). CE
+/// conteneur (`atelier-image-builder`), lui, a un acces reseau normal AU
+/// MOMENT DU `docker build` (image Dockerfile, jamais au runtime) : le
+/// binaire est deja present sur disque quand ce process tourne, aucun
+/// reseau requis ici. Meme garantie que Claude Code, qui n'avait jamais
+/// ete installe par atelier mais se trouvait deja, par chance, dans
+/// l'image de base Microsoft — sauf qu'ici la presence est GARANTIE, plus
+/// besoin de chance.
+///
+/// `ATELIER_OPENCODE_BIN` absent ou fichier introuvable : best-effort, ne
+/// bloque pas le build (meme convention que le reste de ce module) — utile
+/// en dev quand cette image n'a pas ete rebuild avec le binaire baque.
+async fn inject_opencode_binary(rootfs_dir: &Path) -> Result<()> {
+    let Ok(source_path) = std::env::var("ATELIER_OPENCODE_BIN") else {
+        tracing::warn!(
+            "ATELIER_OPENCODE_BIN absent, opencode ne sera pas injecte dans ce devcontainer"
+        );
+        return Ok(());
+    };
+    if !tokio::fs::try_exists(&source_path).await.unwrap_or(false) {
+        tracing::warn!(
+            source_path,
+            "binaire opencode introuvable, injection ignoree"
+        );
+        return Ok(());
+    }
+
+    let dest_path = rootfs_dir.join("usr/local/bin/opencode");
+    tokio::fs::copy(&source_path, &dest_path)
+        .await
+        .with_context(|| format!("copie de {source_path} vers {dest_path:?}"))?;
+
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o755))
+        .await
+        .with_context(|| format!("chmod +x de {dest_path:?}"))?;
 
     Ok(())
 }
@@ -825,6 +942,436 @@ exit 0
             &link,
         )
         .ok();
+    }
+    Ok(())
+}
+
+/// Installe `ttyd` (terminal web) et `code-server` (IDE web) — jusqu'ici
+/// fournis UNIQUEMENT par le devcontainer de demo externe
+/// (`github.com/PhilippeVienne/atelier-workspace`), jamais par
+/// `image-builder`. Sans ca, un Workshop sur n'importe quel autre depot
+/// cible ne repond jamais sur `ttyd:7681` (sonde de readiness, voir
+/// `crates/controller/src/reconcile.rs::GUEST_TERMINAL_PORT`) et reste
+/// bloque hors `Running` — ni terminal, ni IDE. Meme mecanisme que
+/// `inject_opencode_binary` : binaires deja baques dans CETTE image
+/// (`Dockerfile`), simple copie, aucun reseau requis dans la microVM.
+///
+/// Mot de passe recupere via `GET http://169.254.0.1:3132/session-auth`
+/// (503 tant que le controller ne l'a pas provisionne — contrat documente
+/// dans `crates/net-proxy/src/metadata.rs`) : `ttyd --credential` (Basic
+/// Auth reel) pour le terminal ; `PASSWORD=... code-server --auth
+/// password` pour l'IDE — `code-server` IGNORE le Basic Auth (mesure le
+/// 2026-09-01, voir docs/architecture/pieges.md), c'est sa propre variable
+/// d'environnement qui compte.
+async fn inject_terminal_and_ide(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
+    let (Ok(ttyd_bin), Ok(code_server_dir)) = (
+        std::env::var("ATELIER_TTYD_BIN"),
+        std::env::var("ATELIER_CODE_SERVER_DIR"),
+    ) else {
+        tracing::warn!(
+            "ATELIER_TTYD_BIN/ATELIER_CODE_SERVER_DIR absents, terminal et IDE web non installes"
+        );
+        return Ok(());
+    };
+
+    // `User=vscode` est deja suppose par `inject_workspace_refresh`
+    // ci-dessus, et par les deux unites installees plus bas — mais rien ne
+    // le garantissait sur une image de base qui n'est pas de la famille
+    // `mcr.microsoft.com/devcontainers/*`. `systemd` refuserait sinon de
+    // demarrer ces unites (utilisateur inconnu de `/etc/passwd`), en
+    // silence.
+    ensure_vscode_user(rootfs_dir).await?;
+
+    let bin_dir = rootfs_dir.join("usr/local/bin");
+    tokio::fs::create_dir_all(&bin_dir).await?;
+
+    let ttyd_dest = bin_dir.join("ttyd");
+    tokio::fs::copy(&ttyd_bin, &ttyd_dest)
+        .await
+        .with_context(|| format!("copie de {ttyd_bin} vers {ttyd_dest:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&ttyd_dest, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+
+    let code_server_dest = rootfs_dir.join("opt/atelier-code-server");
+    let status = Command::new("cp")
+        .args(["-a", &code_server_dir, &code_server_dest.to_string_lossy()])
+        .status()
+        .await
+        .context("copie de code-server")?;
+    ensure!(status.success(), "cp -a code-server a echoue");
+    chown_recursive(&code_server_dest);
+
+    let ws_path = format!("/workspaces/{}", workspace_name(source));
+
+    // Boucle de retry : le secret `session_auth` (OpenBao) n'est
+    // provisionne par le controller qu'apres la creation du pod parent,
+    // pas garanti pret au premier `systemctl start` — `net-proxy` renvoie
+    // `503` jusque-la (meme convention que `atelier-fetch-session-auth.sh`
+    // du devcontainer de demo).
+    let fetch_password = "PASSWORD=\"\"\nfor i in $(seq 1 60); do\n    PASSWORD=$(curl -fsS http://169.254.0.1:3132/session-auth 2>/dev/null) && [ -n \"$PASSWORD\" ] && break\n    sleep 2\ndone\n";
+
+    let ttyd_script = format!(
+        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexec /usr/local/bin/ttyd --writable --credential \"atelier:$PASSWORD\" -p 7681 bash\n"
+    );
+    write_executable(&bin_dir.join("atelier-start-ttyd.sh"), &ttyd_script).await?;
+
+    let code_server_script = format!(
+        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexport PASSWORD\nexec /opt/atelier-code-server/bin/code-server --auth password --bind-addr 0.0.0.0:8080 {ws_path}\n"
+    );
+    write_executable(
+        &bin_dir.join("atelier-start-code-server.sh"),
+        &code_server_script,
+    )
+    .await?;
+
+    install_and_enable_unit(
+        rootfs_dir,
+        "atelier-terminal.service",
+        "[Unit]\nDescription=Terminal web atelier (ttyd)\nAfter=network.target\n\n\
+         [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
+         ExecStart=/usr/local/bin/atelier-start-ttyd.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+    )
+    .await?;
+
+    install_and_enable_unit(
+        rootfs_dir,
+        "atelier-code-server.service",
+        "[Unit]\nDescription=IDE web atelier (code-server)\nAfter=network.target\n\n\
+         [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
+         ExecStart=/usr/local/bin/atelier-start-code-server.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// `vscode`/uid 1000 est une convention des images `mcr.microsoft.com/
+/// devcontainers/*` (et du devcontainer de demo), jamais garantie par la
+/// spec devcontainer elle-meme. Ecrit directement les entrees minimales
+/// dans le rootfs plutot que d'invoquer `useradd` (qui n'existe pas sur
+/// toutes les images de base, et qu'on ne peut de toute facon pas executer
+/// DANS un rootfs etranger sans y chrooter).
+async fn ensure_vscode_user(rootfs_dir: &Path) -> Result<()> {
+    ensure_system_user(
+        rootfs_dir,
+        "vscode",
+        1000,
+        1000,
+        "/home/vscode",
+        "/bin/bash",
+    )
+    .await
+}
+
+/// `sshd` (OpenSSH >= 7.5, y compris la version Debian bookworm embarquee
+/// ici) exige un compte systeme dedie pour sa separation de privileges
+/// MEME AVEC `UsePrivilegeSeparation no` dans la config — cette directive
+/// est desormais un no-op silencieux (`Deprecated option
+/// UsePrivilegeSeparation`, constate en pratique le 2026-09-01), pas un
+/// vrai interrupteur. Sans ce compte, `sshd -t` echoue immediatement avec
+/// `Privilege separation user sshd does not exist`, avant meme d'ecouter
+/// sur un port.
+async fn ensure_sshd_user(rootfs_dir: &Path) -> Result<()> {
+    // `/nonexistent`, PAS `/run/sshd` : ce dernier est le repertoire de
+    // separation de privileges de `sshd` lui-meme, qui EXIGE qu'il
+    // appartienne a root et ne soit ni group- ni world-writable — le
+    // confondre avec le "home" de l'utilisateur `sshd` le fait chown vers
+    // 101:101, que `sshd -t` refuse alors de demarrer (constate en
+    // pratique). `/run/sshd` est cree par le script de demarrage
+    // (`atelier-start-sshd.sh`, execute en root avant l'abandon de
+    // privileges), jamais ici.
+    ensure_system_user(
+        rootfs_dir,
+        "sshd",
+        101,
+        101,
+        "/nonexistent",
+        "/usr/sbin/nologin",
+    )
+    .await
+}
+
+/// Cree un utilisateur/groupe directement dans `/etc/passwd`,
+/// `/etc/group`, `/etc/shadow` du rootfs, si absent — sans invoquer
+/// `useradd` (indisponible sur toutes les images de base, et de toute
+/// facon inexecutable DANS un rootfs etranger sans y chrooter).
+async fn ensure_system_user(
+    rootfs_dir: &Path,
+    name: &str,
+    uid: u32,
+    gid: u32,
+    home: &str,
+    shell: &str,
+) -> Result<()> {
+    let has_entry = |content: &str| content.lines().any(|l| l.split(':').next() == Some(name));
+
+    let passwd_path = rootfs_dir.join("etc/passwd");
+    let mut passwd = tokio::fs::read_to_string(&passwd_path)
+        .await
+        .unwrap_or_default();
+    let already_existed = has_entry(&passwd);
+
+    if !already_existed {
+        tracing::warn!(
+            name,
+            "utilisateur absent de l'image de base, creation directe dans le rootfs"
+        );
+        if !passwd.is_empty() && !passwd.ends_with('\n') {
+            passwd.push('\n');
+        }
+        passwd.push_str(&format!("{name}:x:{uid}:{gid}:{name}:{home}:{shell}\n"));
+        tokio::fs::write(&passwd_path, passwd)
+            .await
+            .with_context(|| format!("ecriture de {passwd_path:?}"))?;
+
+        let group_path = rootfs_dir.join("etc/group");
+        let mut group = tokio::fs::read_to_string(&group_path)
+            .await
+            .unwrap_or_default();
+        if !has_entry(&group) {
+            if !group.is_empty() && !group.ends_with('\n') {
+                group.push('\n');
+            }
+            group.push_str(&format!("{name}:x:{gid}:\n"));
+            tokio::fs::write(&group_path, group)
+                .await
+                .with_context(|| format!("ecriture de {group_path:?}"))?;
+        }
+
+        let home_dir = rootfs_dir.join(home.trim_start_matches('/'));
+        tokio::fs::create_dir_all(&home_dir).await.ok();
+        let _ = Command::new("chown")
+            .args([
+                format!("{uid}:{gid}"),
+                home_dir.to_string_lossy().into_owned(),
+            ])
+            .status()
+            .await;
+    }
+
+    // Applique QUE le compte vienne d'etre cree ou existait deja dans
+    // l'image de base (ex: `vscode` sur `mcr.microsoft.com/devcontainers/*`) :
+    // ce dernier cas porte aussi frequemment un `!` en `/etc/shadow`, et
+    // `sshd` le traite comme un compte ADMINISTRATIVEMENT VERROUILLE
+    // ("User vscode not allowed because account is locked", constate en
+    // pratique le 2026-09-01) — un blocage qui s'applique a TOUTE methode
+    // d'authentification, y compris par cle publique, pas seulement au mot
+    // de passe. `*` reste "aucun mot de passe ne peut authentifier ce
+    // compte" sans declencher ce verrou.
+    unlock_shadow_password(rootfs_dir, name).await;
+    Ok(())
+}
+
+/// Reecrit le champ mot de passe de `/etc/shadow` pour `name` de `!` vers
+/// `*` (voir `ensure_system_user`), ou ajoute une entree `*` si absente.
+/// Best-effort silencieux : un `/etc/shadow` illisible ou absent ne doit
+/// jamais faire echouer le build.
+async fn unlock_shadow_password(rootfs_dir: &Path, name: &str) {
+    let shadow_path = rootfs_dir.join("etc/shadow");
+    let Ok(shadow) = tokio::fs::read_to_string(&shadow_path).await else {
+        return;
+    };
+    let prefix = format!("{name}:");
+    let mut changed = false;
+    let mut lines: Vec<String> = shadow
+        .lines()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix(&prefix) {
+                if let Some(rest_after_field) = rest.strip_prefix('!') {
+                    changed = true;
+                    return format!("{prefix}*{rest_after_field}");
+                }
+            }
+            line.to_string()
+        })
+        .collect();
+    if !changed {
+        if lines.iter().any(|l| l.starts_with(&prefix)) {
+            return;
+        }
+        lines.push(format!("{name}:*:19000:0:99999:7:::"));
+    }
+    let mut new_shadow = lines.join("\n");
+    new_shadow.push('\n');
+    let _ = tokio::fs::write(&shadow_path, new_shadow).await;
+}
+
+async fn write_executable(path: &Path, content: &str) -> Result<()> {
+    tokio::fs::write(path, content)
+        .await
+        .with_context(|| format!("ecriture de {path:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+    Ok(())
+}
+
+/// Ecrit une unite systemd et l'active a la main (symlink dans
+/// `multi-user.target.wants`) : `systemctl enable` est inoperant sur un
+/// rootfs hors ligne, meme methode que `inject_workspace_refresh` et le
+/// devcontainer de demo pour leurs propres unites.
+async fn install_and_enable_unit(rootfs_dir: &Path, name: &str, unit_content: &str) -> Result<()> {
+    let unit_dir = rootfs_dir.join("etc/systemd/system");
+    tokio::fs::create_dir_all(&unit_dir).await?;
+    tokio::fs::write(unit_dir.join(name), unit_content).await?;
+
+    let wants_dir = unit_dir.join("multi-user.target.wants");
+    tokio::fs::create_dir_all(&wants_dir).await?;
+    let link = wants_dir.join(name);
+    if !link.exists() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(format!("/etc/systemd/system/{name}"), &link).ok();
+    }
+    Ok(())
+}
+
+/// Installe `sshd` — meme raisonnement que `inject_terminal_and_ide` : ce
+/// n'etait jusqu'ici fourni QUE par le devcontainer de demo externe.
+///
+/// `sshd` (contrairement a `ttyd`/`code-server`) n'a pas de distribution
+/// statique officielle : le `Dockerfile` l'installe via apt dans l'image
+/// `atelier-image-builder` (meme famille glibc que la grande majorite des
+/// devcontainers reels) puis l'embarque avec ses bibliotheques dynamiques
+/// resolues par `ldd` — execute ici via son propre interprete
+/// (`ld.so --library-path ...`), sans jamais toucher au `ld.so.cache` de
+/// l'image CIBLE ni supposer que ses bibliotheques systeme sont compatibles.
+/// `UsePAM no` dans la config generee ci-dessous evite d'avoir a embarquer
+/// toute la pile PAM (modules charges par `dlopen`, jamais vus par `ldd`).
+async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
+    let Ok(sshd_dir) = std::env::var("ATELIER_SSHD_DIR") else {
+        tracing::warn!("ATELIER_SSHD_DIR absent, sshd non installe");
+        return Ok(());
+    };
+
+    let dest = rootfs_dir.join("opt/atelier-sshd");
+    let status = Command::new("cp")
+        .args(["-a", &sshd_dir, &dest.to_string_lossy()])
+        .status()
+        .await
+        .context("copie de sshd")?;
+    ensure!(status.success(), "cp -a sshd a echoue");
+
+    // Voir `ensure_sshd_user` : indispensable, `UsePrivilegeSeparation no`
+    // ne suffit plus sur les versions recentes d'OpenSSH.
+    ensure_sshd_user(rootfs_dir).await?;
+
+    let sshd_config = "Port 2222\n\
+         HostKey /etc/atelier-sshd/ssh_host_rsa_key\n\
+         HostKey /etc/atelier-sshd/ssh_host_ed25519_key\n\
+         PermitRootLogin no\n\
+         PasswordAuthentication no\n\
+         PubkeyAuthentication yes\n\
+         UsePAM no\n\
+         AuthorizedKeysFile /home/vscode/.ssh/authorized_keys\n\
+         PidFile /run/atelier-sshd.pid\n";
+    tokio::fs::create_dir_all(rootfs_dir.join("etc/atelier-sshd")).await?;
+    tokio::fs::write(rootfs_dir.join("etc/atelier-sshd/sshd_config"), sshd_config).await?;
+
+    let bin_dir = rootfs_dir.join("usr/local/bin");
+    tokio::fs::create_dir_all(&bin_dir).await?;
+
+    // Boucle de retry : meme contrat que `atelier-start-ttyd.sh`, la cle
+    // publique (`ssh_authorized_key`, OpenBao) n'est pas garantie prete au
+    // premier demarrage — voir `crates/net-proxy/src/metadata.rs`.
+    // `sshd` se re-execute lui-meme (`execve`) pour chaque connexion
+    // entrante, en repartant du chemin binaire brut — pas via notre wrapper
+    // `ld.so --library-path` — et ce re-exec echoue alors a charger ses
+    // bibliotheques embarquees (`libwrap.so.0: cannot open shared object
+    // file`, constate en pratique le 2026-09-01). `LD_LIBRARY_PATH`, en
+    // revanche, est un variable d'environnement normale : elle survit au
+    // re-exec et s'applique donc aussi au process enfant.
+    let script = "#!/usr/bin/env bash\n\
+         set -u\n\
+         export LD_LIBRARY_PATH=/opt/atelier-sshd/lib\n\
+         SSHD=/opt/atelier-sshd/bin/sshd\n\
+         SSHKEYGEN=/opt/atelier-sshd/bin/ssh-keygen\n\
+         RUN=\"/opt/atelier-sshd/bin/ld.so --library-path /opt/atelier-sshd/lib\"\n\
+         \n\
+         mkdir -p /home/vscode/.ssh /run/sshd\n\
+         PUBKEY=\"\"\n\
+         for i in $(seq 1 60); do\n    \
+             PUBKEY=$(curl -fsS http://169.254.0.1:3132/ssh-authorized-key 2>/dev/null) && [ -n \"$PUBKEY\" ] && break\n    \
+             sleep 2\n\
+         done\n\
+         echo \"$PUBKEY\" > /home/vscode/.ssh/authorized_keys\n\
+         chmod 700 /home/vscode/.ssh\n\
+         chmod 600 /home/vscode/.ssh/authorized_keys\n\
+         chown -R vscode:vscode /home/vscode/.ssh\n\
+         \n\
+         [ -f /etc/atelier-sshd/ssh_host_rsa_key ] || $RUN \"$SSHKEYGEN\" -q -t rsa -f /etc/atelier-sshd/ssh_host_rsa_key -N \"\"\n\
+         [ -f /etc/atelier-sshd/ssh_host_ed25519_key ] || $RUN \"$SSHKEYGEN\" -q -t ed25519 -f /etc/atelier-sshd/ssh_host_ed25519_key -N \"\"\n\
+         \n\
+         exec $RUN \"$SSHD\" -D -e -f /etc/atelier-sshd/sshd_config\n";
+    write_executable(&bin_dir.join("atelier-start-sshd.sh"), script).await?;
+
+    // `sshd` gere lui-meme la bascule vers l'utilisateur authentifie
+    // (`vscode`, seul compte cree par `ensure_vscode_user`) via la
+    // separation de privileges — contrairement a `ttyd`/`code-server`, cette
+    // unite tourne donc en root.
+    install_and_enable_unit(
+        rootfs_dir,
+        "atelier-sshd.service",
+        "[Unit]\nDescription=sshd atelier\nAfter=network.target\n\n\
+         [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\n\
+         ExecStart=/usr/local/bin/atelier-start-sshd.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// `image-builder` suppose partout ailleurs (`inject_workspace_refresh`,
+/// `inject_terminal_and_ide`, `inject_sshd`) que l'image de base demarre
+/// `systemd` en PID 1 pour activer les unites injectees — vrai pour la
+/// famille `mcr.microsoft.com/devcontainers/*` et le devcontainer de demo,
+/// jamais garanti par la spec devcontainer elle-meme. Si `systemd` est
+/// absent, ces unites ne seraient JAMAIS executees (silencieusement) :
+/// bascule alors `/sbin/init` vers `atelier-guest-init`
+/// (`crates/guest-init`), qui lance les memes scripts directement.
+///
+/// Le reseau n'a pas besoin d'etre reconfigure dans ce cas : c'est le
+/// noyau qui le fait au boot (`ip=`, voir `crates/vm-supervisor`), pas
+/// l'init — systemd ou non.
+async fn ensure_init_system(rootfs_dir: &Path) -> Result<()> {
+    let has_systemd = tokio::fs::try_exists(rootfs_dir.join("lib/systemd/systemd"))
+        .await
+        .unwrap_or(false)
+        || tokio::fs::try_exists(rootfs_dir.join("usr/lib/systemd/systemd"))
+            .await
+            .unwrap_or(false);
+    if has_systemd {
+        return Ok(());
+    }
+
+    let Ok(init_bin) = std::env::var("ATELIER_GUEST_INIT_BIN") else {
+        tracing::warn!(
+            "systemd absent de l'image de base et ATELIER_GUEST_INIT_BIN non defini : \
+             aucun service atelier (terminal, IDE, sshd, rafraichissement du workspace) \
+             ne demarrera dans ce Workshop"
+        );
+        return Ok(());
+    };
+    tracing::warn!(
+        "systemd absent de l'image de base, installation d'un init minimal (atelier-guest-init)"
+    );
+
+    let dest = rootfs_dir.join("sbin/init");
+    tokio::fs::create_dir_all(rootfs_dir.join("sbin")).await?;
+    // Peut deja exister (busybox init, symlink...) : sans effet ici de
+    // toute facon puisque systemd est absent, donc rien qui l'active.
+    tokio::fs::remove_file(&dest).await.ok();
+    tokio::fs::copy(&init_bin, &dest)
+        .await
+        .with_context(|| format!("copie de {init_bin} vers {dest:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).await?;
     }
     Ok(())
 }

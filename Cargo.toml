@@ -7,6 +7,7 @@ members = [
     "crates/firecracker",
     "crates/vm-supervisor",
     "crates/builder-vm-init",
+    "crates/guest-init",
     "crates/net-proxy",
     "crates/identity-proxy",
     "crates/mcp-gateway",
