@@ -59,11 +59,13 @@ flowchart TB
 Deux points de bouclage, chacun borné par un compteur dédié (§5) :
 
 - `ReviewArchitecture` rejeté → retour à `PlanParallelTasks` (le LLM replanifie avec les objections injectées), **jamais** directement à `ProvisionWorkshop` — un découpage jugé malsain ne doit pas être corrigé en aval par les devs, il doit être refait à la source.
-- `ReviewCode`/`ReviewSecurity`/`ReviewOps` rejetés → retour à `AutoCorrectionLoop` (réutilise le mécanisme de re-délégation déjà en place), avec les commentaires de revue injectés dans `analysis` de la même façon que `error_trace` l'est aujourd'hui.
+- `ReviewCode`/`ReviewSecurity`/`ReviewOps` rejetés → retour à `DelegateToOpencode` via un nœud dédié `ReviewReconsideration` (même mécanisme de re-délégation qu'`AutoCorrectionLoop`, mais un nœud **distinct** — voir §4.4 : un code rejeté par la revue et un code qui ne compile pas sont des échecs de nature différente, confondre leurs budgets bornerait l'un par l'usure de l'autre), avec les commentaires de revue injectés dans `analysis` de la même façon que `error_trace` l'est aujourd'hui.
 
 Budget épuisé sur l'un ou l'autre point : on **avance quand même**, exactement la doctrine déjà retenue par `route_after_tests` — un humain tranche ensuite via `AwaitHitlApproval`, qui doit voir dans son message d'interruption que des rôles ont été outrepassés (§6).
 
-`ReviewSecurity` et `ReviewOps`, quand tous deux déclenchés, s'exécutent en parallèle (fan-out/fan-in LangGraph natif, deux branches indépendantes convergeant vers la même porte de synthèse) : ils lisent le même diff sans écrire le même champ d'état, rien ne les rend séquentiels.
+`ReviewSecurity` et `ReviewOps`, quand tous deux déclenchés, s'exécutent en parallèle (fan-out/fan-in LangGraph natif — `route_after_code_review` renvoie une liste de plusieurs clés, LangGraph exécute chacune, convergence sur un nœud `ReviewGate`) : ils lisent le même diff sans écrire le même champ **de résultat**.
+
+**Piège réel, trouvé lors du premier run de validation de bout en bout (ticket #27, 2026-09-02), pas anticipé à la conception** : les deux nœuds écrivaient chacun `"phase"` (comme tout autre nœud du graphe) avec des valeurs différentes (`"ReviewSecurity"` / `"ReviewOps"`). LangGraph refuse deux écritures concurrentes différentes sur une même clé d'état dans le même superstep sans réducteur explicite (`InvalidUpdateError: At key 'phase'. Can receive only one value per step.`) — aucun test unitaire (qui invoque chaque nœud isolément) ne pouvait le révéler, seule l'exécution réelle du fan-out par le moteur LangGraph le fait apparaître. Corrigé en retirant l'écriture de `"phase"` de ces deux nœuds : `ReviewGate`, seul point de convergence, la porte pour les deux. **Leçon pour tout futur rôle qui s'exécuterait en parallèle d'un autre** : n'écrire, dans l'état partagé, que des clés dont on est seul responsable à cet instant du graphe — jamais une clé « générique » (`phase`, `status`...) que plusieurs branches concurrentes pourraient toucher au même superstep, sauf à la déclarer explicitement `Annotated` avec un réducteur qui sait fusionner deux écritures.
 
 ---
 
