@@ -1,4 +1,4 @@
-"""Les 11 noeuds du graphe LangGraph du PM (Jalon M5, tache 5.2.2 — voir
+"""Les 12 noeuds du graphe LangGraph du PM (Jalon M5, tache 5.2.2 — voir
 `docs/specs/PLAN-ACTION-GLOBAL.md`, section 8.2, et
 `docs/specs/05-devfactory-pm-engine.md`).
 
@@ -72,8 +72,13 @@ async def analyze_issue(state: PMWorkflowState, config: RunnableConfig) -> dict:
                 "role": "system",
                 "content": (
                     "Tu es le Project Manager autonome d'Atelier. Analyse ce ticket et "
-                    "resume en 2-3 phrases ce qu'il faut livrer, sans decouper en taches "
-                    "(le decoupage est fait par un autre noeud)."
+                    "reformule-le en une job story (\"Quand <situation>, l'utilisateur "
+                    "veut <motivation>, afin de <resultat>\") suivie de 2 a 5 criteres "
+                    "d'acceptation verifiables (un par ligne, commencant par '- '). "
+                    "Un ticket flou approxime silencieusement en sous-taches : le "
+                    "decoupage (fait par un autre noeud) et l'agent qui livre ont besoin "
+                    "d'un objectif explicite et testable, pas d'un resume vague. "
+                    "Ne decoupe pas en taches ici — c'est le role d'un autre noeud."
                 ),
             },
             {"role": "user", "content": f"# {issue.title}\n\n{issue.body}"},
@@ -192,6 +197,11 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     "fichiers (chaque sous-tache doit avoir un perimetre de fichiers "
                     "disjoint des autres, pour eviter tout conflit entre agents "
                     "paralleles).\n\n"
+                    "Avant de figer le decoupage, trace mentalement le graphe de "
+                    "dependances entre les sous-taches envisagees (qui a besoin du "
+                    "resultat de qui pour tourner ou pour etre teste). Toute arete de "
+                    "dependance entre deux sous-taches interdit de les paralleliser : "
+                    "fusionne-les en une seule, ou renonce au decoupage.\n\n"
                     "CONTRAINTE ESSENTIELLE : chaque sous-tache est confiee a un agent "
                     "qui travaille SEUL, dans un environnement ou le code des AUTRES "
                     "sous-taches n'existe pas encore. Chaque sous-tache doit donc etre "
@@ -240,8 +250,15 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
     # d'un mauvais decoupage est plusieurs microVM qui produisent chacune leur
     # version de la meme application, donc du budget LLM brule pour du travail
     # jete.
+    # Distingue des autres raisons de replier a une seule tache : c'est
+    # cette condition, et elle seule, qui declenche `ExpandGreenfieldSpec`
+    # (voir routage dans `graph.py`). Un decoupage juge incoherent
+    # (`_plan_is_credible`) dans un depot deja pourvu n'a pas besoin de
+    # spec — le socle existe deja.
+    is_greenfield_repo = root_entries is not None and _is_greenfield(root_entries)
+
     single_task_reason: str | None = None
-    if root_entries is not None and _is_greenfield(root_entries) and len(raw_tasks) > 1:
+    if is_greenfield_repo and len(raw_tasks) > 1:
         single_task_reason = (
             "le depot est vierge : chaque agent devrait inventer son propre socle"
         )
@@ -273,7 +290,57 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
         for task in raw_tasks
     ]
 
-    return {"plan": plan, "phase": "PlanParallelTasks"}
+    return {"plan": plan, "greenfield": is_greenfield_repo, "phase": "PlanParallelTasks"}
+
+
+# --------------------------------------------------------------------------
+# 2bis. ExpandGreenfieldSpec (uniquement si `greenfield` est vrai)
+# --------------------------------------------------------------------------
+async def expand_greenfield_spec(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Precise l'architecture d'un projet parti de zero AVANT de le deleguer.
+
+    `PlanParallelTasks` a deja ecarte le risque de deux socles concurrents
+    en repliant le decoupage a une seule sous-tache (voir `_is_greenfield`).
+    Mais un seul agent face a un ticket vague choisit quand meme un point
+    d'entree, un manifeste et une arborescence au hasard, faute d'une
+    consigne explicite — la qualite du livrable en depend, pas seulement
+    l'absence de conflit entre agents. S'inspire du gabarit `create-prd` de
+    github.com/phuryn/pm-skills (section solution/architecture), reduit a
+    l'essentiel pour ne pas gonfler le cout d'un run deja greenfield."""
+    deps = _deps(config)
+
+    spec = await deps.llm_client.chat(
+        deps.chat_model,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Ce ticket vise un depot VIERGE : un seul agent va tout construire, "
+                    "sans aucun code de reference existant. Fixe les decisions "
+                    "d'architecture qu'il ne doit pas improviser, en Markdown concis "
+                    "(10 lignes maximum) :\n"
+                    "1. Point d'entree unique (chemin exact du fichier).\n"
+                    "2. Manifeste de dependances (nom exact : package.json, "
+                    "pyproject.toml, Cargo.toml...).\n"
+                    "3. Arborescence des dossiers principaux.\n"
+                    "4. Techno/langage retenu si le ticket ne le precise pas "
+                    "(justifie en une phrase).\n"
+                    "5. Point d'entree des tests : `.devcontainer/test.sh` DOIT exister "
+                    "et lancer la suite complete (c'est la commande fixe que "
+                    "l'integration continue execute ensuite — voir "
+                    "`nodes.run_devcontainer_tests`).\n"
+                    "N'invente aucune fonctionnalite absente du ticket."
+                ),
+            },
+            {"role": "user", "content": state.get("analysis", "")},
+        ],
+    )
+
+    return {"greenfield_spec": spec, "phase": "ExpandGreenfieldSpec"}
+
+
+def route_after_plan(state: PMWorkflowState) -> str:
+    return "ExpandGreenfieldSpec" if state.get("greenfield") else "ProvisionWorkshop"
 
 
 # --------------------------------------------------------------------------
@@ -352,7 +419,7 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
     # Cette attente est indispensable : `create_workshop` est asynchrone (il
     # cree la ressource Kubernetes et rend la main immediatement), mais le
     # Workshop met ensuite ~1 min a construire son image puis a booter sa
-    # microVM. Sans elle, `DelegateToClaudeCode` partait aussitot et
+    # microVM. Sans elle, `DelegateToOpencode` partait aussitot et
     # echouait systematiquement ("le Workshop n'a pas de pod parent actif"),
     # bloquant le graphe a ce noeud. Provisionner, c'est rendre pret.
     for task in state.get("plan", []):
@@ -423,13 +490,24 @@ async def _await_workshop_running(deps: PmEngineDeps, workshop_name: str) -> Non
 
 
 # --------------------------------------------------------------------------
-# 4. DelegateToClaudeCode
+# 4. DelegateToOpencode
 # --------------------------------------------------------------------------
-async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig) -> dict:
-    """Lance Claude Code dans chaque microVM (`exec_in_workshop`, MCP) avec
-    le perimetre de fichiers de sa sous-tache injecte dans le prompt —
-    c'est ce qui garantit l'absence de chevauchement (voir
-    docs/specs/05-devfactory-pm-engine.md, section 1)."""
+async def delegate_to_opencode(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Lance `opencode` (sst/opencode, licence MIT) dans chaque microVM
+    (`exec_in_workshop`, MCP) avec le perimetre de fichiers de sa sous-tache
+    injecte dans le prompt — c'est ce qui garantit l'absence de
+    chevauchement (voir docs/specs/05-devfactory-pm-engine.md, section 1).
+
+    Remplace `claude` (Claude Code, CLI proprietaire Anthropic) le
+    2026-09-01 : (1) un segfault reproductible du binaire Bun `claude.exe`,
+    sans rapport avec l'infrastructure d'atelier (isole hors microVM, sur le
+    noeud lui-meme — voir docs/architecture/pieges.md) a montre qu'un CLI
+    proprietaire distribue comme executable compile est un point de
+    fragilite qu'atelier ne maitrise pas ; (2) atelier vise une plateforme
+    entierement open source — y maintenir une dependance de premier plan a
+    un outil en licence fermee expose a des changements de conditions
+    d'utilisation hors de notre controle. `opencode` reste compatible avec
+    l'ecosysteme MCP/skills existant."""
     deps = _deps(config)
 
     async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
@@ -442,8 +520,15 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
             # (0 fichier modifie), sans que rien ne signale l'anomalie.
             # Constate en executant le graphe complet pour la premiere fois
             # (2026-08-30).
+            greenfield_spec = state.get("greenfield_spec")
+            spec_section = (
+                f"\n\nArchitecture a suivre (depot vierge, decide en amont pour "
+                f"eviter tout choix arbitraire) :\n{greenfield_spec}"
+                if greenfield_spec
+                else ""
+            )
             prompt = (
-                f"{task['title']}\n\n{state.get('analysis', '')}\n\n"
+                f"{task['title']}\n\n{state.get('analysis', '')}{spec_section}\n\n"
                 f"IMPORTANT: ne modifie QUE les fichiers sous {scope} — un autre agent "
                 "travaille en parallele sur le reste de ce depot.\n\n"
                 "Quand ton travail est termine, commite-le puis pousse-le sur la "
@@ -456,45 +541,73 @@ async def delegate_to_claude_code(state: PMWorkflowState, config: RunnableConfig
             # du texte genere par un LLM a partir du ticket (`analysis`) et
             # des chemins entoures de backticks — bash executait donc des
             # fragments du prompt comme des commandes (`api/: No such file or
-            # directory`, `fatal: not a git repository`...), et Claude Code
+            # directory`, `fatal: not a git repository`...), et l'agent
             # recevait un prompt tronque. Bug reel constate le 2026-08-30 en
-            # executant le graphe complet.
+            # executant le graphe complet (avec Claude Code, meme risque
+            # avec n'importe quel CLI).
             #
             # Au-dela du dysfonctionnement, c'est une injection de commande :
             # le corps d'un ticket est une entree non fiable, et il finissait
             # interprete par le shell du Workshop. `shlex.quote` produit des
             # guillemets SIMPLES, ou plus rien n'est interprete.
-            # `bypassPermissions`, et NON `acceptEdits` : ce dernier
-            # auto-approuve les editions de fichiers mais PAS les commandes
-            # `Bash`. En mode `--print` (non interactif), il n'y a personne
-            # pour approuver : `git add`/`commit`/`push` etaient donc refuses
-            # en silence. L'agent ecrivait un travail complet et correct, qui
-            # restait en fichiers NON SUIVIS dans la microVM — et
-            # `OpenPullRequest` ouvrait une PR vide. Constate le 2026-08-31 :
-            # `git status` dans le Workshop montrait `?? api/`, `?? server.js`,
-            # `?? test/` avec un `git log` intact.
+            # `--auto` (opencode) : approuve automatiquement les permissions
+            # non explicitement refusees — l'equivalent de
+            # `--permission-mode bypassPermissions` cote Claude Code, requis
+            # pour la meme raison : en mode non-interactif (`opencode run`),
+            # il n'y a personne pour approuver `git add`/`commit`/`push`
+            # autrement, et l'agent ecrivait alors un travail complet et
+            # correct qui restait en fichiers NON SUIVIS dans la microVM —
+            # `OpenPullRequest` ouvrait une PR vide (constate avec Claude
+            # Code le 2026-08-31, meme mecanisme applicable ici).
             #
             # Deleguer les permissions est ici sans danger, et c'est meme la
             # raison d'etre d'Atelier : l'agent s'execute dans une microVM
             # Firecracker jetable, sans acces reseau hors allowlist. La
             # frontiere de securite est la microVM, pas l'invite de
             # confirmation d'un CLI.
+            # `< /dev/null` : sans stdin ferme, `opencode run` n'ecrit
+            # STRICTEMENT RIEN sur sa sortie — pas meme ses messages
+            # d'erreur — et reste bloque jusqu'au timeout. Constate le
+            # 2026-09-02 en Workshop reel : la meme commande, au caractere
+            # pres, passe de "aucune sortie, aucun code d'erreur" a une
+            # reponse complete selon que stdin est ferme ou non. Ce n'est
+            # pas cosmetique : c'est la difference entre un echec
+            # diagnosticable et un blocage muet.
             command = (
-                "claude --print --permission-mode bypassPermissions "
-                f"--model {shlex.quote(deps.claude_code_model)} "
-                f"{shlex.quote(prompt)}"
+                "opencode run --auto "
+                f"--model {shlex.quote(deps.opencode_model)} "
+                f"{shlex.quote(prompt)} < /dev/null"
             )
             execution = await call_tool_json(
                 session, "exec_in_workshop", {"name": task["workshop_name"], "command": command}
             )
-            await wait_for_exec_completion(
+            delegate_result = await wait_for_exec_completion(
                 deps.atelier_api_url,
                 deps.mcp_token_provider,
                 task["workshop_name"],
                 execution["executionId"],
             )
+            # Un agent qui crashe AVANT d'ecrire quoi que ce soit (constate
+            # en pratique avec `claude --print` : segfault Bun au demarrage,
+            # exit_code `None`, `stdout` vide — voir
+            # docs/architecture/pieges.md) laissait ce noeud continuer comme
+            # si de rien n'etait. Le symptome ne remontait alors qu'a
+            # `RunDevcontainerTests`, sous une forme trompeuse
+            # (`.devcontainer/test.sh: No such file or directory`, qui
+            # ressemble a un oubli de l'agent) — et `AutoCorrectionLoop`
+            # rappelait le meme binaire casse jusqu'a epuiser tout le budget
+            # de correction sans qu'une seule ligne de code soit ecrite. Une
+            # erreur d'ENVIRONNEMENT ne se corrige pas en reformulant le
+            # prompt : echouer immediatement, sans passer par la boucle de
+            # correction.
+            if delegate_result.exit_code != 0:
+                raise RuntimeError(
+                    "DelegateToOpencode: opencode n'a pas termine normalement dans "
+                    f"{task['workshop_name']} — "
+                    f"{format_test_trace(task['workshop_name'], delegate_result)}"
+                )
 
-    return {"phase": "DelegateToClaudeCode"}
+    return {"phase": "DelegateToOpencode"}
 
 
 # --------------------------------------------------------------------------
@@ -653,7 +766,7 @@ async def run_devcontainer_tests(state: PMWorkflowState, config: RunnableConfig)
 # --------------------------------------------------------------------------
 async def auto_correction_loop(state: PMWorkflowState, config: RunnableConfig) -> dict:
     """Incremente le compteur de tentatives — la decision de reboucler vers
-    `DelegateToClaudeCode` (traces d'erreur re-injectees dans le prompt du
+    `DelegateToOpencode` (traces d'erreur re-injectees dans le prompt du
     prochain passage) ou de continuer vers `OpenPullRequest` est prise par
     l'arete conditionnelle `route_after_correction` (voir `graph.py`), pas
     ici : ce noeud ne fait qu'avancer l'etat borne (jamais de boucle

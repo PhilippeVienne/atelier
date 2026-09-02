@@ -10,7 +10,7 @@ checkpoint EST cette verite, celle-la meme sur laquelle une reprise
 redemarre.
 
 Le pipeline dure une dizaine de minutes et ses phases longues
-(`DelegateToClaudeCode`) ne produisent aucune transition intermediaire : la
+(`DelegateToOpencode`) ne produisent aucune transition intermediaire : la
 progression fine (une microVM qui boote) se lit donc cote Workshops, pas
 ici — voir `phase_index` et `PIPELINE_PHASES`, qui donnent au client de quoi
 situer l'avancement sans inventer de pourcentage.
@@ -27,13 +27,13 @@ from .mcp_client import atelier_mcp_session, call_tool_json
 # Ordre des phases telles que les noeuds les ecrivent dans `state["phase"]`
 # (voir `pm_engine.graph`). Sert a situer un workflow dans son parcours ;
 # `AutoCorrectionLoop` n'y figure pas : ce n'est pas une etape en avant mais
-# un retour en arriere vers `DelegateToClaudeCode`, et l'afficher comme une
+# un retour en arriere vers `DelegateToOpencode`, et l'afficher comme une
 # progression donnerait une impression d'avancement alors qu'on recommence.
 PIPELINE_PHASES: list[str] = [
     "AnalyzeIssue",
     "PlanParallelTasks",
     "ProvisionWorkshop",
-    "DelegateToClaudeCode",
+    "DelegateToOpencode",
     "IntegrateSubTasks",
     "RunDevcontainerTests",
     "OpenPullRequest",

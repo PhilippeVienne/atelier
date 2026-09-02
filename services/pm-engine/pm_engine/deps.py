@@ -62,22 +62,26 @@ class PmEngineDeps:
     `http://atelier-forgejo-dev.default.svc.cluster.local/{repo}.git`.
     Renseigne depuis `PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE`."""
 
-    claude_code_model: str = "claude-3-5-sonnet-20241022"
-    """Modele passe explicitement a Claude Code (`--model`) dans les
-    Workshops.
+    opencode_model: str = "atelier/atelier-workshop-agent"
+    """Modele passe explicitement a `opencode` (`--model provider/model`)
+    dans les Workshops.
 
     Choisir le modele releve du PM (cout, reproductibilite d'un run a
-    l'autre) plutot que du defaut d'un CLI, dont le nom change a chaque
-    version.
+    l'autre) plutot que du defaut d'un CLI. Le provider `atelier` est defini
+    dans le `opencode.json` injecte par `image-builder`
+    (`inject_net_proxy_config`, `crates/image-builder`) : un fournisseur
+    `@ai-sdk/openai-compatible` pointant vers `llm-proxy` — voir
+    `deploy/dev/llm-proxy/config.yaml` pour l'alias LiteLLM
+    `atelier-workshop-agent` correspondant.
 
-    Note : Claude Code affiche un avertissement au demarrage sur le modele
-    ("issue with the selected model") meme quand tout fonctionne. Ce message
-    n'est PAS revelateur du probleme qu'il decrit — il apparaissait aussi
-    quand la vraie panne etait que l'alias `llm-proxy` n'etait pas resolvable
-    par DNS. Ne pas partir en chasse au modele sur la foi de ce seul message,
-    voir `docs/architecture/pieges.md`.
+    Ancien champ `claude_code_model` (Claude Code, retire le 2026-09-01
+    apres un segfault reproductible du binaire Bun `claude.exe`, sans
+    rapport avec l'infrastructure d'atelier — voir
+    `docs/architecture/pieges.md`). `opencode` etant open-source (licence
+    MIT), l'invocation ne depend plus d'un CLI proprietaire pour executer le
+    code confie a chaque sous-tache.
 
-    Renseigne depuis `PM_ENGINE_CLAUDE_CODE_MODEL` (voir `pm_engine.main`)."""
+    Renseigne depuis `PM_ENGINE_OPENCODE_MODEL` (voir `pm_engine.main`)."""
 
     chat_model: str = "sonnet-premium"
     embedding_model: str = "embedding-dev-local"

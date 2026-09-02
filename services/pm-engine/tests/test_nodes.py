@@ -4,7 +4,7 @@ live (Jalon M5, tache 5.2.2) : `AnalyzeIssue`, `PlanParallelTasks`,
 `MergeAndClose`, `IndexKnowledge`, ainsi que les aretes conditionnelles
 pures (`route_after_tests`/`route_after_hitl`).
 
-`DelegateToClaudeCode`/`RunDevcontainerTests` ne sont PAS testes de bout
+`DelegateToOpencode`/`RunDevcontainerTests` ne sont PAS testes de bout
 en bout ici (necessitent un `atelier-controller` reel + une image
 devcontainer construite + une microVM demarree, indisponibles dans cet
 environnement) — voir docs/PROGRESS.md pour le detail de cette limite
@@ -157,6 +157,21 @@ def test_route_after_hitl_ends_when_rejected() -> None:
     assert nodes.route_after_hitl(PMWorkflowState(hitl_decision="rejected")) == "__end__"
 
 
+def test_route_after_plan_expands_spec_on_greenfield() -> None:
+    assert nodes.route_after_plan(PMWorkflowState(greenfield=True)) == "ExpandGreenfieldSpec"
+
+
+def test_route_after_plan_skips_spec_on_existing_repo() -> None:
+    assert nodes.route_after_plan(PMWorkflowState(greenfield=False)) == "ProvisionWorkshop"
+
+
+def test_route_after_plan_skips_spec_when_absent() -> None:
+    # Cle absente == depot deja pourvu : c'est le cas des tests plus anciens
+    # qui appellent `plan_parallel_tasks` sans `test_repo` (`root_entries`
+    # reste `None`, donc `is_greenfield_repo` vaut `False`).
+    assert nodes.route_after_plan(PMWorkflowState()) == "ProvisionWorkshop"
+
+
 @pytest.mark.asyncio
 async def test_analyze_issue_reads_a_real_issue_and_calls_the_real_llm(deps, test_repo) -> None:
     async with httpx.AsyncClient(
@@ -190,6 +205,52 @@ async def test_plan_parallel_tasks_parses_a_real_json_plan(deps) -> None:
     assert plan[0]["id"] == "task-1"
     assert plan[0]["workshop_name"] == "pm-42-task-1"
     assert plan[0]["branch_name"] == "feature/42-task-1"
+
+
+@pytest.mark.asyncio
+async def test_plan_parallel_tasks_flags_a_greenfield_repo(deps, test_repo) -> None:
+    # `test_repo` est cree avec `auto_init=True` : sa racine ne contient que
+    # README.md, donc `_is_greenfield` vaut vrai. Le plan mock (2 sous-taches)
+    # doit alors etre replie a une seule ET le flag `greenfield` doit
+    # apparaitre a `True` — c'est ce flag, pas la longueur du plan, que
+    # `route_after_plan` consulte pour declencher `ExpandGreenfieldSpec`.
+    deps.chat_model = "atelier-plan-test"
+    state = PMWorkflowState(repo=test_repo, issue_number=1, analysis="decoupe ce ticket")
+    update = await nodes.plan_parallel_tasks(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["greenfield"] is True
+    assert len(update["plan"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_plan_parallel_tasks_does_not_flag_an_existing_repo(deps, test_repo) -> None:
+    async with httpx.AsyncClient(
+        base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+        headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+        timeout=30.0,
+    ) as admin_client:
+        commit = await admin_client.post(
+            f"/repos/{test_repo}/contents/package.json",
+            json={"content": "e30=", "message": "scaffold"},  # "{}" en base64
+        )
+        commit.raise_for_status()
+
+    deps.chat_model = "atelier-plan-test"
+    state = PMWorkflowState(repo=test_repo, issue_number=1, analysis="decoupe ce ticket")
+    update = await nodes.plan_parallel_tasks(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["greenfield"] is False
+    assert len(update["plan"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_expand_greenfield_spec_calls_the_real_llm(deps) -> None:
+    deps.chat_model = "atelier-budget-test"
+    state = PMWorkflowState(analysis="Application de suivi de depenses, depot vierge")
+    update = await nodes.expand_greenfield_spec(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["greenfield_spec"] == "ok"  # modele mock (atelier-budget-test)
+    assert update["phase"] == "ExpandGreenfieldSpec"
 
 
 @pytest.mark.asyncio

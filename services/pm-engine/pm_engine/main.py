@@ -128,8 +128,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         workshop_owner_group=os.environ.get("PM_ENGINE_WORKSHOP_OWNER_GROUP", ""),
         devcontainer_repo_template=os.environ.get("PM_ENGINE_DEVCONTAINER_REPO_TEMPLATE", ""),
         chat_model=os.environ.get("PM_ENGINE_CHAT_MODEL", "sonnet-premium"),
-        claude_code_model=os.environ.get(
-            "PM_ENGINE_CLAUDE_CODE_MODEL", "claude-3-5-sonnet-20241022"
+        opencode_model=os.environ.get(
+            "PM_ENGINE_OPENCODE_MODEL", "atelier/atelier-workshop-agent"
         ),
     )
 

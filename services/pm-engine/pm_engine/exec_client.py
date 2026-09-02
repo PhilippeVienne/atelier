@@ -4,7 +4,7 @@ SSE de reconnexion (`GET /v1/workshops/{name}/exec/{id}/stream`, tache
 pour le contrat exact des evenements (`stdout`/`stderr`/`status`/`error`)
 consommes ici.
 
-Utilise par `DelegateToClaudeCode`/`RunDevcontainerTests` (Jalon M5, tache
+Utilise par `DelegateToOpencode`/`RunDevcontainerTests` (Jalon M5, tache
 5.2.2) : ces deux noeuds ont besoin du resultat complet (stdout/stderr/exit
 code) avant de pouvoir decider de la suite du graphe, contrairement a un
 client interactif qui se contenterait de streamer vers un terminal.
@@ -45,7 +45,7 @@ async def wait_for_exec_completion(
 
     Prend le PROVIDER de jeton, pas un jeton : ses appelants bouclent sur
     plusieurs sous-taches et chaque attente peut durer un quart d'heure
-    (Claude Code implemente une fonctionnalite). Un jeton recupere une fois
+    (l'agent delegue implemente une fonctionnalite). Un jeton recupere une fois
     avant la boucle etait deja expire a l'ouverture du flux de la sous-tache
     suivante — meme classe de bug que la session MCP, voir
     `pm_engine.mcp_client._OidcAuth`."""

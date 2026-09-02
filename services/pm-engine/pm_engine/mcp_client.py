@@ -30,7 +30,7 @@ class _OidcAuth(httpx2.Auth):
     Un en-tete fige a l'ouverture de la session ne tient pas : une session
     Streamable HTTP emet plusieurs requetes HTTP au fil de sa vie (POST de
     l'appel d'outil, flux SSE, DELETE de fermeture), et un noeud comme
-    `DelegateToClaudeCode` vit bien plus longtemps qu'un jeton OIDC — le
+    `DelegateToOpencode` vit bien plus longtemps qu'un jeton OIDC — le
     jeton expirait donc EN COURS de session et l'api-server repondait
     `ExpiredSignature`. Rafraichir par requete est la bonne granularite :
     elle ne depend d'aucune hypothese sur la duree des appels d'outils.

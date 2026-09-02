@@ -1,17 +1,19 @@
-"""Regression : le prompt passe a Claude Code doit traverser le shell du
-Workshop INTACT, sans qu'aucun de ses fragments ne soit interprete.
+"""Regression : le prompt passe a l'agent delegue (`opencode`) doit
+traverser le shell du Workshop INTACT, sans qu'aucun de ses fragments ne
+soit interprete.
 
-Bug reel (2026-08-30) : `delegate_to_claude_code` construisait sa commande
-avec `json.dumps(prompt)`, qui produit une chaine entre guillemets DOUBLES.
-Bash y interprete encore les backticks, `$(...)` et `$VAR` — or ce prompt
+Bug reel (2026-08-30, avec Claude Code — meme risque avec n'importe quel
+CLI) : `delegate_to_opencode` construisait sa commande avec
+`json.dumps(prompt)`, qui produit une chaine entre guillemets DOUBLES. Bash
+y interprete encore les backticks, `$(...)` et `$VAR` — or ce prompt
 contient du texte genere par un LLM a partir du ticket, backticks compris.
 Consequences observees : des fragments du prompt executes comme des
 commandes dans la microVM (`api/: No such file or directory`, `fatal: not a
-git repository`) et un prompt tronque cote Claude Code. C'est aussi une
-injection de commande : le corps d'un ticket est une entree non fiable.
+git repository`) et un prompt tronque cote agent. C'est aussi une injection
+de commande : le corps d'un ticket est une entree non fiable.
 
 Le test execute reellement la commande produite via `bash -c`, avec un faux
-`claude` sur le PATH qui se contente de recopier l'argument recu — pas de
+`opencode` sur le PATH qui se contente de recopier l'argument recu — pas de
 simulation du shell, c'est bien bash qui tranche.
 """
 
@@ -22,19 +24,19 @@ import subprocess
 
 
 def _build_command(prompt: str) -> str:
-    """Reproduit la construction de `pm_engine.nodes.delegate_to_claude_code`."""
-    return f"claude --print --permission-mode acceptEdits {shlex.quote(prompt)}"
+    """Reproduit la construction de `pm_engine.nodes.delegate_to_opencode`."""
+    return f"opencode run --auto {shlex.quote(prompt)}"
 
 
 def _run_through_bash(command: str, tmp_path) -> str:
-    """Execute `command` avec un faux `claude` qui ecrit son dernier argument
-    dans un fichier, et renvoie ce qui lui est reellement parvenu."""
+    """Execute `command` avec un faux `opencode` qui ecrit son dernier
+    argument dans un fichier, et renvoie ce qui lui est reellement parvenu."""
     received = tmp_path / "received.txt"
-    fake_claude = tmp_path / "claude"
-    fake_claude.write_text(
+    fake_opencode = tmp_path / "opencode"
+    fake_opencode.write_text(
         "#!/usr/bin/env bash\nprintf '%s' \"${!#}\" > " + shlex.quote(str(received)) + "\n"
     )
-    fake_claude.chmod(0o755)
+    fake_opencode.chmod(0o755)
 
     result = subprocess.run(
         command,
@@ -51,7 +53,7 @@ def _run_through_bash(command: str, tmp_path) -> str:
     return received.read_text()
 
 
-def test_prompt_with_backticks_reaches_claude_code_intact(tmp_path):
+def test_prompt_with_backticks_reaches_opencode_intact(tmp_path):
     """Cas exact du bug : backticks (substitution de commande en guillemets
     doubles) et retours a la ligne, tels qu'en produisent l'analyse LLM et la
     consigne de commit."""

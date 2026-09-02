@@ -41,8 +41,16 @@ class PMWorkflowState(TypedDict):
 
     # --- PlanParallelTasks ---
     plan: NotRequired[list[SubTask]]
+    # Vrai uniquement quand le depot etait vierge (voir `_is_greenfield`) —
+    # c'est ce flag, et non le nombre de sous-taches, qui declenche
+    # `ExpandGreenfieldSpec` : un decoupage incoherent replie aussi a une
+    # seule tache, mais dans un depot deja pourvu ou une spec n'apporte rien.
+    greenfield: NotRequired[bool]
 
-    # --- ProvisionWorkshop / DelegateToClaudeCode / RunDevcontainerTests ---
+    # --- ExpandGreenfieldSpec ---
+    greenfield_spec: NotRequired[str]
+
+    # --- ProvisionWorkshop / DelegateToOpencode / RunDevcontainerTests ---
     current_task_index: NotRequired[int]
     test_output: NotRequired[str]
     test_passed: NotRequired[bool]

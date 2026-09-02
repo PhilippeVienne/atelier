@@ -18,7 +18,7 @@ def test_graph_compiles_with_all_twelve_nodes() -> None:
         "AnalyzeIssue",
         "PlanParallelTasks",
         "ProvisionWorkshop",
-        "DelegateToClaudeCode",
+        "DelegateToOpencode",
         "IntegrateSubTasks",
         "RunDevcontainerTests",
         "AutoCorrectionLoop",
@@ -40,9 +40,9 @@ def test_integration_happens_between_delegation_and_tests() -> None:
     n'atteignait meme jamais la PR)."""
     graph = build_graph(InMemorySaver())
     edges = {(e.source, e.target) for e in graph.get_graph().edges}
-    assert ("DelegateToClaudeCode", "IntegrateSubTasks") in edges
+    assert ("DelegateToOpencode", "IntegrateSubTasks") in edges
     assert ("IntegrateSubTasks", "RunDevcontainerTests") in edges
-    assert ("DelegateToClaudeCode", "RunDevcontainerTests") not in edges
+    assert ("DelegateToOpencode", "RunDevcontainerTests") not in edges
 
 
 async def test_auto_correction_loop_increments_attempts_and_reinjects_the_error() -> None:

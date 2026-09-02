@@ -13,7 +13,7 @@ PostgreSQL, RAG `pgvector` avec RLS multi-tenant).
   `docs/specs/05-devfactory-pm-engine.md`, section 8.2. Pilote Atelier via
   le vrai serveur MCP externe (`pm_engine.mcp_client`, Jalon M4), avec sa
   propre identite de service OIDC (`atelier-pm-bot`, `pm_engine.oidc`).
-  **Limite assumee** : `DelegateToClaudeCode`/`RunDevcontainerTests`
+  **Limite assumee** : `DelegateToOpencode`/`RunDevcontainerTests`
   (`exec_in_workshop`) ne sont pas testes de bout en bout avec une vraie
   microVM Firecracker (aucun `atelier-controller` actif dans
   l'environnement de developpement au moment de cette session) — voir

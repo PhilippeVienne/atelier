@@ -76,6 +76,21 @@ model_list:
       model: deepseek/deepseek-chat
       api_key: os.environ/DEEPSEEK_API_KEY
 
+  # Modele demande explicitement par `opencode` (agent delegue dans les
+  # Workshops, `pm_engine.nodes.delegate_to_opencode` — remplace Claude
+  # Code le 2026-09-01, voir docs/architecture/pieges.md) via son
+  # fournisseur `atelier` (`@ai-sdk/openai-compatible`, config injectee par
+  # `crates/image-builder::inject_net_proxy_config`,
+  # `OPENCODE_CONFIG_CONTENT`). Alias NOMME plutot que de compter sur le
+  # wildcard `"*"` ci-dessus : celui-ci existe pour compenser le nom de
+  # modele changeant de Claude Code — `opencode` n'a pas ce probleme,
+  # `--model atelier/atelier-workshop-agent` est fixe cote appelant
+  # (`PmEngineDeps.opencode_model`).
+  - model_name: atelier-workshop-agent
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
   # Vrai Anthropic, a la demande (`claude --model sonnet-premium`) pour les
   # arbitrages d'architecture complexes ou le modele low-cost ne suffit pas.
   - model_name: sonnet-premium

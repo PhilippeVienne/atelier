@@ -7,7 +7,7 @@ le vrai `AsyncPostgresSaver` et les vraies fonctions
 `nodes.await_hitl_approval`/`nodes.route_after_hitl`.
 
 Graphe minimal (pas les 11 noeuds du graphe complet, qui necessitent une
-microVM Firecracker live pour `DelegateToClaudeCode`/
+microVM Firecracker live pour `DelegateToOpencode`/
 `RunDevcontainerTests` — voir tests/test_nodes.py) : un noeud de depart qui
 pose `pr_url`, puis `AwaitHitlApproval`, puis `MergeAndClose` (bouchonne
 ici pour ne pas dependre de Forgejo) en cas d'approbation.
