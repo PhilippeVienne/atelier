@@ -55,8 +55,27 @@ async def _mark_review_decided(deps: PmEngineDeps, thread_id: str, status: str) 
             )
 
 
+# La limite par defaut de LangGraph (25 supersteps) suffisait au graphe
+# d'origine, mais plus depuis les roles consultatifs (docs/specs/
+# 08-equipe-it-consultative.md) : trois boucles bornees independamment
+# (ArchitectureReconsideration, AutoCorrectionLoop, ReviewReconsideration,
+# chacune jusqu'a 3 tentatives par defaut) s'additionnent au chemin
+# principal. `GraphRecursionError: Recursion limit of 25 reached` reproduit
+# reellement le 2026-09-02 sur un run de validation qui epuisait plusieurs
+# de ces budgets a la suite — jamais vu avant l'ajout de ces roles, la
+# limite par defaut n'avait jusque-la jamais ete le facteur limitant.
+# Marge large plutot que calculee au plus juste : le cout d'un superstep de
+# trop est nul (le graphe s'arrete de toute facon a son propre budget
+# borne), celui d'un `GraphRecursionError` qui interrompt un run par
+# ailleurs sain est un run entier perdu.
+_RECURSION_LIMIT = 150
+
+
 def _run_config(deps: PmEngineDeps, thread_id: str) -> dict:
-    return {"configurable": {"thread_id": thread_id, "deps": deps}}
+    return {
+        "configurable": {"thread_id": thread_id, "deps": deps},
+        "recursion_limit": _RECURSION_LIMIT,
+    }
 
 
 async def start_workflow(
