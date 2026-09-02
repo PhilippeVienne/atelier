@@ -91,19 +91,27 @@ Implémentations concrètes : Forgejo expose `GET /repos/{owner}/{repo}/compare/
 
 Déterministe, pas de LLM pour décider si `ReviewSecurity`/`ReviewOps` se déclenchent — même doctrine que les garde-fous de `_plan_is_credible` : une décision qui peut se vérifier par du code ne doit jamais dépendre de l'approximation d'un LLM.
 
+**Point d'attention essentiel** : le PM Engine pilote des dépôts **cibles** quelconques (un ticket sur `pm-validation-url-shortener`, une app Node.js sans aucun rapport avec Atelier, en a été la validation de référence — voir §7). Ces motifs ne doivent donc **jamais** nommer un composant interne d'Atelier (`identity-proxy`, `net-proxy`, `openbao`...) : ce serait confondre le dépôt qui héberge le PM avec le dépôt que le PM gère. Les motifs ci-dessous ne décrivent que des conventions de nommage génériques, qu'on retrouverait dans n'importe quel projet (Node.js, Rust, Python, Go...) :
+
 ```python
 # nodes.py, motifs glob (fnmatch) sur les chemins du diff — extraits par la
 # ligne "diff --git a/<path> b/<path>" ou l'entete "+++ b/<path>", pas de
 # dependance a un format de diff en particulier au-dela de cette ligne.
+# Volontairement generiques : ce sont des conventions de nommage qu'on
+# retrouve dans N'IMPORTE QUEL depot cible, jamais un nom de composant
+# specifique a Atelier (le PM ne gere pas son propre code).
 SECURITY_SENSITIVE_PATTERNS = [
-    "**/identity-proxy/**", "**/net-proxy/**", "**/*credential*", "**/*secret*",
-    "**/*auth*", "**/.env*", "**/openbao*",
+    "**/*auth*", "**/*credential*", "**/*secret*", "**/*password*",
+    "**/*token*", "**/*session*", "**/*.pem", "**/*.key", "**/.env*",
+    "**/*oauth*", "**/*jwt*",
 ]
 OPS_SENSITIVE_PATTERNS = [
-    "charts/**", "deploy/**", "**/*.tf", "**/migrations/**", "Dockerfile*",
-    ".devcontainer/**",
+    "**/*.tf", "**/migrations/**", "Dockerfile*", "docker-compose*",
+    "**/*.yaml", "**/*.yml", ".devcontainer/**", "**/Chart.yaml",
 ]
 ```
+
+`OPS_SENSITIVE_PATTERNS` inclut `**/*.yaml`/`**/*.yml` (large) plutôt qu'un chemin type `charts/**` propre à la convention Helm d'Atelier : un dépôt cible peut organiser ses manifestes Kubernetes/CI/Compose n'importe où, et il n'y a aucune raison de supposer qu'il suit la même arborescence que ce dépôt. Un faux positif ici ne coûte qu'un appel LLM de revue en plus ; un faux négatif laisse passer un changement d'infra sans second regard.
 
 Ces listes sont volontairement des constantes de module, pas un champ `PmEngineDeps` configurable dans cette première version — même arbitrage que documenté pour `workshop_egress_allowlist` v.s. une politique complexe : on ouvre la configurabilité seulement si un vrai besoin apparaît en usage, pas par anticipation.
 
@@ -170,5 +178,5 @@ Chaque nœud de revue suit le même squelette que `plan_parallel_tasks` : un pro
 Même standard que le reste de `pm-engine` (voir `AGENTS.md`) : pas de mock du LLM au-delà de ce qui existe déjà pour `plan_parallel_tasks`/`analyze_issue`, et au moins un run réel de bout en bout couvrant :
 
 1. Un ticket dont le découpage initial est délibérément mauvais (scopes qui se chevauchent) → `ReviewArchitecture` le rejette → replanification → découpage propre accepté.
-2. Un ticket touchant `crates/identity-proxy/**` → `ReviewSecurity` se déclenche (vérifier qu'il ne se déclenche PAS sur un ticket qui n'y touche pas, pour prouver que la détection de chemins n'est pas un simple "toujours vrai").
+2. Sur un dépôt cible générique (même nature que `pm-validation-url-shortener`, sans rapport avec le code d'Atelier) : un ticket qui ajoute un module d'authentification (`src/auth.js`, par exemple) → `ReviewSecurity` se déclenche ; un ticket qui n'y touche pas → il ne se déclenche PAS, pour prouver que la détection de chemins n'est pas un simple "toujours vrai".
 3. Un run complet où tous les rôles approuvent du premier coup, pour mesurer le coût en temps/tours LLM ajouté par cette spec par rapport à la baseline déjà validée (PR 26, run entièrement automatisé).
