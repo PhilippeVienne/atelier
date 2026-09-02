@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import fnmatch
 import json
 import logging
@@ -1670,27 +1669,27 @@ async def _collect_qa_evidence(
     prefix = f"qa/{state['repo']}/{state['issue_number']}"
     keys: list[str] = []
     for relative_path in evidence_files:
-        result = await _exec_and_wait(
-            deps, workshop_name, f"base64 {shlex.quote(relative_path)} | tr -d '\\n'"
-        )
-        if result.exit_code != 0:
-            logger.warning(
-                "QAValidation: lecture de la preuve %s echouee, ignoree (%s)",
-                relative_path,
-                result.stderr or result.stdout,
-            )
-            continue
+        # Chaque preuve est independante : une erreur sur L'UNE d'elles
+        # (exec MCP en erreur, base64 invalide, S3 injoignable...) ne doit
+        # JAMAIS remonter et faire perdre le verdict REEL de l'agent (deja
+        # etabli avant cet appel) au profit d'un "en erreur" generique —
+        # capture large et deliberee (`Exception`, pas seulement
+        # `binascii.Error`), le prix d'une preuve manquante est sans
+        # commune mesure avec celui d'un verdict authentique ecrase.
         try:
+            result = await _exec_and_wait(
+                deps, workshop_name, f"base64 {shlex.quote(relative_path)} | tr -d '\\n'"
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(result.stderr or result.stdout or "exit_code != 0")
             content = base64.b64decode(result.stdout.strip())
-        except binascii.Error as exc:
+            key = f"{prefix}/{relative_path.rsplit('/', 1)[-1]}"
+            await upload_evidence(deps.qa_evidence_s3, key, content)
+        except Exception as exc:  # noqa: BLE001 - voir ci-dessus
             logger.warning(
-                "QAValidation: preuve %s illisible (base64 invalide: %s), ignoree",
-                relative_path,
-                exc,
+                "QAValidation: preuve %s non televersee, ignoree (%s)", relative_path, exc
             )
             continue
-        key = f"{prefix}/{relative_path.rsplit('/', 1)[-1]}"
-        await upload_evidence(deps.qa_evidence_s3, key, content)
         keys.append(key)
     return keys
 
