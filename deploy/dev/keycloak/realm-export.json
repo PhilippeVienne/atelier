@@ -169,8 +169,7 @@
             "userinfo.token.claim": "true"
           }
         }
-      ],
-      "//serviceAccountRoles": "Le compte de service du PM provisionne des Workshops comme un utilisateur : sans le role 'developer', l'api-server lui refuse la creation (403). Voir DEVELOPER_ROLE dans crates/api-server/src/routes.rs."
+      ]
     }
   ],
   "groups": [
