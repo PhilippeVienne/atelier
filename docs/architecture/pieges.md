@@ -1137,3 +1137,24 @@
   chaque passage, y compris pour un Workshop deja existant — sans risque,
   puisque c'est une ecriture KV v2 idempotente (elle remplace simplement la
   meme valeur).
+
+- **2026-09-02, port-forward manquant vers LiteLLM sur le port attendu par `atelier-api-server`** :
+  en voulant exercer pour de vrai (pas de skip) `test_provision_and_suspend_workshop_via_real_mcp`
+  et `test_mcp_session_drives_a_real_workshop_lifecycle` (necessitent `KEYCLOAK_PM_BOT_SECRET`),
+  ces deux tests echouaient avec `Security dependencies unreachable: LiteLLM injoignable,
+  creation refusee (Fast-Fail)`. Cause : `atelier-api-server` local (process de dev, pas un pod)
+  lit `ATELIER_LLM_PROXY_ADDR=127.0.0.1:14000` — un port DIFFERENT de celui (4000) generalement
+  port-forwarde pour tester `llm-proxy` directement depuis l'hote — et rien n'ecoutait sur 14000
+  (aucun `kubectl port-forward` actif dessus, contrairement aux autres services de dev). Ni un
+  bug de code ni du a la session en cours (le redeploiement du ConfigMap `atelier-llm-proxy-config`
+  pour ajouter un modele mock, voir tache 5.6.3, n'y est pour rien — confirme en reproduisant
+  l'echec puis en le resolvant uniquement en ajoutant `kubectl port-forward svc/atelier-llm-proxy
+  14000:4000`) : un simple trou d'environnement de dev local, invisible tant que personne
+  n'exerce ce chemin precis (echoue silencieusement en `skip` sans le jeton Keycloak requis).
+  Une fois ce second port-forward en place, les deux tests echouaient encore, mais pour une
+  raison sans rapport, elle aussi pre-existante : `plusieurs groupes (atelier-core, atelier-demo) :
+  precisez ownerGroup` — l'identite `atelier-pm-bot` de cet environnement appartient a plusieurs
+  groupes, et `PmEngineDeps.workshop_owner_group` n'est pas renseigne dans la configuration de
+  test. Non corrige (hors perimetre de la tache en cours, la tache 5.6.3 sur `ReviewArchitecture`
+  ne touche a aucun de ces deux mecanismes) — a reprendre si quelqu'un a besoin de ces deux tests
+  vraiment verts plutot que verifies "au moins jusqu'a ProvisionWorkshop".

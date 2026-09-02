@@ -132,6 +132,19 @@ model_list:
       input_cost_per_token: 0.5
       output_cost_per_token: 0.5
 
+  # Modele de test pour `pm_engine.nodes.review_architecture` (docs/specs/
+  # 08-equipe-it-consultative.md, tache 5.6.3) : le verdict "request_changes"
+  # est le chemin le plus interessant a couvrir par un vrai aller-retour
+  # LiteLLM (le repli "approve" sur reponse non-JSON n'a besoin, lui,
+  # d'aucun appel reel).
+  - model_name: atelier-review-test
+    litellm_params:
+      model: openai/atelier-review-test
+      mock_response: '{"verdict":"request_changes","comments":["scope de task-2 chevauche task-1"]}'
+    model_info:
+      input_cost_per_token: 0.5
+      output_cost_per_token: 0.5
+
   # Modele d'embedding leger pour valider les tests vectoriels `pgvector` en
   # dev sans cle payante bloquante (Jalon M5, tache 5.0.2 — voir
   # `services/pm-engine`, table `project_memories`). Route vers Ollama

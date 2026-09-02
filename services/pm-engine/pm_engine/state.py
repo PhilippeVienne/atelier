@@ -26,6 +26,18 @@ class SubTask(TypedDict):
     branch_name: str
 
 
+class ReviewVerdict(TypedDict):
+    """Sortie commune aux quatre roles consultatifs (Architecte, QA,
+    Securite, Ops — voir docs/specs/08-equipe-it-consultative.md). Une
+    reponse LLM non parsable degrade toujours vers `"approve"`, jamais vers
+    `"request_changes"` : un modele qui repond mal ne doit pas bloquer
+    indefiniment un run par accident (meme doctrine que le repli sur une
+    tache unique de `plan_parallel_tasks` face a une reponse non-JSON)."""
+
+    verdict: str  # "approve" | "request_changes"
+    comments: list[str]
+
+
 class PMWorkflowState(TypedDict):
     # --- Source (renseigne avant le premier noeud) ---
     repo: str
@@ -49,6 +61,15 @@ class PMWorkflowState(TypedDict):
 
     # --- ExpandGreenfieldSpec ---
     greenfield_spec: NotRequired[str]
+
+    # --- ReviewArchitecture ---
+    # Compteur DISTINCT de `correction_attempts` : un decoupage refuse et un
+    # code refuse sont des echecs de nature differente, confondre leurs
+    # budgets bornerait a tort l'un par l'usure de l'autre (voir
+    # docs/specs/08-equipe-it-consultative.md, section 4.4).
+    architecture_review: NotRequired[ReviewVerdict]
+    architecture_review_attempts: NotRequired[int]
+    max_architecture_review_attempts: NotRequired[int]
 
     # --- ProvisionWorkshop / DelegateToOpencode / RunDevcontainerTests ---
     current_task_index: NotRequired[int]
@@ -89,6 +110,7 @@ def initial_state(
     *,
     devcontainer_revision: str = "HEAD",
     max_correction_attempts: int = 3,
+    max_architecture_review_attempts: int = 3,
 ) -> PMWorkflowState:
     return PMWorkflowState(
         repo=repo,
@@ -98,6 +120,8 @@ def initial_state(
         current_task_index=0,
         correction_attempts=0,
         max_correction_attempts=max_correction_attempts,
+        architecture_review_attempts=0,
+        max_architecture_review_attempts=max_architecture_review_attempts,
         phase="pending",
         status="running",
     )

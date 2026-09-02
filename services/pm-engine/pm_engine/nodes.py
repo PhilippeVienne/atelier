@@ -341,7 +341,113 @@ async def expand_greenfield_spec(state: PMWorkflowState, config: RunnableConfig)
 
 
 def route_after_plan(state: PMWorkflowState) -> str:
-    return "ExpandGreenfieldSpec" if state.get("greenfield") else "ProvisionWorkshop"
+    return "ExpandGreenfieldSpec" if state.get("greenfield") else "ReviewArchitecture"
+
+
+# --------------------------------------------------------------------------
+# 2ter. ReviewArchitecture (docs/specs/08-equipe-it-consultative.md,
+# section 5 — brique 5.6.3). Premier des quatre roles consultatifs, le
+# seul a se prononcer AVANT toute creation de Workshop : un decoupage jugee
+# malsain doit etre refait a la source (replanification), pas corrige en
+# aval par les devs qui l'executent deja.
+# --------------------------------------------------------------------------
+async def review_architecture(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    deps = _deps(config)
+
+    raw_verdict = await deps.llm_client.chat(
+        deps.chat_model,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es l'architecte qui relit le decoupage en sous-taches "
+                    "PROPOSE par le planificateur, avant que des devs ne se mettent au "
+                    "travail dessus. Verifie en particulier :\n"
+                    "1. Les perimetres de fichiers (`scope`) sont-ils VRAIMENT "
+                    "disjoints, sans chevauchement ?\n"
+                    "2. Existe-t-il une dependance cachee entre deux sous-taches "
+                    "censees etre paralleles (l'une a besoin du resultat de l'autre "
+                    "pour tourner ou etre testee) ?\n"
+                    "3. Le decoupage est-il sur-decoupe (des sous-taches qui n'ont "
+                    "aucune raison d'etre separees) ou sous-decoupe (une seule tache "
+                    "qui melange des responsabilites sans rapport) ?\n"
+                    "4. Sur un depot vierge, la specification d'architecture fournie "
+                    "fixe-t-elle bien un point d'entree UNIQUE et un seul manifeste ?\n\n"
+                    "Ne remets PAS en cause une tache unique legitime (un decoupage "
+                    "vraiment independant n'existe pas toujours). Reponds UNIQUEMENT "
+                    "avec un objet JSON : "
+                    '{"verdict": "approve", "comments": []} ou '
+                    '{"verdict": "request_changes", "comments": ["..."]}.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Ticket\n{state.get('analysis', '')}\n\n"
+                    f"## Decoupage propose\n{json.dumps(state.get('plan', []), indent=2)}\n\n"
+                    + (
+                        f"## Specification d'architecture (depot vierge)\n"
+                        f"{state.get('greenfield_spec', '')}\n\n"
+                        if state.get("greenfield")
+                        else ""
+                    )
+                ),
+            },
+        ],
+    )
+
+    try:
+        verdict = json.loads(_strip_code_fences(raw_verdict))
+        if verdict.get("verdict") not in ("approve", "request_changes"):
+            raise ValueError("verdict inattendu")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        logger.warning("ReviewArchitecture: reponse LLM non exploitable, repli sur approve")
+        verdict = {"verdict": "approve", "comments": []}
+
+    return {
+        "architecture_review": verdict,
+        "phase": "ReviewArchitecture",
+    }
+
+
+def route_after_architecture_review(state: PMWorkflowState) -> str:
+    review = state.get("architecture_review") or {}
+    if review.get("verdict") != "request_changes":
+        return "ProvisionWorkshop"
+    attempts = state.get("architecture_review_attempts", 0) + 1
+    if attempts >= state.get("max_architecture_review_attempts", 3):
+        # Budget de revue epuise : on avance quand meme, un humain tranchera
+        # via AwaitHitlApproval — meme doctrine que `route_after_tests`.
+        logger.info(
+            "ReviewArchitecture: budget de revue epuise (%d tentatives), "
+            "passage en force vers ProvisionWorkshop",
+            attempts,
+        )
+        return "ProvisionWorkshop"
+    return "ArchitectureReconsideration"
+
+
+async def prepare_architecture_reconsideration(
+    state: PMWorkflowState, config: RunnableConfig
+) -> dict:
+    """Injecte les objections de l'architecte dans `analysis` avant de
+    rebafouiller `PlanParallelTasks` — meme mecanisme que
+    `auto_correction_loop` pour les echecs de tests, applique ici a un
+    decoupage juge malsain plutot qu'a un code qui ne compile pas."""
+    review = state.get("architecture_review") or {}
+    attempts = state.get("architecture_review_attempts", 0) + 1
+    comments = "\n".join(f"- {c}" for c in review.get("comments", []))
+    return {
+        "architecture_review_attempts": attempts,
+        "analysis": (
+            f"{state.get('analysis', '')}\n\n"
+            f"## Revue d'architecture, tentative {attempts}\n"
+            "Le decoupage precedent a ete rejete par la revue d'architecture :\n"
+            f"{comments}\n"
+            "Reponds a ces objections dans le nouveau decoupage."
+        ),
+        "phase": "ReviewArchitecture",
+    }
 
 
 # --------------------------------------------------------------------------

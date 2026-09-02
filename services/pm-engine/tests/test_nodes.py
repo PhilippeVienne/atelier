@@ -217,14 +217,89 @@ def test_route_after_plan_expands_spec_on_greenfield() -> None:
 
 
 def test_route_after_plan_skips_spec_on_existing_repo() -> None:
-    assert nodes.route_after_plan(PMWorkflowState(greenfield=False)) == "ProvisionWorkshop"
+    assert nodes.route_after_plan(PMWorkflowState(greenfield=False)) == "ReviewArchitecture"
 
 
 def test_route_after_plan_skips_spec_when_absent() -> None:
     # Cle absente == depot deja pourvu : c'est le cas des tests plus anciens
     # qui appellent `plan_parallel_tasks` sans `test_repo` (`root_entries`
     # reste `None`, donc `is_greenfield_repo` vaut `False`).
-    assert nodes.route_after_plan(PMWorkflowState()) == "ProvisionWorkshop"
+    assert nodes.route_after_plan(PMWorkflowState()) == "ReviewArchitecture"
+
+
+def test_route_after_architecture_review_proceeds_on_approve() -> None:
+    state = PMWorkflowState(architecture_review={"verdict": "approve", "comments": []})
+    assert nodes.route_after_architecture_review(state) == "ProvisionWorkshop"
+
+
+def test_route_after_architecture_review_proceeds_when_absent() -> None:
+    # Aucune revue enregistree (etat construit a la main sans passer par le
+    # noeud) : ne doit jamais bloquer un run par defaut.
+    assert nodes.route_after_architecture_review(PMWorkflowState()) == "ProvisionWorkshop"
+
+
+def test_route_after_architecture_review_reconsiders_when_budget_remains() -> None:
+    state = PMWorkflowState(
+        architecture_review={"verdict": "request_changes", "comments": ["x"]},
+        architecture_review_attempts=0,
+        max_architecture_review_attempts=3,
+    )
+    assert nodes.route_after_architecture_review(state) == "ArchitectureReconsideration"
+
+
+def test_route_after_architecture_review_gives_up_when_budget_exhausted() -> None:
+    state = PMWorkflowState(
+        architecture_review={"verdict": "request_changes", "comments": ["x"]},
+        architecture_review_attempts=2,
+        max_architecture_review_attempts=3,
+    )
+    assert nodes.route_after_architecture_review(state) == "ProvisionWorkshop"
+
+
+@pytest.mark.asyncio
+async def test_prepare_architecture_reconsideration_injects_comments() -> None:
+    state = PMWorkflowState(
+        analysis="ticket initial",
+        architecture_review={"verdict": "request_changes", "comments": ["chevauchement de scope"]},
+        architecture_review_attempts=0,
+    )
+    update = await nodes.prepare_architecture_reconsideration(state, _FakeConfig())
+
+    assert update["architecture_review_attempts"] == 1
+    assert "ticket initial" in update["analysis"]
+    assert "chevauchement de scope" in update["analysis"]
+    assert update["phase"] == "ReviewArchitecture"
+
+
+@pytest.mark.asyncio
+async def test_review_architecture_parses_a_real_request_changes_verdict(deps) -> None:
+    deps.chat_model = "atelier-review-test"  # mock_response JSON, voir config.yaml
+    state = PMWorkflowState(
+        analysis="decoupe ce ticket",
+        plan=[
+            SubTask(
+                id="task-1",
+                title="Backend",
+                scope=["src/**"],
+                workshop_name="pm-1-task-1",
+                branch_name="feature/1-task-1",
+            )
+        ],
+    )
+    update = await nodes.review_architecture(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["architecture_review"]["verdict"] == "request_changes"
+    assert update["architecture_review"]["comments"] == ["scope de task-2 chevauche task-1"]
+    assert update["phase"] == "ReviewArchitecture"
+
+
+@pytest.mark.asyncio
+async def test_review_architecture_falls_back_to_approve_on_unparsable_reply(deps) -> None:
+    deps.chat_model = "atelier-budget-test"  # mock_response "ok", pas du JSON
+    state = PMWorkflowState(analysis="decoupe ce ticket", plan=[])
+    update = await nodes.review_architecture(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["architecture_review"] == {"verdict": "approve", "comments": []}
 
 
 @pytest.mark.asyncio
