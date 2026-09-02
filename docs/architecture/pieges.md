@@ -954,3 +954,29 @@
   `asyncio.timeout` autour de tout l'echange) : passe ce plafond, l'execution
   echoue franchement (`status: Failed`), avec la sortie deja recue
   conservee — c'est elle qui dit ou l'agent s'est arrete.
+- **Le meme raccrochage, un cran plus loin : `identity-proxy`** (2026-09-02) :
+  le correctif net-proxy ci-dessus n'a pas suffi. Un run reel est reste
+  bloque 45 minutes malgre lui (garde-fou cote PM declenche) : `net-proxy`
+  chaine tout le trafic LLM par `identity-proxy` (injection de credentials),
+  qui maintient LUI AUSSI une connexion persistante vers la vraie
+  destination — meme defaut, une couche plus bas, dans une crate distincte
+  que mon premier correctif ne touchait pas. Pire encore : `forward()`
+  (`crates/identity-proxy/src/proxy.rs`) rendait la main SANS repondre au
+  client sur une ecriture en echec (`Broken pipe`) — le client (net-proxy)
+  restait alors a attendre une reponse qui n'arriverait jamais, PENDANT que
+  net-proxy lui-meme attendait une requete suivante qui n'arriverait pas
+  davantage : chacun des deux bouts attendait l'autre, une impasse parfaite,
+  invisible de l'exterieur (aucune erreur, aucun log au-dela d'un `WARN`
+  isole).
+  Correctif different de celui de net-proxy, plus simple ici puisque
+  `forward()` est une boucle synchrone requete/reponse (pas de tache de
+  copie separee) : `try_read` avec un tampon d'1 octet, standard pour
+  detecter un FIN sans bloquer, AVANT d'ecrire le moindre octet de la
+  requete courante — jamais apres un echec d'ecriture partiel, qui rendrait
+  un rejeu incorrect (le corps deja consomme depuis le client ne peut pas
+  etre relu).
+  Lecon a retenir : une connexion egress passe par plusieurs hops
+  (`net-proxy` -> `identity-proxy` -> destination), et CHACUN peut
+  independamment garder une connexion persistante trop longtemps vivante.
+  Corriger le premier hop sans verifier les suivants laisse le meme defaut
+  intact, juste plus loin dans la chaine.
