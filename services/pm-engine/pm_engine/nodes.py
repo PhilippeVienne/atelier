@@ -1396,17 +1396,52 @@ async def suspend_while_waiting_review(state: PMWorkflowState, config: RunnableC
 # --------------------------------------------------------------------------
 # 9. AwaitHitlApproval
 # --------------------------------------------------------------------------
+def _outstanding_review_concerns(state: PMWorkflowState) -> list[str]:
+    """Objections des quatre roles consultatifs (docs/specs/
+    08-equipe-it-consultative.md, section 4.5 — brique 5.6.5) encore
+    actives au moment d'atteindre `AwaitHitlApproval`.
+
+    Aucun flag dedie "budget epuise" n'est necessaire : le SEUL moyen
+    d'atteindre `ProvisionWorkshop`/`OpenPullRequest` avec un verdict
+    encore a `"request_changes"` est que `route_after_architecture_review`/
+    `route_after_review` ait laisse passer un budget de revue epuise (un
+    verdict `"approve"` ne bloque jamais, et un rejet avec budget restant
+    reboucle vers une replanification/redelegation qui REMPLACE ce verdict
+    par un nouveau avant de revenir ici). Lire l'etat final suffit donc a
+    detecter un passage en force, sans suivre separement le fait qu'il ait
+    eu lieu."""
+    concerns: list[str] = []
+    for label, review in (
+        ("Architecture", state.get("architecture_review")),
+        ("Code", state.get("code_review")),
+        ("Securite", state.get("security_review")),
+        ("Ops", state.get("ops_review")),
+    ):
+        if review and review.get("verdict") == "request_changes":
+            concerns.extend(f"[{label}] {c}" for c in review.get("comments", []))
+    return concerns
+
+
 async def await_hitl_approval(state: PMWorkflowState, config: RunnableConfig) -> dict:
     """Point d'arret du graphe (`interrupt`, LangGraph) : l'execution se
     suspend ICI et le checkpoint PostgreSQL (tache 5.3.3) persiste l'etat
     complet — reprend exactement a ce noeud, sur n'importe quel worker,
     quand un humain resume le graphe avec sa decision (voir
     `pm_engine.graph.resume_with_decision` et la tache 5.5.2, interface
-    Dashboard, hors perimetre de cette session)."""
+    Dashboard, hors perimetre de cette session).
+
+    `outstanding_concerns` (toujours present, eventuellement vide) rend
+    visible AU RELECTEUR HUMAIN LUI-MEME un passage en force d'un role
+    consultatif par epuisement de budget — meme raison que le garde-fou
+    deja en place sur `pr_changed_files` dans `open_pull_request` : une
+    anomalie que seul l'etat interne du graphe connait, jamais montree
+    dans le payload d'interruption, est une anomalie qu'un relecteur qui
+    approuve sans re-verifier tout le run ne voit jamais."""
     decision = interrupt(
         {
             "question": "Approuver la fusion de cette Pull Request ?",
             "pr_url": state.get("pr_url"),
+            "outstanding_concerns": _outstanding_review_concerns(state),
         }
     )
     return {"hitl_decision": decision, "phase": "AwaitHitlApproval"}

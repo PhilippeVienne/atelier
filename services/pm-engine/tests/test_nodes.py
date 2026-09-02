@@ -212,6 +212,36 @@ def test_route_after_hitl_ends_when_rejected() -> None:
     assert nodes.route_after_hitl(PMWorkflowState(hitl_decision="rejected")) == "__end__"
 
 
+# `interrupt()` (LangGraph) ne peut pas s'invoquer hors de l'execution reelle
+# du graphe (leve une erreur sans le runtime Pregel) : `await_hitl_approval`
+# lui-meme n'est donc pas testable en isolation. `_outstanding_review_concerns`
+# porte toute la logique interessante (docs/specs/08-..., section 4.5) et
+# reste une fonction pure — la tester directement, malgre le prefixe prive,
+# est le seul moyen de la verifier sans un run de bout en bout complet.
+def test_outstanding_review_concerns_empty_when_everything_approved() -> None:
+    approve = {"verdict": "approve", "comments": []}
+    state = PMWorkflowState(
+        architecture_review=approve, code_review=approve, security_review=None, ops_review=None
+    )
+    assert nodes._outstanding_review_concerns(state) == []
+
+
+def test_outstanding_review_concerns_surfaces_a_forced_pass() -> None:
+    """Le seul chemin qui laisse un verdict a `request_changes` dans l'etat
+    final EST un passage en force par epuisement de budget (voir la
+    docstring de la fonction) : le relecteur humain doit le voir."""
+    state = PMWorkflowState(
+        architecture_review={"verdict": "approve", "comments": []},
+        code_review={"verdict": "request_changes", "comments": ["code mort"]},
+        security_review={"verdict": "request_changes", "comments": ["jeton en clair"]},
+        ops_review=None,
+    )
+    concerns = nodes._outstanding_review_concerns(state)
+    assert "[Code] code mort" in concerns
+    assert "[Securite] jeton en clair" in concerns
+    assert len(concerns) == 2
+
+
 def test_route_after_plan_expands_spec_on_greenfield() -> None:
     assert nodes.route_after_plan(PMWorkflowState(greenfield=True)) == "ExpandGreenfieldSpec"
 
