@@ -242,6 +242,54 @@ def test_outstanding_review_concerns_surfaces_a_forced_pass() -> None:
     assert len(concerns) == 2
 
 
+def test_qa_workshop_name_is_disjoint_from_task_workshops() -> None:
+    assert nodes._qa_workshop_name(27) == "pm-27-qa"
+
+
+def test_parse_qa_verdict_extracts_the_last_json_block_from_an_agent_transcript() -> None:
+    """`opencode run` produit une transcription complete (raisonnement,
+    appels d'outils) avant le verdict final — contrairement a un appel de
+    completion direct, la reponse ENTIERE n'est jamais que le JSON."""
+    transcript = (
+        "Je vais d'abord lire le code...\n"
+        "$ cat package.json\n"
+        '{"name": "url-shortener"}\n'
+        "Maintenant je demarre le serveur et teste l'API.\n\n"
+        '{"verdict": "pass", "comments": [], "evidence_files": [".qa-evidence/get.txt"]}'
+    )
+    verdict = nodes._parse_qa_verdict(transcript)
+    assert verdict == {
+        "verdict": "pass",
+        "comments": [],
+        "evidence_files": [".qa-evidence/get.txt"],
+    }
+
+
+def test_parse_qa_verdict_ignores_an_earlier_unrelated_json_object() -> None:
+    """Le `{"name": "url-shortener"}` (sortie de `cat package.json` dans la
+    transcription) ne doit jamais etre pris pour le verdict — seul le
+    DERNIER bloc portant `"verdict"` compte."""
+    transcript = '{"name": "url-shortener"}\n\n{"verdict": "fail", "comments": ["500 au lieu de 404"]}'
+    verdict = nodes._parse_qa_verdict(transcript)
+    assert verdict["verdict"] == "fail"
+    assert verdict["comments"] == ["500 au lieu de 404"]
+    assert verdict["evidence_files"] == []  # absent du JSON -> repli sur une liste vide
+
+
+def test_parse_qa_verdict_falls_back_to_fail_when_no_json_found() -> None:
+    """Repli INVERSE de `_parse_review_verdict` : `"fail"`, jamais
+    `"pass"` — ce noeud terminal ne bloque plus rien, un repli optimiste
+    masquerait une incertitude reelle."""
+    verdict = nodes._parse_qa_verdict("l'agent a plante avant de produire quoi que ce soit")
+    assert verdict["verdict"] == "fail"
+    assert verdict["evidence_files"] == []
+
+
+def test_parse_qa_verdict_falls_back_to_fail_on_an_unexpected_verdict_value() -> None:
+    verdict = nodes._parse_qa_verdict('{"verdict": "maybe", "comments": []}')
+    assert verdict["verdict"] == "fail"
+
+
 def test_route_after_plan_expands_spec_on_greenfield() -> None:
     assert nodes.route_after_plan(PMWorkflowState(greenfield=True)) == "ExpandGreenfieldSpec"
 

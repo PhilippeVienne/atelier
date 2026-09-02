@@ -12,6 +12,8 @@ via `config["configurable"]["deps"]`, jamais construites ici — voir
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import fnmatch
 import json
 import logging
@@ -25,6 +27,7 @@ from langgraph.types import interrupt
 from .deps import PmEngineDeps
 from .embeddings import embedding_literal as embeddings_embedding_literal
 from .embeddings import pad_embedding
+from .evidence_store import upload_evidence
 from .exec_client import ExecResult, wait_for_exec_completion
 from .mcp_client import atelier_mcp_session, call_tool_json
 from .state import PMWorkflowState, SubTask
@@ -1512,3 +1515,237 @@ async def index_knowledge(state: PMWorkflowState, config: RunnableConfig) -> dic
             )
 
     return {"knowledge_indexed": True, "phase": "IndexKnowledge", "status": "done"}
+
+
+# --------------------------------------------------------------------------
+# 12. QAValidation (docs/specs/09-qa-validation-post-merge.md, tache 5.7.3)
+# --------------------------------------------------------------------------
+QA_EVIDENCE_DIR = ".qa-evidence"
+
+
+def _qa_workshop_name(issue_number: int) -> str:
+    # Disjoint des Workshops de sous-taches (`pm-<issue>-task-N`) : jamais
+    # de confusion ni de conflit de nom, meme convention de prefixe.
+    return f"pm-{issue_number}-qa"
+
+
+def _qa_prompt(state: PMWorkflowState) -> str:
+    return (
+        "Tu es le validateur QA post-merge : le code a DEJA ete fusionne sur "
+        "main, ton role est d'en apporter la PREUVE de bon fonctionnement en "
+        "executant REELLEMENT l'application — pas une relecture statique du "
+        "code, ce role existe deja (ReviewCode).\n\n"
+        f"## Ticket resolu\n{state.get('analysis', '')}\n\n"
+        "Demarre l'application (installe ses dependances si besoin), puis :\n"
+        "- Si elle sert une interface HTML, capture une preuve visuelle : "
+        "installe toi-meme un outil de capture d'ecran headless si besoin "
+        f"(le devcontainer n'en fournit pas forcement un), et ecris le(s) "
+        f"fichier(s) PNG obtenus dans {QA_EVIDENCE_DIR}/.\n"
+        "- Sinon (API pure, sans interface web), exerce-la par de VRAIES "
+        "requetes HTTP couvrant les criteres d'acceptation du ticket "
+        f"ci-dessus, et consigne les reponses obtenues dans des fichiers "
+        f"texte sous {QA_EVIDENCE_DIR}/.\n\n"
+        "Ne commite JAMAIS ces fichiers de preuve : ils n'appartiennent pas "
+        "a l'historique git du projet, seulement a ce run de validation.\n\n"
+        "Termine ta reponse par UN SEUL bloc JSON (rien d'autre apres) : "
+        '{"verdict": "pass", "comments": [], "evidence_files": '
+        f'["{QA_EVIDENCE_DIR}/exemple.png"]}} ou {{"verdict": "fail", '
+        '"comments": ["..."], "evidence_files": [...]}.'
+    )
+
+
+# Le verdict n'a, par construction (voir `_qa_prompt`), que des champs
+# scalaires/listes de chaines — jamais d'objet imbrique. Une expression
+# reguliere qui interdit toute accolade INTERNE suffit donc a isoler le
+# DERNIER bloc JSON d'une transcription d'agent autonome (des dizaines de
+# lignes de raisonnement/appels d'outils avant le verdict final), sans
+# exiger — contrairement a `_parse_review_verdict`/`_strip_code_fences` —
+# que la reponse ENTIERE soit ce seul objet : cette derniere contrainte,
+# vraie pour un appel de complétion direct (`ReviewCode` et les autres
+# roles de la spec 08), ne l'est plus ici, `opencode run` produisant une
+# transcription complete, pas une reponse unique.
+_QA_VERDICT_RE = re.compile(r'\{[^{}]*"verdict"[^{}]*\}', re.DOTALL)
+
+
+def _parse_qa_verdict(raw: str) -> dict:
+    """Repli INVERSE de `_parse_review_verdict` : une reponse non
+    exploitable degrade vers `"fail"`, jamais `"pass"` — ce noeud terminal
+    ne bloque plus rien (spec 09, section 6), un repli optimiste
+    masquerait une incertitude reelle plutot que de la rendre visible."""
+    fallback = {
+        "verdict": "fail",
+        "comments": ["reponse de l'agent QA non exploitable"],
+        "evidence_files": [],
+    }
+    matches = _QA_VERDICT_RE.findall(raw)
+    if not matches:
+        logger.warning("QAValidation: aucun verdict JSON trouve dans la reponse de l'agent")
+        return fallback
+    try:
+        verdict = json.loads(matches[-1])
+        if verdict.get("verdict") not in ("pass", "fail"):
+            raise ValueError("verdict inattendu")
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("QAValidation: dernier bloc JSON de l'agent non exploitable")
+        return fallback
+    verdict.setdefault("comments", [])
+    verdict.setdefault("evidence_files", [])
+    return verdict
+
+
+async def _exec_and_wait(deps: PmEngineDeps, workshop_name: str, command: str) -> ExecResult:
+    async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+        execution = await call_tool_json(
+            session, "exec_in_workshop", {"name": workshop_name, "command": command}
+        )
+    return await wait_for_exec_completion(
+        deps.atelier_api_url, deps.mcp_token_provider, workshop_name, execution["executionId"]
+    )
+
+
+async def _provision_qa_workshop(
+    deps: PmEngineDeps, state: PMWorkflowState, workshop_name: str
+) -> None:
+    """Meme filet d'idempotence que `provision_workshop` (une reprise
+    LangGraph peut retomber ici alors que le Workshop existe deja), pointe
+    sur `main` — pas sur une branche de sous-tache — puisque c'est
+    precisement le code FUSIONNE qu'on veut exercer."""
+    if not await _workshop_exists(deps, workshop_name):
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+            await call_tool_json(
+                session,
+                "create_workshop",
+                {
+                    "name": workshop_name,
+                    "devcontainerRepo": deps.qa_workshop_devcontainer_repo
+                    or state["devcontainer_repo"],
+                    "devcontainerRevision": "main",
+                    "cpu": "2",
+                    "memory": "4Gi",
+                    "egressAllowlist": deps.workshop_egress_allowlist,
+                    **(
+                        {"ownerGroup": deps.workshop_owner_group}
+                        if deps.workshop_owner_group
+                        else {}
+                    ),
+                },
+            )
+    await _await_workshop_running(deps, workshop_name)
+
+
+async def _collect_qa_evidence(
+    deps: PmEngineDeps, state: PMWorkflowState, workshop_name: str, evidence_files: list[str]
+) -> list[str]:
+    """Recupere chaque fichier de preuve par le canal EXISTANT
+    (`exec_in_workshop`, base64) — voir la section 2 de la spec pour la
+    raison de fond (l'authentification S3 signe chaque requete, une
+    injection d'en-tete statique comme pour Git/LiteLLM ne peut pas la
+    satisfaire) — puis le televerse. Un fichier illisible ou une entree
+    S3 non configuree degradent (log + fichier ignore), jamais une
+    exception qui ferait echouer tout le noeud pour UNE preuve manquante."""
+    if not evidence_files:
+        return []
+    if deps.qa_evidence_s3 is None:
+        logger.info(
+            "QAValidation: S3 non configure (`S3_ENDPOINT` absent), %d preuve(s) NON televersee(s)",
+            len(evidence_files),
+        )
+        return []
+
+    prefix = f"qa/{state['repo']}/{state['issue_number']}"
+    keys: list[str] = []
+    for relative_path in evidence_files:
+        result = await _exec_and_wait(
+            deps, workshop_name, f"base64 {shlex.quote(relative_path)} | tr -d '\\n'"
+        )
+        if result.exit_code != 0:
+            logger.warning(
+                "QAValidation: lecture de la preuve %s echouee, ignoree (%s)",
+                relative_path,
+                result.stderr or result.stdout,
+            )
+            continue
+        try:
+            content = base64.b64decode(result.stdout.strip())
+        except binascii.Error as exc:
+            logger.warning(
+                "QAValidation: preuve %s illisible (base64 invalide: %s), ignoree",
+                relative_path,
+                exc,
+            )
+            continue
+        key = f"{prefix}/{relative_path.rsplit('/', 1)[-1]}"
+        await upload_evidence(deps.qa_evidence_s3, key, content)
+        keys.append(key)
+    return keys
+
+
+async def _finish_qa_validation(
+    deps: PmEngineDeps,
+    state: PMWorkflowState,
+    workshop_name: str,
+    verdict: dict,
+    evidence_keys: list[str],
+) -> None:
+    """Mise en veille du Workshop + commentaire de PR : purement
+    accessoire au verdict deja etabli (calcule AVANT cet appel) — ne doit
+    donc jamais faire echouer le noeud si l'un des deux echoue (Workshop
+    deja disparu, PR fermee entre-temps...). Meme doctrine que le reste de
+    ce noeud terminal (section 6 de la spec)."""
+    try:
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+            await call_tool_json(session, "suspend_workshop", {"name": workshop_name})
+    except Exception as exc:  # noqa: BLE001 - accessoire, voir docstring
+        logger.warning("QAValidation: mise en veille de %s echouee (%s)", workshop_name, exc)
+
+    verdict_label = "✅ reussie" if verdict.get("verdict") == "pass" else "⚠️ echouee"
+    comments = "\n".join(f"- {c}" for c in verdict.get("comments", []))
+    evidence_line = (
+        f"\nPreuves : {', '.join(evidence_keys)}" if evidence_keys else "\nAucune preuve televersee."
+    )
+    body = f"Validation QA post-merge {verdict_label}.\n{comments}{evidence_line}"
+    # Sur la PR elle-meme si connue (numero potentiellement different du
+    # ticket, comme observe en pratique — issue #27, PR #28), a defaut sur
+    # le ticket : meme repli que `merge_and_close`.
+    target_number = state.get("pr_number") or state["issue_number"]
+    try:
+        await deps.git_provider.post_comment(state["repo"], target_number, body)
+    except Exception as exc:  # noqa: BLE001 - accessoire, voir docstring
+        logger.warning("QAValidation: commentaire de PR echoue (%s)", exc)
+
+
+async def run_qa_validation(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Noeud TERMINAL et NON BLOQUANT (spec 09, section 6) : la fusion a
+    deja eu lieu (`MergeAndClose`), rien ne peut plus etre defait depuis ce
+    point du graphe. Toute erreur ici degrade vers un `qa_verdict` explicite
+    plutot que de remonter et faire echouer un run par ailleurs entierement
+    reussi (ticket resolu, code fusionne) — voir aussi
+    `docs/architecture/pieges.md` pour la meme doctrine deja appliquee a
+    `route_after_tests`/`route_after_review` (budget epuise -> on avance
+    quand meme), ici poussee a son terme logique : plus aucune arete
+    conditionnelle n'existe en sortie, ce noeud est le dernier du graphe."""
+    deps = _deps(config)
+    workshop_name = _qa_workshop_name(state["issue_number"])
+    evidence_keys: list[str] = []
+    try:
+        await _provision_qa_workshop(deps, state, workshop_name)
+        command = (
+            "opencode run --auto "
+            f"--model {shlex.quote(deps.opencode_model)} "
+            f"{shlex.quote(_qa_prompt(state))} < /dev/null"
+        )
+        result = await _exec_and_wait(deps, workshop_name, command)
+        verdict = _parse_qa_verdict(result.stdout)
+        evidence_keys = await _collect_qa_evidence(
+            deps, state, workshop_name, verdict.get("evidence_files", [])
+        )
+    except Exception as exc:  # noqa: BLE001 - noeud terminal, ne doit jamais faire echouer le workflow
+        logger.warning("QAValidation: erreur d'infrastructure, verdict degrade en echec (%s)", exc)
+        verdict = {
+            "verdict": "fail",
+            "comments": [f"QAValidation en erreur: {exc}"],
+            "evidence_files": [],
+        }
+
+    await _finish_qa_validation(deps, state, workshop_name, verdict, evidence_keys)
+    return {"qa_verdict": verdict, "qa_evidence_keys": evidence_keys, "phase": "QAValidation"}

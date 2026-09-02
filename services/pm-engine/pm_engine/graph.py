@@ -1,7 +1,9 @@
 """Construction du graphe LangGraph du PM (Jalon M5, tache 5.2.2 ; roles
 consultatifs ReviewArchitecture/ReviewCode/ReviewSecurity/ReviewOps
-ajoutes taches 5.6.3/5.6.4, voir docs/specs/08-equipe-it-consultative.md) :
-cablage des noeuds de `pm_engine.nodes` selon le flux decrit par
+ajoutes taches 5.6.3/5.6.4, voir docs/specs/08-equipe-it-consultative.md ;
+validation dynamique post-merge QAValidation ajoutee tache 5.7.3, voir
+docs/specs/09-qa-validation-post-merge.md) : cablage des noeuds de
+`pm_engine.nodes` selon le flux decrit par
 `docs/specs/05-devfactory-pm-engine.md`, section 2 :
 
     AnalyzeIssue -> PlanParallelTasks
@@ -18,8 +20,8 @@ cablage des noeuds de `pm_engine.nodes` selon le flux decrit par
     ReviewGate -> [tout approuve, ou budget de revue epuise] -> OpenPullRequest
       -> [rejete, budget restant] -> ReviewReconsideration -> DelegateToOpencode (boucle)
     OpenPullRequest -> SuspendWhileWaitingReview -> AwaitHitlApproval
-      -> [approuve] -> MergeAndClose -> IndexKnowledge -> FIN
-      -> [rejete] -> FIN
+      -> [approuve] -> MergeAndClose -> IndexKnowledge -> QAValidation -> FIN
+      -> [rejete] -> FIN (QAValidation jamais atteint : rien n'a ete fusionne)
 
 `ExpandGreenfieldSpec` n'ajoute un appel LLM que pour les tickets sur un
 depot vierge (rare) : elle fixe l'architecture d'un projet parti de zero
@@ -59,6 +61,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
     graph.add_node("AwaitHitlApproval", nodes.await_hitl_approval)
     graph.add_node("MergeAndClose", nodes.merge_and_close)
     graph.add_node("IndexKnowledge", nodes.index_knowledge)
+    graph.add_node("QAValidation", nodes.run_qa_validation)
 
     graph.add_edge(START, "AnalyzeIssue")
     graph.add_edge("AnalyzeIssue", "PlanParallelTasks")
@@ -124,6 +127,10 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
         {"MergeAndClose": "MergeAndClose", "__end__": END},
     )
     graph.add_edge("MergeAndClose", "IndexKnowledge")
-    graph.add_edge("IndexKnowledge", END)
+    # QAValidation ne s'execute que sur le chemin approuve : sur rejet
+    # (route_after_hitl -> __end__), rien n'a ete fusionne, il n'y a rien a
+    # exercer dynamiquement (docs/specs/09-qa-validation-post-merge.md).
+    graph.add_edge("IndexKnowledge", "QAValidation")
+    graph.add_edge("QAValidation", END)
 
     return graph.compile(checkpointer=checkpointer)

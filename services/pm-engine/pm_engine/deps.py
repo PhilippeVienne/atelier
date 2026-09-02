@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .evidence_store import S3Config
 from .git_providers import BaseGitProvider
 from .llm_client import LlmClient
 from .oidc import OidcTokenProvider
@@ -90,3 +91,19 @@ class PmEngineDeps:
     du service, sert a scoper les ecritures RLS dans `IndexKnowledge` (voir
     `crate::exec` cote atelier pour la meme convention RLS
     `app.current_tenant`, cote Rust)."""
+
+    qa_workshop_devcontainer_repo: str = ""
+    """Devcontainer du Workshop dedie a `QAValidation` (docs/specs/
+    09-qa-validation-post-merge.md, tache 5.7.3), s'il doit differer de
+    `devcontainer_repo` (le devcontainer de DEVELOPPEMENT du ticket). Vide
+    (par defaut) = reutilise `devcontainer_repo` : suffisant tant qu'aucun
+    besoin de divergence n'est demontre (voir la docstring de ce champ dans
+    la spec, section 7.2) — pas d'anticipation d'un besoin hypothetique."""
+
+    qa_evidence_s3: S3Config | None = None
+    """Configuration S3/RustFS de destination des preuves QA
+    (`pm_engine.evidence_store`), ou `None` si non configuree —
+    `QAValidation` degrade alors vers un verdict produit mais SANS preuves
+    televersees (voir la docstring du noeud). Construite une seule fois au
+    demarrage du service (`s3_config_from_env`, voir `pm_engine.main`),
+    jamais reconstruite a chaque run."""

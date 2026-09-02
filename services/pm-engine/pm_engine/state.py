@@ -38,6 +38,19 @@ class ReviewVerdict(TypedDict):
     comments: list[str]
 
 
+class QAVerdict(TypedDict):
+    """Sortie du validateur QA post-merge (docs/specs/
+    09-qa-validation-post-merge.md, tache 5.7.2). Volontairement DISTINCT
+    de `ReviewVerdict` : le repli sur reponse non exploitable est inverse
+    (`"fail"`, pas `"approve"`) — ce noeud terminal ne bloque plus rien
+    (la fusion a deja eu lieu), un repli optimiste masquerait une
+    incertitude reelle plutot que de la rendre visible."""
+
+    verdict: str  # "pass" | "fail"
+    comments: list[str]
+    evidence_files: list[str]  # chemins relatifs, cote Workshop de QA
+
+
 class PMWorkflowState(TypedDict):
     # --- Source (renseigne avant le premier noeud) ---
     repo: str
@@ -113,6 +126,13 @@ class PMWorkflowState(TypedDict):
 
     # --- IndexKnowledge ---
     knowledge_indexed: NotRequired[bool]
+
+    # --- QAValidation ---
+    qa_verdict: NotRequired[QAVerdict]
+    # Cles S3 (bucket `atelier-qa-evidence`), pas des URL : l'exposition
+    # Dashboard des preuves est hors perimetre de cette premiere version
+    # (voir docs/specs/09-qa-validation-post-merge.md, section 8).
+    qa_evidence_keys: NotRequired[list[str]]
 
     # --- Observabilite ---
     phase: NotRequired[str]

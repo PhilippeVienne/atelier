@@ -48,6 +48,7 @@ PIPELINE_PHASES: list[str] = [
     "AwaitHitlApproval",
     "MergeAndClose",
     "IndexKnowledge",
+    "QAValidation",
 ]
 
 
@@ -238,5 +239,7 @@ async def get_workflow(graph: Any, deps: PmEngineDeps, thread_id: str) -> dict[s
         # dire « pas encore ouverte » ou « provider incapable de repondre ».
         "pr_changed_files": values.get("pr_changed_files"),
         "hitl_decision": values.get("hitl_decision"),
+        "qa_verdict": values.get("qa_verdict"),
+        "qa_evidence_keys": values.get("qa_evidence_keys") or [],
         "status": values.get("status"),
     }

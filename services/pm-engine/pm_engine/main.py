@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from .auth import AuthState, Claims, make_require_auth
 from .checkpointer import build_checkpointer
 from .deps import PmEngineDeps
+from .evidence_store import s3_config_from_env
 from .git_providers import ForgejoProvider
 from .graph import build_graph
 from .llm_client import LlmClient
@@ -130,6 +131,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         chat_model=os.environ.get("PM_ENGINE_CHAT_MODEL", "sonnet-premium"),
         opencode_model=os.environ.get(
             "PM_ENGINE_OPENCODE_MODEL", "atelier/atelier-workshop-agent"
+        ),
+        # Construite une seule fois ici, jamais reconstruite a chaque run
+        # (`s3_config_from_env` — voir sa docstring pour la degradation
+        # explicite si `S3_ENDPOINT` est absent : `QAValidation` produit
+        # alors un verdict mais ne televerse aucune preuve).
+        qa_evidence_s3=s3_config_from_env(),
+        qa_workshop_devcontainer_repo=os.environ.get(
+            "PM_ENGINE_QA_WORKSHOP_DEVCONTAINER_REPO", ""
         ),
     )
 
