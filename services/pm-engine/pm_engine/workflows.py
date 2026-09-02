@@ -26,11 +26,13 @@ from .mcp_client import atelier_mcp_session, call_tool_json
 
 # Ordre des phases telles que les noeuds les ecrivent dans `state["phase"]`
 # (voir `pm_engine.graph`). Sert a situer un workflow dans son parcours ;
-# `AutoCorrectionLoop`/`ArchitectureReconsideration` n'y figurent pas : ce ne
-# sont pas des etapes en avant mais des retours en arriere (respectivement
-# vers `DelegateToOpencode` et `PlanParallelTasks`), et les afficher comme
-# une progression donnerait une impression d'avancement alors qu'on
-# recommence.
+# `AutoCorrectionLoop`/`ArchitectureReconsideration`/`ReviewReconsideration`
+# n'y figurent pas : ce ne sont pas des etapes en avant mais des retours en
+# arriere (respectivement vers `DelegateToOpencode`, `PlanParallelTasks` et
+# `DelegateToOpencode`), et les afficher comme une progression donnerait
+# une impression d'avancement alors qu'on recommence. `ReviewSecurity`/
+# `ReviewOps` n'y figurent pas non plus : conditionnels au diff, les
+# afficher inconditionnellement laisserait croire qu'ils tournent toujours.
 PIPELINE_PHASES: list[str] = [
     "AnalyzeIssue",
     "PlanParallelTasks",
@@ -39,6 +41,8 @@ PIPELINE_PHASES: list[str] = [
     "DelegateToOpencode",
     "IntegrateSubTasks",
     "RunDevcontainerTests",
+    "ReviewCode",
+    "ReviewGate",
     "OpenPullRequest",
     "SuspendWhileWaitingReview",
     "AwaitHitlApproval",

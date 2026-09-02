@@ -302,6 +302,127 @@ async def test_review_architecture_falls_back_to_approve_on_unparsable_reply(dep
     assert update["architecture_review"] == {"verdict": "approve", "comments": []}
 
 
+def test_route_after_code_review_skips_straight_to_gate_when_nothing_flagged() -> None:
+    state = PMWorkflowState(security_review_needed=False, ops_review_needed=False)
+    assert nodes.route_after_code_review(state) == ["ReviewGate"]
+
+
+def test_route_after_code_review_fans_out_to_both_when_both_flagged() -> None:
+    state = PMWorkflowState(security_review_needed=True, ops_review_needed=True)
+    assert set(nodes.route_after_code_review(state)) == {"ReviewSecurity", "ReviewOps"}
+
+
+def test_route_after_code_review_fans_out_to_security_only() -> None:
+    state = PMWorkflowState(security_review_needed=True, ops_review_needed=False)
+    assert nodes.route_after_code_review(state) == ["ReviewSecurity"]
+
+
+def test_route_after_review_proceeds_when_everything_approves() -> None:
+    approve = {"verdict": "approve", "comments": []}
+    state = PMWorkflowState(code_review=approve, security_review=None, ops_review=None)
+    assert nodes.route_after_review(state) == "OpenPullRequest"
+
+
+def test_route_after_review_reconsiders_when_any_role_rejects() -> None:
+    approve = {"verdict": "approve", "comments": []}
+    reject = {"verdict": "request_changes", "comments": ["x"]}
+    state = PMWorkflowState(
+        code_review=approve,
+        security_review=reject,
+        ops_review=None,
+        review_attempts=0,
+        max_review_attempts=3,
+    )
+    assert nodes.route_after_review(state) == "ReviewReconsideration"
+
+
+def test_route_after_review_gives_up_when_budget_exhausted() -> None:
+    reject = {"verdict": "request_changes", "comments": ["x"]}
+    state = PMWorkflowState(
+        code_review=reject,
+        security_review=None,
+        ops_review=None,
+        review_attempts=2,
+        max_review_attempts=3,
+    )
+    assert nodes.route_after_review(state) == "OpenPullRequest"
+
+
+@pytest.mark.asyncio
+async def test_prepare_review_reconsideration_aggregates_comments_from_every_role() -> None:
+    state = PMWorkflowState(
+        analysis="ticket initial",
+        code_review={"verdict": "request_changes", "comments": ["code mort dans routes.js"]},
+        security_review={"verdict": "request_changes", "comments": ["jeton en clair"]},
+        ops_review={"verdict": "approve", "comments": []},
+        review_attempts=0,
+    )
+    update = await nodes.prepare_review_reconsideration(state, _FakeConfig())
+
+    assert update["review_attempts"] == 1
+    assert "[Code] code mort dans routes.js" in update["analysis"]
+    assert "[Securite] jeton en clair" in update["analysis"]
+    assert "[Ops]" not in update["analysis"]  # Ops a approuve, rien a signaler
+    assert update["phase"] == "ReviewCode"
+
+
+@pytest.mark.asyncio
+async def test_review_code_reads_a_real_diff_and_flags_a_sensitive_path(deps, test_repo) -> None:
+    """Verifie de bout en bout, contre la vraie Forgejo de dev : `ReviewCode`
+    lit le diff (5.6.1), obtient un verdict via un vrai aller-retour LiteLLM,
+    et calcule correctement `security_review_needed` a partir d'un chemin
+    generique (`src/auth.js`) — jamais un nom de composant Atelier."""
+    await deps.git_provider.create_branch(test_repo, "feature/review-code-1", "main")
+    async with httpx.AsyncClient(
+        base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+        headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+        timeout=30.0,
+    ) as admin_client:
+        commit = await admin_client.post(
+            f"/repos/{test_repo}/contents/src/auth.js",
+            json={
+                "content": "bW9kdWxlLmV4cG9ydHMgPSB7fTs=",  # "module.exports = {};"
+                "message": "ajoute l'authentification",
+                "branch": "feature/review-code-1",
+            },
+        )
+        commit.raise_for_status()
+
+    deps.chat_model = "atelier-review-test"  # mock_response request_changes
+    state = PMWorkflowState(
+        repo=test_repo,
+        analysis="ajoute l'authentification",
+        plan=[
+            SubTask(
+                id="task-1",
+                title="Auth",
+                scope=["src/**"],
+                workshop_name="pm-1-task-1",
+                branch_name="feature/review-code-1",
+            )
+        ],
+    )
+    update = await nodes.review_code(state, _FakeConfig(configurable={"deps": deps}))
+
+    assert update["code_review"]["verdict"] == "request_changes"
+    assert update["security_review_needed"] is True
+    assert update["ops_review_needed"] is False
+    assert update["phase"] == "ReviewCode"
+
+
+@pytest.mark.asyncio
+async def test_review_security_and_review_gate_via_real_llm(deps) -> None:
+    deps.chat_model = "atelier-review-test"
+    state = PMWorkflowState(repo="owner/repo-inexistant", plan=[], analysis="ticket")
+
+    security_update = await nodes.review_security(state, _FakeConfig(configurable={"deps": deps}))
+    assert security_update["security_review"]["verdict"] == "request_changes"
+    assert security_update["phase"] == "ReviewSecurity"
+
+    gate_update = await nodes.review_gate(state, _FakeConfig())
+    assert gate_update["phase"] == "ReviewGate"
+
+
 @pytest.mark.asyncio
 async def test_analyze_issue_reads_a_real_issue_and_calls_the_real_llm(deps, test_repo) -> None:
     async with httpx.AsyncClient(

@@ -81,6 +81,23 @@ class PMWorkflowState(TypedDict):
     correction_attempts: NotRequired[int]
     max_correction_attempts: NotRequired[int]
 
+    # --- ReviewCode / ReviewSecurity / ReviewOps ---
+    # Compteur DISTINCT de `correction_attempts`/`architecture_review_attempts`
+    # (voir docs/specs/08-equipe-it-consultative.md, section 4.4) : un code
+    # rejete par la revue, un code qui ne compile pas et un decoupage
+    # malsain sont trois echecs de nature differente.
+    code_review: NotRequired[ReviewVerdict]
+    # `None` (pas seulement absent) signifie explicitement "pas declenche" :
+    # ReviewSecurity/ReviewOps ne tournent que si le diff touche des chemins
+    # sensibles/infra (`ReviewCode` calcule `security_review_needed`/
+    # `ops_review_needed`, lus par `route_after_code_review`).
+    security_review_needed: NotRequired[bool]
+    security_review: NotRequired[ReviewVerdict | None]
+    ops_review_needed: NotRequired[bool]
+    ops_review: NotRequired[ReviewVerdict | None]
+    review_attempts: NotRequired[int]
+    max_review_attempts: NotRequired[int]
+
     # --- OpenPullRequest ---
     # Branches de sous-taches que `IntegrateSubTasks` n'a pas pu fusionner
     # dans celle de tete. Vide = integration complete.
@@ -111,6 +128,7 @@ def initial_state(
     devcontainer_revision: str = "HEAD",
     max_correction_attempts: int = 3,
     max_architecture_review_attempts: int = 3,
+    max_review_attempts: int = 3,
 ) -> PMWorkflowState:
     return PMWorkflowState(
         repo=repo,
@@ -122,6 +140,8 @@ def initial_state(
         max_correction_attempts=max_correction_attempts,
         architecture_review_attempts=0,
         max_architecture_review_attempts=max_architecture_review_attempts,
+        review_attempts=0,
+        max_review_attempts=max_review_attempts,
         phase="pending",
         status="running",
     )

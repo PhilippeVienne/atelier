@@ -351,6 +351,23 @@ def route_after_plan(state: PMWorkflowState) -> str:
 # malsain doit etre refait a la source (replanification), pas corrige en
 # aval par les devs qui l'executent deja.
 # --------------------------------------------------------------------------
+def _parse_review_verdict(raw: str, role_name: str) -> dict:
+    """Parsing commun aux quatre roles consultatifs (Architecte/QA/
+    Securite/Ops) : reponse non-JSON ou verdict inattendu degrade TOUJOURS
+    vers `"approve"`, jamais vers `"request_changes"` — un modele qui
+    repond mal ne doit pas bloquer indefiniment un run par accident (meme
+    doctrine que le repli sur une tache unique de `plan_parallel_tasks`
+    face a une reponse non-JSON)."""
+    try:
+        verdict = json.loads(_strip_code_fences(raw))
+        if verdict.get("verdict") not in ("approve", "request_changes"):
+            raise ValueError("verdict inattendu")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        logger.warning("%s: reponse LLM non exploitable, repli sur approve", role_name)
+        verdict = {"verdict": "approve", "comments": []}
+    return verdict
+
+
 async def review_architecture(state: PMWorkflowState, config: RunnableConfig) -> dict:
     deps = _deps(config)
 
@@ -396,13 +413,7 @@ async def review_architecture(state: PMWorkflowState, config: RunnableConfig) ->
         ],
     )
 
-    try:
-        verdict = json.loads(_strip_code_fences(raw_verdict))
-        if verdict.get("verdict") not in ("approve", "request_changes"):
-            raise ValueError("verdict inattendu")
-    except (json.JSONDecodeError, ValueError, AttributeError):
-        logger.warning("ReviewArchitecture: reponse LLM non exploitable, repli sur approve")
-        verdict = {"verdict": "approve", "comments": []}
+    verdict = _parse_review_verdict(raw_verdict, "ReviewArchitecture")
 
     return {
         "architecture_review": verdict,
@@ -1079,6 +1090,221 @@ def diff_matches_any_pattern(diff: str, patterns: list[str]) -> bool:
     jamais dependre de l'approximation d'un modele."""
     paths = _diff_file_paths(diff)
     return any(_path_matches(path, pattern) for path in paths for pattern in patterns)
+
+
+# Un diff volumineux (une sous-tache entiere) gonflerait le prompt de
+# revue bien au-dela de ce qui est exploitable — tronque plutot que de
+# risquer un depassement de contexte ou une facture LLM disproportionnee.
+_REVIEW_DIFF_MAX_CHARS = 20000
+
+
+def _truncate_diff_for_review(diff: str) -> str:
+    if len(diff) <= _REVIEW_DIFF_MAX_CHARS:
+        return diff
+    return diff[:_REVIEW_DIFF_MAX_CHARS] + "\n... (diff tronque, trop volumineux pour la revue)"
+
+
+async def _review_diff(deps: PmEngineDeps, state: PMWorkflowState) -> str:
+    """Diff de la sous-tache de tete, meme simplification assumee que
+    `open_pull_request` (une seule PR/branche de tete dans cette premiere
+    version — voir sa docstring). Chaine vide si `plan` est vide ou si le
+    provider ne sait pas repondre : les roles de revue degradent alors
+    vers `approve` faute de matiere a examiner, plutot que d'echouer."""
+    plan = state.get("plan") or []
+    if not plan:
+        return ""
+    diff = await deps.git_provider.get_diff(state["repo"], "main", plan[0]["branch_name"])
+    return diff or ""
+
+
+# --------------------------------------------------------------------------
+# 6ter. ReviewCode / ReviewSecurity / ReviewOps (docs/specs/
+# 08-equipe-it-consultative.md, section 5 — brique 5.6.4). ReviewCode est
+# systematique ; ReviewSecurity/ReviewOps ne se declenchent que si le diff
+# touche des chemins sensibles/infra (detection deterministe ci-dessus,
+# section 6bis), et s'executent alors EN PARALLELE (fan-out natif
+# LangGraph via `route_after_code_review`, qui peut renvoyer les deux cles
+# a la fois).
+# --------------------------------------------------------------------------
+async def review_code(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    deps = _deps(config)
+    diff = await _review_diff(deps, state)
+
+    raw_verdict = await deps.llm_client.chat(
+        deps.chat_model,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es le relecteur QA qui examine le CODE PRODUIT avant "
+                    "l'ouverture de la Pull Request. Verifie que le diff repond "
+                    "reellement au ticket, sans regression evidente ni code mort "
+                    "(fichiers dupliques, implementation abandonnee en cours de "
+                    "route). Ne remets PAS en cause des choix de style mineurs. "
+                    "Reponds UNIQUEMENT avec un objet JSON : "
+                    '{"verdict": "approve", "comments": []} ou '
+                    '{"verdict": "request_changes", "comments": ["..."]}.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Ticket\n{state.get('analysis', '')}\n\n"
+                    f"## Diff\n{_truncate_diff_for_review(diff)}"
+                ),
+            },
+        ],
+    )
+    verdict = _parse_review_verdict(raw_verdict, "ReviewCode")
+
+    return {
+        "code_review": verdict,
+        "security_review_needed": diff_matches_any_pattern(diff, SECURITY_SENSITIVE_PATTERNS),
+        "ops_review_needed": diff_matches_any_pattern(diff, OPS_SENSITIVE_PATTERNS),
+        "phase": "ReviewCode",
+    }
+
+
+def route_after_code_review(state: PMWorkflowState) -> list[str]:
+    """Fan-out natif LangGraph : une liste de plusieurs cles declenche
+    l'execution de chacun des noeuds correspondants EN PARALLELE (pas
+    besoin de `Send` explicite ici, les branches ne se recouvrent pas).
+    Aucune des deux ne se declenche -> saute directement a `ReviewGate`,
+    seule facon d'y parvenir sans passer par les deux roles conditionnels."""
+    targets = []
+    if state.get("security_review_needed"):
+        targets.append("ReviewSecurity")
+    if state.get("ops_review_needed"):
+        targets.append("ReviewOps")
+    return targets or ["ReviewGate"]
+
+
+async def review_security(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    deps = _deps(config)
+    diff = await _review_diff(deps, state)
+
+    raw_verdict = await deps.llm_client.chat(
+        deps.chat_model,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es le relecteur SECURITE. Ce diff touche a des chemins "
+                    "sensibles (authentification, secrets, identifiants, jetons, "
+                    "sessions...). Verifie qu'aucun secret n'est ecrit en clair, "
+                    "qu'aucune verification d'authentification/autorisation n'est "
+                    "affaiblie ou contournee, et qu'aucune donnee sensible ne fuite "
+                    "(logs, messages d'erreur, reponses HTTP). Reponds UNIQUEMENT "
+                    "avec un objet JSON : "
+                    '{"verdict": "approve", "comments": []} ou '
+                    '{"verdict": "request_changes", "comments": ["..."]}.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Ticket\n{state.get('analysis', '')}\n\n"
+                    f"## Diff\n{_truncate_diff_for_review(diff)}"
+                ),
+            },
+        ],
+    )
+    verdict = _parse_review_verdict(raw_verdict, "ReviewSecurity")
+
+    return {"security_review": verdict, "phase": "ReviewSecurity"}
+
+
+async def review_ops(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    deps = _deps(config)
+    diff = await _review_diff(deps, state)
+
+    raw_verdict = await deps.llm_client.chat(
+        deps.chat_model,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es le relecteur OPS/SRE. Ce diff touche a de l'infrastructure "
+                    "(manifestes de deploiement, migrations de base de donnees, image "
+                    "de conteneur...). Verifie que l'impact deploiement est maitrise : "
+                    "une migration irreversible ou destructive sans etape de repli, une "
+                    "image qui tourne en root sans raison, un manifeste qui casse un "
+                    "environnement existant. Reponds UNIQUEMENT avec un objet JSON : "
+                    '{"verdict": "approve", "comments": []} ou '
+                    '{"verdict": "request_changes", "comments": ["..."]}.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Ticket\n{state.get('analysis', '')}\n\n"
+                    f"## Diff\n{_truncate_diff_for_review(diff)}"
+                ),
+            },
+        ],
+    )
+    verdict = _parse_review_verdict(raw_verdict, "ReviewOps")
+
+    return {"ops_review": verdict, "phase": "ReviewOps"}
+
+
+async def review_gate(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Point de convergence apres `ReviewCode`/`ReviewSecurity`/`ReviewOps` :
+    LangGraph n'execute ce noeud qu'une fois toutes les branches declenchees
+    par `route_after_code_review` terminees (semantique BSP native, aucune
+    synchronisation manuelle necessaire). Ne fait rien d'autre que marquer
+    la phase — l'agregation des verdicts est la responsabilite de
+    `route_after_review`, l'arete conditionnelle qui suit."""
+    return {"phase": "ReviewGate"}
+
+
+def route_after_review(state: PMWorkflowState) -> str:
+    reviews = (state.get("code_review"), state.get("security_review"), state.get("ops_review"))
+    if all(review is None or review.get("verdict") != "request_changes" for review in reviews):
+        return "OpenPullRequest"
+    attempts = state.get("review_attempts", 0) + 1
+    if attempts >= state.get("max_review_attempts", 3):
+        # Budget de revue epuise : on avance quand meme, un humain tranchera
+        # via AwaitHitlApproval — meme doctrine que `route_after_tests`.
+        logger.info(
+            "ReviewGate: budget de revue epuise (%d tentatives), "
+            "passage en force vers OpenPullRequest",
+            attempts,
+        )
+        return "OpenPullRequest"
+    return "ReviewReconsideration"
+
+
+async def prepare_review_reconsideration(state: PMWorkflowState, config: RunnableConfig) -> dict:
+    """Injecte les objections cumulees de ReviewCode/Security/Ops dans
+    `analysis` avant de rebafouiller `DelegateToOpencode` — meme mecanisme
+    que `auto_correction_loop` pour les echecs de tests, avec un compteur
+    DISTINCT (`review_attempts`) : un code rejete par la revue et un code
+    qui ne compile pas sont des echecs de nature differente (voir
+    docs/specs/08-equipe-it-consultative.md, section 4.4)."""
+    attempts = state.get("review_attempts", 0) + 1
+    comments: list[str] = []
+    for label, review in (
+        ("Code", state.get("code_review")),
+        ("Securite", state.get("security_review")),
+        ("Ops", state.get("ops_review")),
+    ):
+        if review and review.get("verdict") == "request_changes":
+            comments.extend(f"[{label}] {c}" for c in review.get("comments", []))
+    comments_text = "\n".join(f"- {c}" for c in comments)
+    return {
+        "review_attempts": attempts,
+        "analysis": (
+            f"{state.get('analysis', '')}\n\n"
+            f"## Revue avant PR, tentative {attempts}\n"
+            "Le code produit a ete rejete par la revue :\n"
+            f"{comments_text}\n"
+            "Corrige ces points en MODIFIANT les fichiers deja presents dans le "
+            "depot. Ne recree pas l'arborescence et ne reimplemente pas ce qui "
+            "existe deja."
+        ),
+        "phase": "ReviewCode",
+    }
 
 
 # --------------------------------------------------------------------------

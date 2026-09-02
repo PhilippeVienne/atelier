@@ -1,7 +1,7 @@
-"""Construction du graphe LangGraph du PM (Jalon M5, tache 5.2.2 ; role
-consultatif ReviewArchitecture ajoute tache 5.6.3, voir
-docs/specs/08-equipe-it-consultative.md) : cablage des noeuds de
-`pm_engine.nodes` selon le flux decrit par
+"""Construction du graphe LangGraph du PM (Jalon M5, tache 5.2.2 ; roles
+consultatifs ReviewArchitecture/ReviewCode/ReviewSecurity/ReviewOps
+ajoutes taches 5.6.3/5.6.4, voir docs/specs/08-equipe-it-consultative.md) :
+cablage des noeuds de `pm_engine.nodes` selon le flux decrit par
 `docs/specs/05-devfactory-pm-engine.md`, section 2 :
 
     AnalyzeIssue -> PlanParallelTasks
@@ -10,8 +10,13 @@ docs/specs/08-equipe-it-consultative.md) : cablage des noeuds de
       -> [approuve, ou budget de revue epuise] -> ProvisionWorkshop
       -> [rejete, budget restant] -> ArchitectureReconsideration -> PlanParallelTasks (boucle)
     ProvisionWorkshop -> DelegateToOpencode -> RunDevcontainerTests
-      -> [tests ok, ou budget de corrections epuise] -> OpenPullRequest
+      -> [tests ok, ou budget de corrections epuise] -> ReviewCode
       -> [tests en echec, budget restant] -> AutoCorrectionLoop -> DelegateToOpencode (boucle)
+    ReviewCode -> [chemins sensibles/infra detectes] -> ReviewSecurity et/ou ReviewOps (parallele)
+      -> [rien de sensible/infra] -> ReviewGate (directement)
+    ReviewSecurity/ReviewOps -> ReviewGate
+    ReviewGate -> [tout approuve, ou budget de revue epuise] -> OpenPullRequest
+      -> [rejete, budget restant] -> ReviewReconsideration -> DelegateToOpencode (boucle)
     OpenPullRequest -> SuspendWhileWaitingReview -> AwaitHitlApproval
       -> [approuve] -> MergeAndClose -> IndexKnowledge -> FIN
       -> [rejete] -> FIN
@@ -44,6 +49,11 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
     graph.add_node("IntegrateSubTasks", nodes.integrate_sub_tasks)
     graph.add_node("RunDevcontainerTests", nodes.run_devcontainer_tests)
     graph.add_node("AutoCorrectionLoop", nodes.auto_correction_loop)
+    graph.add_node("ReviewCode", nodes.review_code)
+    graph.add_node("ReviewSecurity", nodes.review_security)
+    graph.add_node("ReviewOps", nodes.review_ops)
+    graph.add_node("ReviewGate", nodes.review_gate)
+    graph.add_node("ReviewReconsideration", nodes.prepare_review_reconsideration)
     graph.add_node("OpenPullRequest", nodes.open_pull_request)
     graph.add_node("SuspendWhileWaitingReview", nodes.suspend_while_waiting_review)
     graph.add_node("AwaitHitlApproval", nodes.await_hitl_approval)
@@ -82,9 +92,30 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> object:
     graph.add_conditional_edges(
         "RunDevcontainerTests",
         nodes.route_after_tests,
-        {"OpenPullRequest": "OpenPullRequest", "AutoCorrectionLoop": "AutoCorrectionLoop"},
+        # `route_after_tests` renvoie la cle "OpenPullRequest" (inchangee,
+        # voir sa docstring) mais la fait desormais atterrir sur ReviewCode :
+        # c'est exactement a cela que sert l'indirection `path_map`, la
+        # decision "tests ok" et la decision "quel noeud vient ensuite"
+        # restent deux choses distinctes.
+        {"OpenPullRequest": "ReviewCode", "AutoCorrectionLoop": "AutoCorrectionLoop"},
     )
     graph.add_edge("AutoCorrectionLoop", "DelegateToOpencode")
+    # `route_after_code_review` peut renvoyer une liste de plusieurs cles :
+    # LangGraph declenche alors chacun des noeuds correspondants EN
+    # PARALLELE (fan-out natif, sans `Send` explicite necessaire ici).
+    graph.add_conditional_edges(
+        "ReviewCode",
+        nodes.route_after_code_review,
+        {"ReviewSecurity": "ReviewSecurity", "ReviewOps": "ReviewOps", "ReviewGate": "ReviewGate"},
+    )
+    graph.add_edge("ReviewSecurity", "ReviewGate")
+    graph.add_edge("ReviewOps", "ReviewGate")
+    graph.add_conditional_edges(
+        "ReviewGate",
+        nodes.route_after_review,
+        {"OpenPullRequest": "OpenPullRequest", "ReviewReconsideration": "ReviewReconsideration"},
+    )
+    graph.add_edge("ReviewReconsideration", "DelegateToOpencode")
     graph.add_edge("OpenPullRequest", "SuspendWhileWaitingReview")
     graph.add_edge("SuspendWhileWaitingReview", "AwaitHitlApproval")
     graph.add_conditional_edges(
