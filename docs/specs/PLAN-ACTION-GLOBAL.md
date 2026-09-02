@@ -354,6 +354,15 @@ graph TD
   - [x] **5.5.1** : Chat SSE interactif via Route Handler `/api/pm/chat` (BFF) scopé sur le projet et RLS. *(Implémenté : `dashboard/app/api/pm/chat/route.ts` relaye le flux SSE de `pm-engine/chat` avec token httpOnly ajouté côté serveur, composant client `dashboard/app/pm/pm-chat.tsx` consomme le streaming via `fetch` + `ReadableStream`. Build Next.js 16 validé sans erreur.)*
   - [x] **5.5.2** : Interface d'approbation Human-in-the-Loop pour valider ou rejeter les Pull Requests du bot. *(Implémenté : `dashboard/app/pm/pm-reviews.tsx` avec mise à jour optimiste, Server Action `decideReviewAction` dans `app/actions.ts`, route handlers `/api/pm/reviews` (GET) et `/api/pm/reviews/[threadId]/decision` (POST) relayant vers `pm-engine`. Build Next.js 16 validé sans erreur.)*
 
+### 8.6. Équipe IT Consultative autour du PM (Architecte, QA, Sécurité, Ops)
+* **Spécification** : [`08-equipe-it-consultative.md`](08-equipe-it-consultative.md)
+* **Fichiers** : `services/pm-engine/pm_engine/{state,nodes,graph}.py`, `git_providers/base.py` (+ `forgejo.py`/`github.py`/`gitlab.py`)
+  - [ ] **5.6.1** : `BaseGitProvider.get_diff` (non abstraite, `None` par défaut) + implémentations Forgejo/GitHub/GitLab, vérifiées contre l'instance de dev réelle (voir §4.1 de la spec — ne pas coder le format de réponse sans l'avoir observé).
+  - [ ] **5.6.2** : Détection déterministe des chemins sensibles/infra (`SECURITY_SENSITIVE_PATTERNS`/`OPS_SENSITIVE_PATTERNS`, §4.2) — pas de LLM pour cette décision.
+  - [ ] **5.6.3** : Nœud `ReviewArchitecture` (après `PlanParallelTasks`/`ExpandGreenfieldSpec`, avant `ProvisionWorkshop`), bouclage borné vers `PlanParallelTasks` (compteur dédié `architecture_review_attempts`).
+  - [ ] **5.6.4** : Nœuds `ReviewCode` (systématique) + `ReviewSecurity`/`ReviewOps` (conditionnels au diff, exécution parallèle si tous deux déclenchés) après `RunDevcontainerTests`, avant `OpenPullRequest` — arête de synthèse `route_after_review` bouclant vers `AutoCorrectionLoop` (compteur dédié `review_attempts`).
+  - [ ] **5.6.5** : `AwaitHitlApproval` expose `outstanding_concerns` dans son payload d'interruption quand un budget de revue a été épuisé sans approbation (§4.5) — aucun passage en force ne doit rester invisible au relecteur humain.
+
 ### 🧪 Tests & Preuves Attendues pour M5
 1. `pytest services/pm-engine/tests/` :
    - Simulation complète : issue ➔ planification ➔ dev in-VM ➔ échec de test ➔ auto-correction ➔ git-sync ➔ snapshot S3 ➔ approbation HITL ➔ merge de PR.
