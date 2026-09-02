@@ -108,6 +108,20 @@ class BaseGitProvider(ABC):
         produit ce symptome sans que rien ne le signale."""
         return None
 
+    async def get_diff(self, repo: str, base_branch: str, head_branch: str) -> str | None:
+        """Diff textuel (format unifie `diff --git ...`) entre `head_branch`
+        et `base_branch`, ou `None` si le provider ne sait pas le produire.
+
+        Meme convention que [`changed_file_count`]/[`list_root_entries`] :
+        non abstraite, `None` par defaut. Sert aux roles de revue
+        (`ReviewCode`/`ReviewSecurity`/`ReviewOps`, voir
+        docs/specs/08-equipe-it-consultative.md) a lire le code produit
+        AVANT l'ouverture de la PR — a ce stade du graphe, il n'existe
+        encore aucune PR dont on pourrait lire le diff via son numero,
+        d'ou une methode parametree par des branches et non par un
+        numero de PR."""
+        return None
+
     def git_push_credential(self) -> tuple[str, str] | None:
         """`(username, password)` a deposer dans le Workshop pour que
         l'agent delegue puisse authentifier son propre `git push` vers ce

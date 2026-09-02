@@ -187,6 +187,31 @@ class ForgejoProvider(BaseGitProvider):
         )
         response.raise_for_status()
 
+    async def get_diff(self, repo: str, base_branch: str, head_branch: str) -> str | None:
+        # `.../compare/{base}...{head}.diff` renvoie 404 sur cette version de
+        # Forgejo (9.0.3+gitea-1.22.0, verifie contre l'instance de dev
+        # reelle le 2026-09-02) — seul le JSON de `/compare/{base}...{head}`
+        # est disponible (liste de commits/fichiers, jamais le texte du
+        # diff, quel que soit l'en-tete Accept). En revanche
+        # `/git/commits/{sha}.diff` fonctionne (200, text/plain, diff
+        # unifie). On recupere donc les commits de la comparaison puis on
+        # concatene leur diff individuel, dans l'ordre.
+        response = await self._client.get(f"/repos/{repo}/compare/{base_branch}...{head_branch}")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        commits = response.json().get("commits") or []
+        diffs: list[str] = []
+        for commit in commits:
+            sha = commit["sha"]
+            diff_response = await self._client.get(
+                f"/repos/{repo}/git/commits/{sha}.diff",
+                headers={"Accept": "text/plain"},
+            )
+            diff_response.raise_for_status()
+            diffs.append(diff_response.text)
+        return "\n".join(diffs)
+
     def git_push_credential(self) -> tuple[str, str] | None:
         # Convention Forgejo/Gitea (identique a GitHub) : un jeton d'acces
         # personnel s'utilise comme mot de passe HTTP Basic, avec n'importe

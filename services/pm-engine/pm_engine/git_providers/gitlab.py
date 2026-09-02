@@ -112,6 +112,27 @@ class GitLabProvider(BaseGitProvider):
         )
         response.raise_for_status()
 
+    async def get_diff(self, repo: str, base_branch: str, head_branch: str) -> str | None:
+        # Verifie contre l'API publique reelle
+        # (`gitlab.com/gitlab-org/gitlab-test`) le 2026-09-02 : chaque entree
+        # de `diffs[]` ne porte que le corps du hunk (les lignes `@@ ... @@`
+        # et suivantes), JAMAIS l'en-tete `diff --git a/... b/...` ni les
+        # chemins de fichiers dans le texte lui-meme (contrairement a
+        # Forgejo/GitHub) — on synthetise donc cet en-tete a partir de
+        # `old_path`/`new_path` pour produire un diff lisible.
+        project = _encode_project(repo)
+        response = await self._client.get(
+            f"/projects/{project}/repository/compare",
+            params={"from": base_branch, "to": head_branch},
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        diffs = response.json().get("diffs") or []
+        return "\n".join(
+            f"diff --git a/{d['old_path']} b/{d['new_path']}\n{d['diff']}" for d in diffs
+        )
+
     def git_push_credential(self) -> tuple[str, str] | None:
         if not self._token:
             return None

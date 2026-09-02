@@ -179,6 +179,43 @@ async def test_list_root_entries_sees_what_the_planner_needs(test_repo):
         await provider.aclose()
 
 
+@pytest.mark.asyncio
+async def test_get_diff_reads_content_added_on_a_branch(test_repo: str) -> None:
+    """`ReviewCode`/`ReviewSecurity`/`ReviewOps` (docs/specs/08-...) lisent
+    ce diff AVANT toute PR — la methode ne peut donc pas s'appuyer sur un
+    numero de PR, seulement sur des noms de branches."""
+    _skip_if_unavailable()
+    provider = ForgejoProvider(FORGEJO_URL, FORGEJO_TOKEN or "")
+    try:
+        await provider.create_branch(test_repo, "feature/diff-1", "main")
+        async with httpx.AsyncClient(
+            base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+            headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+            timeout=30.0,
+        ) as admin_client:
+            commit = await admin_client.post(
+                f"/repos/{test_repo}/contents/secret.txt",
+                json={
+                    "content": "c2VjcmV0",  # "secret" en base64
+                    "message": "ajoute secret.txt",
+                    "branch": "feature/diff-1",
+                },
+            )
+            commit.raise_for_status()
+
+        diff = await provider.get_diff(test_repo, "main", "feature/diff-1")
+        assert diff is not None
+        assert "secret.txt" in diff
+        assert "+secret" in diff
+
+        # Deux branches identiques : aucun commit dans la comparaison, donc
+        # une chaine vide plutot que None (le provider SAIT repondre, la
+        # reponse est juste vide).
+        assert await provider.get_diff(test_repo, "main", "main") == ""
+    finally:
+        await provider.aclose()
+
+
 def test_git_push_credential_reuses_the_same_token_as_a_basic_auth_password() -> None:
     """Pas d'appel reseau : `git_push_credential` ne fait que reexposer le
     jeton deja fourni a la construction — c'est CE MEME jeton, deja utilise

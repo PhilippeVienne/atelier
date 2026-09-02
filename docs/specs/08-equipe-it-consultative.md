@@ -83,7 +83,11 @@ async def get_diff(self, repo: str, base_branch: str, head_branch: str) -> str |
     return None
 ```
 
-Implémentations concrètes : Forgejo expose `GET /repos/{owner}/{repo}/compare/{base}...{head}` avec un en-tête `Accept: text/plain` (à vérifier contre l'instance de dev avant de coder en dur le format — ne pas supposer, tester) ; GitHub `GET /repos/{owner}/{repo}/compare/{base}...{head}` avec `Accept: application/vnd.github.v3.diff` ; GitLab `GET /projects/:id/repository/compare` (champ `diffs[].diff`, à concaténer).
+Implémentations concrètes, **vérifiées contre l'instance de dev réelle** (Forgejo `9.0.3+gitea-1.22.0`, dépôt `pm-validation-url-shortener`) avant d'écrire une ligne de code, pas supposées :
+
+- **Forgejo** : `GET /repos/{owner}/{repo}/compare/{base}...{head}` ne renvoie que du JSON (liste de commits + noms de fichiers changés, jamais le texte du diff, quel que soit l'en-tête `Accept` envoyé) et l'URL `.../compare/{base}...{head}.diff` répond `404 Not Found` dans cette version — contrairement à ce qu'on aurait pu supposer par analogie avec `pulls/{index}.diff` (qui, lui, fonctionne réellement, mais suppose une PR déjà ouverte, justement ce qu'on n'a pas encore à ce stade du graphe). Chemin retenu : `GET .../compare/{base}...{head}` (JSON) pour lister les shas de commits, puis `GET /repos/{owner}/{repo}/git/commits/{sha}.diff` (confirmé `200 text/plain`, diff unifié classique) pour chacun, concaténés dans l'ordre. Un commit de fusion ne diffe alors que contre son premier parent — acceptable pour une revue, qui n'a pas besoin d'un patch ré-applicable.
+- **GitHub** : `GET /repos/{owner}/{repo}/compare/{base}...{head}` avec `Accept: application/vnd.github.v3.diff` (à vérifier de la même façon avant d'écrire le code, l'API GitHub étant connue pour bien supporter ce type de comparaison directement, sans le contournement Forgejo).
+- **GitLab** : `GET /projects/:id/repository/compare` (champ `diffs[].diff`, à concaténer) — à vérifier de même.
 
 `ReviewArchitecture` n'a pas besoin de `get_diff` (rien n'est encore codé à ce stade) : il relit `state["plan"]` et `state["analysis"]`, comme le fait déjà `plan_parallel_tasks`.
 

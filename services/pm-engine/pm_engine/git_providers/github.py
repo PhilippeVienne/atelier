@@ -113,6 +113,21 @@ class GitHubProvider(BaseGitProvider):
         response = await self._client.put(f"/repos/{repo}/pulls/{pr_number}/merge")
         response.raise_for_status()
 
+    async def get_diff(self, repo: str, base_branch: str, head_branch: str) -> str | None:
+        # Verifie contre l'API publique reelle (`api.github.com`, depot
+        # `octocat/Hello-World`) le 2026-09-02 : `Accept:
+        # application/vnd.github.v3.diff` fait directement repondre un
+        # diff unifie complet, contrairement a Forgejo qui ne l'offre pas
+        # sur une comparaison de branches (voir `ForgejoProvider.get_diff`).
+        response = await self._client.get(
+            f"/repos/{repo}/compare/{base_branch}...{head_branch}",
+            headers={"Accept": "application/vnd.github.v3.diff"},
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.text
+
     def git_push_credential(self) -> tuple[str, str] | None:
         if not self._token:
             return None
