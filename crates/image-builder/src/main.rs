@@ -684,9 +684,14 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
             "ATELIER_LLM_PROXY_AUTH_TOKEN={llm_proxy_auth_token}\nOPENCODE_CONFIG_CONTENT={opencode_config}\n"
         ));
     }
-    tokio::fs::write(&environment_path, environment)
+    tokio::fs::write(&environment_path, &environment)
         .await
         .with_context(|| format!("ecriture de {environment_path:?}"))?;
+
+    // Meme contenu, dans la forme qu'attend `sshd` : c'est lui, et non PAM,
+    // qui doit exposer ces variables aux commandes de `exec_in_workshop`
+    // (voir `inject_sshd`).
+    write_ssh_environment_file(rootfs_dir, &environment).await?;
 
     // Peut etre un symlink (ex: vers systemd-resolved) dans l'image de base
     // — sans effet ici puisque rien ne fait tourner systemd-resolved dans
@@ -698,6 +703,51 @@ async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
         .with_context(|| format!("ecriture de {resolv_conf_path:?}"))?;
 
     Ok(())
+}
+
+/// Recopie `/etc/environment` dans `~vscode/.ssh/environment`, seul canal par
+/// lequel le `sshd` injecte (`UsePAM no`, donc pas de `pam_env`) transmet un
+/// environnement aux commandes non interactives de `exec_in_workshop`.
+///
+/// Le format attendu par `sshd` est strictement `NOM=valeur`, sans guillemets
+/// autour de la valeur : `PATH="/usr/bin"` y deviendrait litteralement
+/// `"/usr/bin"`, guillemets compris. Seuls les guillemets ENGLOBANTS sont
+/// retires — `OPENCODE_CONFIG_CONTENT` est du JSON et porte les siens, qui
+/// doivent survivre intacts.
+async fn write_ssh_environment_file(rootfs_dir: &Path, environment: &str) -> Result<()> {
+    let rendered = render_ssh_environment(environment);
+
+    let ssh_dir = rootfs_dir.join("home/vscode/.ssh");
+    tokio::fs::create_dir_all(&ssh_dir).await?;
+    let path = ssh_dir.join("environment");
+    tokio::fs::write(&path, rendered)
+        .await
+        .with_context(|| format!("ecriture de {path:?}"))?;
+    Ok(())
+}
+
+/// Partie purement textuelle de [`write_ssh_environment_file`], isolee pour
+/// etre testable : c'est exactement la transformation qui, ecrite en `sed`
+/// dans un script shell genere, s'etait revelee fausse sans que rien ne le
+/// signale.
+fn render_ssh_environment(environment: &str) -> String {
+    environment
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            if name.is_empty()
+                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || name.starts_with(|c: char| c.is_ascii_digit())
+            {
+                return None;
+            }
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or(value);
+            Some(format!("{name}={value}\n"))
+        })
+        .collect()
 }
 
 /// Copie le binaire `opencode` (baque dans CETTE image `atelier-image-builder`,
@@ -790,8 +840,20 @@ async fn ensure_workspace_clone(
         ])
         // `net-proxy` tourne en sidecar du meme pod, donc dans le meme
         // netns : joignable en loopback, comme pour la microVM builder.
+        //
+        // Les MINUSCULES ne sont pas une redondance de confort : libcurl,
+        // que `git` utilise, ignore deliberement `HTTP_PROXY` en majuscules
+        // pour les URL `http://` (protection historique contre l'en-tete
+        // CGI `Proxy:`) et ne lit que `http_proxy`. Avec les seules
+        // majuscules, `git clone` court-circuitait donc le proxy et tentait
+        // de resoudre `git.atelier.internal` lui-meme — un nom qui n'existe
+        // que dans `net-proxy` : `Could not resolve host`, clone echoue,
+        // workspace livre vide, et l'agent bootait sans code ni depot git.
+        // Constate en run PM reel le 2026-09-02.
         .env("HTTP_PROXY", net_proxy_local_url())
         .env("HTTPS_PROXY", net_proxy_local_url())
+        .env("http_proxy", net_proxy_local_url())
+        .env("https_proxy", net_proxy_local_url())
         .status()
         .await
         .context("lancement de `git clone`")?;
@@ -1268,6 +1330,7 @@ async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
          PubkeyAuthentication yes\n\
          UsePAM no\n\
          AuthorizedKeysFile /home/vscode/.ssh/authorized_keys\n\
+         PermitUserEnvironment yes\n\
          PidFile /run/atelier-sshd.pid\n";
     tokio::fs::create_dir_all(rootfs_dir.join("etc/atelier-sshd")).await?;
     tokio::fs::write(rootfs_dir.join("etc/atelier-sshd/sshd_config"), sshd_config).await?;
@@ -1278,19 +1341,65 @@ async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
     // Boucle de retry : meme contrat que `atelier-start-ttyd.sh`, la cle
     // publique (`ssh_authorized_key`, OpenBao) n'est pas garantie prete au
     // premier demarrage — voir `crates/net-proxy/src/metadata.rs`.
+    //
+    // `~/.ssh/environment` (+ `PermitUserEnvironment yes`) est ce qui rend
+    // `/etc/environment` visible a une commande lancee par `exec_in_workshop`.
+    // Sans PAM — et `UsePAM no` est deliberé ici, pour ne pas avoir a
+    // embarquer toute la pile PAM — c'est `pam_env` qui manque, et lui seul
+    // lit `/etc/environment`. Une session SSH non interactive n'ouvre par
+    // ailleurs ni `/etc/profile` ni `~/.bashrc`. L'agent demarrait donc SANS
+    // `OPENCODE_CONFIG_CONTENT` ni `ATELIER_LLM_PROXY_AUTH_TOKEN` :
+    // `opencode` ne connaissait aucun fournisseur et mourait sur un
+    // laconique `Unexpected server error`. Le devcontainer de demo n'avait
+    // jamais montre le probleme puisqu'il utilise le `sshd` systeme, avec
+    // PAM. Le `sed` recopie les paires `CLE=valeur` en retirant les
+    // guillemets, que le format de `~/.ssh/environment` n'accepte pas.
+    // `PermitUserEnvironment` elargit en principe la surface d'attaque (un
+    // utilisateur pouvant ecrire ce fichier peut injecter `LD_PRELOAD`) :
+    // sans objet ici, ou le compte EST l'agent et la microVM est jetable.
+    // Le fichier lui-meme est ecrit par `write_ssh_environment_file`, au
+    // moment ou l'on compose deja `/etc/environment` — le deriver ici par un
+    // `sed` dans le script obligeait a echapper une expression reguliere a
+    // travers une chaine Rust ET un script shell, ce qui a effectivement
+    // produit un `\\(` la ou il fallait `\(` : fichier vide, agent sans
+    // configuration, et aucun message d'erreur.
     // `sshd` se re-execute lui-meme (`execve`) pour chaque connexion
     // entrante, en repartant du chemin binaire brut — pas via notre wrapper
     // `ld.so --library-path` — et ce re-exec echoue alors a charger ses
     // bibliotheques embarquees (`libwrap.so.0: cannot open shared object
     // file`, constate en pratique le 2026-09-01). `LD_LIBRARY_PATH`, en
-    // revanche, est un variable d'environnement normale : elle survit au
+    // revanche, est une variable d'environnement normale : elle survit au
     // re-exec et s'applique donc aussi au process enfant.
+    //
+    // `-r` (ne pas se re-executer a chaque connexion) est ce qui rend ce
+    // montage viable. Par defaut, `sshd` relance son propre binaire par
+    // connexion entrante : le re-exec repart du chemin brut, donc avec
+    // l'interpreteur ELF de l'image CIBLE, tout en heritant d'un
+    // `LD_LIBRARY_PATH` qui pointe vers NOS bibliotheques bookworm. Editeur
+    // de liens recent et glibc plus ancienne ne s'accordent pas : le
+    // processus meurt aussitot et la connexion est coupee avant meme
+    // l'echange de versions (`kex_exchange_identification: Connection closed
+    // by remote host`), alors que `sshd` annonce paisiblement
+    // `Server listening on 0.0.0.0 port 2222`. Symptome trompeur s'il en
+    // est : le port repond, donc tout semble en place.
+    //
+    // `LD_LIBRARY_PATH` est pose UNIQUEMENT sur `sshd` et `ssh-keygen`, via `env`, et
+    // surtout jamais `export`ee pour tout le script : nos bibliotheques
+    // viennent de bookworm, alors que l'image CIBLE peut etre bien plus
+    // recente. Un `export` global faisait charger notre glibc a toutes les
+    // commandes suivantes — `mkdir`, `chmod`, `chown`, `seq`, `curl` — qui
+    // mouraient toutes en `stack smashing detected` /
+    // `version GLIBC_2.38 not found`. Le script n'allait alors pas plus loin
+    // que sa premiere ligne utile : ni `~/.ssh`, ni cles d'hote, et un
+    // `sshd` relance en boucle par `guest-init` qui coupait chaque
+    // connexion (`Disconnected`). Constate en Workshop reel le 2026-09-02
+    // sur une image `devcontainers/javascript-node:20`.
     let script = "#!/usr/bin/env bash\n\
          set -u\n\
-         export LD_LIBRARY_PATH=/opt/atelier-sshd/lib\n\
          SSHD=/opt/atelier-sshd/bin/sshd\n\
          SSHKEYGEN=/opt/atelier-sshd/bin/ssh-keygen\n\
-         RUN=\"/opt/atelier-sshd/bin/ld.so --library-path /opt/atelier-sshd/lib\"\n\
+         RUN=\"env LD_LIBRARY_PATH=/opt/atelier-sshd/lib \
+             /opt/atelier-sshd/bin/ld.so --library-path /opt/atelier-sshd/lib\"\n\
          \n\
          mkdir -p /home/vscode/.ssh /run/sshd\n\
          PUBKEY=\"\"\n\
@@ -1299,14 +1408,15 @@ async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
              sleep 2\n\
          done\n\
          echo \"$PUBKEY\" > /home/vscode/.ssh/authorized_keys\n\
+         touch /home/vscode/.ssh/environment\n\
          chmod 700 /home/vscode/.ssh\n\
-         chmod 600 /home/vscode/.ssh/authorized_keys\n\
+         chmod 600 /home/vscode/.ssh/authorized_keys /home/vscode/.ssh/environment\n\
          chown -R vscode:vscode /home/vscode/.ssh\n\
          \n\
          [ -f /etc/atelier-sshd/ssh_host_rsa_key ] || $RUN \"$SSHKEYGEN\" -q -t rsa -f /etc/atelier-sshd/ssh_host_rsa_key -N \"\"\n\
          [ -f /etc/atelier-sshd/ssh_host_ed25519_key ] || $RUN \"$SSHKEYGEN\" -q -t ed25519 -f /etc/atelier-sshd/ssh_host_ed25519_key -N \"\"\n\
          \n\
-         exec $RUN \"$SSHD\" -D -e -f /etc/atelier-sshd/sshd_config\n";
+         exec $RUN \"$SSHD\" -D -e -r -f /etc/atelier-sshd/sshd_config\n";
     write_executable(&bin_dir.join("atelier-start-sshd.sh"), script).await?;
 
     // `sshd` gere lui-meme la bascule vers l'utilisateur authentifie
@@ -1496,4 +1606,42 @@ async fn publish_to_cache(cache_dir: &str, digest: &str, ext4_path: &Path) -> Re
         .await
         .with_context(|| format!("publication de l'image dans le cache ({dest_path:?})"))?;
     Ok(dest_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_ssh_environment;
+
+    #[test]
+    fn les_guillemets_englobants_sautent_mais_pas_ceux_du_json() {
+        // `PATH` est cite dans `/etc/environment` de toute image Debian ;
+        // `sshd` prendrait les guillemets pour une partie de la valeur.
+        // `OPENCODE_CONFIG_CONTENT`, lui, EST du JSON : ses guillemets
+        // interieurs doivent traverser intacts, faute de quoi `opencode`
+        // ne voit aucun fournisseur et meurt sur un `Unexpected server
+        // error` sans autre explication.
+        let rendered = render_ssh_environment(concat!(
+            "PATH=\"/usr/local/bin:/usr/bin\"\n",
+            "HTTP_PROXY=http://169.254.0.1:3128\n",
+            "OPENCODE_CONFIG_CONTENT={\"provider\":{\"atelier\":{\"npm\":\"x\"}}}\n",
+        ));
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "PATH=/usr/local/bin:/usr/bin\n",
+                "HTTP_PROXY=http://169.254.0.1:3128\n",
+                "OPENCODE_CONFIG_CONTENT={\"provider\":{\"atelier\":{\"npm\":\"x\"}}}\n",
+            )
+        );
+    }
+
+    #[test]
+    fn les_lignes_qui_ne_sont_pas_des_affectations_sont_ignorees() {
+        // `sshd` refuse le fichier entier des la premiere ligne mal formee :
+        // commentaires et lignes vides doivent disparaitre ici.
+        let rendered =
+            render_ssh_environment("# un commentaire\n\nDEBIAN_FRONTEND=noninteractive\n");
+        assert_eq!(rendered, "DEBIAN_FRONTEND=noninteractive\n");
+    }
 }
