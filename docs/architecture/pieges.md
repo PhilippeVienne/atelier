@@ -1120,3 +1120,20 @@
   ATOMIQUEMENT, teste dans les deux sens (le bug REPRODUIT reellement en
   test, contre la vraie instance OpenBao de dev, pas seulement corrige a
   l'aveugle).
+
+  **Deuxieme piege trouve en relecture (`/code-review`) sur ce meme
+  correctif** : `provision_workshop` appelait `set_workshop_git_credential`
+  APRES le bloc `if await _workshop_exists(...): continue`. Sur une reprise
+  LangGraph (le noeud est rejoue depuis son checkpoint apres un crash), si
+  `create_workshop` avait deja reussi mais que le process est mort (ou
+  qu'OpenBao etait injoignable) juste avant l'appel de credential, le
+  Workshop existe desormais — `_workshop_exists` est vrai, `continue` saute
+  le reste de l'iteration, et le credential n'est JAMAIS ecrit, sur aucune
+  reprise future. On retombe alors exactement sur le bug que ce depot
+  corrige (`fatal: could not read Username ... No such device or address`),
+  mais uniquement sur le chemin de reprise. Corrige en ne sautant que
+  `create_workshop` (via un `if/else`, plus un `continue`) : l'appel a
+  `set_workshop_git_credential` sort du bloc conditionnel et s'execute a
+  chaque passage, y compris pour un Workshop deja existant — sans risque,
+  puisque c'est une ecriture KV v2 idempotente (elle remplace simplement la
+  meme valeur).

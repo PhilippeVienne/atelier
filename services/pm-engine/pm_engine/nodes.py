@@ -383,30 +383,43 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
                     "ProvisionWorkshop: le Workshop %s existe deja, reprise",
                     task["workshop_name"],
                 )
-                continue
-            await call_tool_json(
-                session,
-                "create_workshop",
-                {
-                    "name": task["workshop_name"],
-                    "devcontainerRepo": state["devcontainer_repo"],
-                    "devcontainerRevision": task["branch_name"],
-                    "cpu": "2",
-                    "memory": "4Gi",
-                    # Sans allowlist explicite, `create_workshop` en cree une
-                    # VIDE et le build d'image du Workshop ne peut jamais
-                    # aboutir — voir `PmEngineDeps.workshop_egress_allowlist`.
-                    "egressAllowlist": deps.workshop_egress_allowlist,
-                    # Omis si non configure : l'api-server retient alors le
-                    # groupe unique de l'appelant. C'est seulement quand il y
-                    # en a plusieurs qu'il faut trancher explicitement.
-                    **(
-                        {"ownerGroup": deps.workshop_owner_group}
-                        if deps.workshop_owner_group
-                        else {}
-                    ),
-                },
-            )
+            else:
+                await call_tool_json(
+                    session,
+                    "create_workshop",
+                    {
+                        "name": task["workshop_name"],
+                        "devcontainerRepo": state["devcontainer_repo"],
+                        "devcontainerRevision": task["branch_name"],
+                        "cpu": "2",
+                        "memory": "4Gi",
+                        # Sans allowlist explicite, `create_workshop` en cree
+                        # une VIDE et le build d'image du Workshop ne peut
+                        # jamais aboutir — voir
+                        # `PmEngineDeps.workshop_egress_allowlist`.
+                        "egressAllowlist": deps.workshop_egress_allowlist,
+                        # Omis si non configure : l'api-server retient alors
+                        # le groupe unique de l'appelant. C'est seulement
+                        # quand il y en a plusieurs qu'il faut trancher
+                        # explicitement.
+                        **(
+                            {"ownerGroup": deps.workshop_owner_group}
+                            if deps.workshop_owner_group
+                            else {}
+                        ),
+                    },
+                )
+            # Hors du `if`/`else` ci-dessus, y compris sur reprise d'un
+            # Workshop deja existant : une reprise LangGraph peut retomber
+            # ici alors que `create_workshop` a reussi mais que le process a
+            # crashe (ou qu'OpenBao etait injoignable) juste avant l'appel
+            # `set_workshop_git_credential` qui suit. Le sauter dans ce cas
+            # laissait le Workshop sans credential git POUR TOUJOURS (aucune
+            # autre reprise ne le retente, `_workshop_exists` etant alors
+            # vrai) — reproduisant exactement le bug plus bas que ce depot
+            # sert a corriger. L'appel est idempotent (ecriture KV v2, donc
+            # sans effet de bord a le repeter).
+            #
             # Sans ce depot, `delegate_to_opencode` echouait plus tard avec
             # `fatal: could not read Username ... No such device or address`
             # (constate en Workshop reel le 2026-09-02) : `create_workshop`
