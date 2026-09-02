@@ -1211,7 +1211,16 @@ async def review_security(state: PMWorkflowState, config: RunnableConfig) -> dic
     )
     verdict = _parse_review_verdict(raw_verdict, "ReviewSecurity")
 
-    return {"security_review": verdict, "phase": "ReviewSecurity"}
+    # Pas de `"phase"` ici : ReviewSecurity peut s'executer EN PARALLELE de
+    # ReviewOps (`route_after_code_review`), et LangGraph rejette deux
+    # ecritures concurrentes differentes sur la meme cle dans le meme
+    # superstep (`InvalidUpdateError: At key 'phase'...`, reproduit en
+    # pratique le 2026-09-02 lors du run de validation du ticket #27 des
+    # que les deux roles se declenchaient ensemble). `ReviewGate`, seul
+    # point de convergence des deux, ecrit la phase pour tout le monde —
+    # coherent avec `PIPELINE_PHASES` (`pm_engine.workflows`), qui exclut
+    # deja ces deux roles conditionnels de la barre de progression.
+    return {"security_review": verdict}
 
 
 async def review_ops(state: PMWorkflowState, config: RunnableConfig) -> dict:
@@ -1245,7 +1254,10 @@ async def review_ops(state: PMWorkflowState, config: RunnableConfig) -> dict:
     )
     verdict = _parse_review_verdict(raw_verdict, "ReviewOps")
 
-    return {"ops_review": verdict, "phase": "ReviewOps"}
+    # Pas de `"phase"` ici — meme raison que `review_security` (voir sa
+    # docstring/commentaire) : ecriture concurrente rejetee par LangGraph
+    # quand les deux roles tournent en parallele.
+    return {"ops_review": verdict}
 
 
 async def review_gate(state: PMWorkflowState, config: RunnableConfig) -> dict:

@@ -447,7 +447,11 @@ async def test_review_security_and_review_gate_via_real_llm(deps) -> None:
 
     security_update = await nodes.review_security(state, _FakeConfig(configurable={"deps": deps}))
     assert security_update["security_review"]["verdict"] == "request_changes"
-    assert security_update["phase"] == "ReviewSecurity"
+    # Pas de "phase" ici : ReviewSecurity/ReviewOps peuvent tourner en
+    # parallele, et deux ecritures concurrentes differentes sur "phase"
+    # font planter LangGraph (voir le commentaire dans review_security) —
+    # reproduit reellement lors du run de validation du ticket #27.
+    assert "phase" not in security_update
 
     gate_update = await nodes.review_gate(state, _FakeConfig())
     assert gate_update["phase"] == "ReviewGate"
