@@ -132,6 +132,20 @@ model_list:
       input_cost_per_token: 0.5
       output_cost_per_token: 0.5
 
+  # Modele de test pour le repli defensif de `plan_parallel_tasks` face a un
+  # JSON PARFAITEMENT valide mais de forme inattendue (une liste de chaines,
+  # pas d'objets) — constate en pratique le 2026-09-02 avec le vrai modele
+  # (`claude-3-5-sonnet-20241022`) sur un ticket tres simple, faisait planter
+  # le noeud (`TypeError: string indices must be integers`) avant que le
+  # garde-fou de forme ne soit ajoute.
+  - model_name: atelier-plan-malformed-test
+    litellm_params:
+      model: openai/atelier-plan-malformed-test
+      mock_response: '["task-1"]'
+    model_info:
+      input_cost_per_token: 0.5
+      output_cost_per_token: 0.5
+
   # Modele de test pour `pm_engine.nodes.review_architecture` (docs/specs/
   # 08-equipe-it-consultative.md, tache 5.6.3) : le verdict "request_changes"
   # est le chemin le plus interessant a couvrir par un vrai aller-retour

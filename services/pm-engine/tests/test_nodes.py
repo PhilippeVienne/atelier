@@ -541,6 +541,27 @@ async def test_plan_parallel_tasks_parses_a_real_json_plan(deps) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_parallel_tasks_falls_back_on_a_well_formed_but_wrong_shaped_plan(
+    deps,
+) -> None:
+    """Regression reelle (2026-09-02, ticket #29 de validation) : un JSON
+    PARFAITEMENT valide mais de mauvaise forme (une liste de chaines,
+    `["task-1"]`, plutot que d'objets `{"id":...}`) faisait planter le
+    noeud (`TypeError: string indices must be integers`) avant l'ajout du
+    garde-fou de forme — constate avec le vrai modele
+    (`claude-3-5-sonnet-20241022`) sur un ticket tres simple."""
+    deps.chat_model = "atelier-plan-malformed-test"  # mock_response '["task-1"]'
+    state = PMWorkflowState(issue_number=29, issue_title="ticket simple", analysis="fais un truc")
+    update = await nodes.plan_parallel_tasks(state, _FakeConfig(configurable={"deps": deps}))
+
+    plan = update["plan"]
+    assert len(plan) == 1
+    assert plan[0]["id"] == "task-1"
+    assert plan[0]["title"] == "ticket simple"
+    assert plan[0]["scope"] == ["**"]
+
+
+@pytest.mark.asyncio
 async def test_plan_parallel_tasks_flags_a_greenfield_repo(deps, test_repo) -> None:
     # `test_repo` est cree avec `auto_init=True` : sa racine ne contient que
     # README.md, donc `_is_greenfield` vaut vrai. Le plan mock (2 sous-taches)

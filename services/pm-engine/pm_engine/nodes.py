@@ -245,8 +245,23 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
 
     try:
         raw_tasks = json.loads(_strip_code_fences(raw_plan))
-    except json.JSONDecodeError:
-        logger.warning("PlanParallelTasks: reponse LLM non-JSON, repli sur une seule tache")
+        # Le JSON peut etre PARFAITEMENT valide sans avoir la forme attendue
+        # (ex: `["task-1"]`, une liste de chaines plutot que d'objets) — un
+        # ticket tres simple y pousse le modele en pratique (constate le
+        # 2026-09-02, avec `claude-3-5-sonnet-20241022` reel, sur un ticket
+        # d'une seule ligne). `json.JSONDecodeError` seul ne l'attrape pas :
+        # le parsing reussit, c'est la lecture de `task["id"]` plus bas qui
+        # levait `TypeError: string indices must be integers`. Meme doctrine
+        # que le repli sur JSON invalide : une forme inattendue est traitee
+        # comme une reponse inexploitable, jamais comme une exception qui
+        # remonte.
+        if not raw_tasks or not all(
+            isinstance(task, dict) and {"id", "title", "scope"} <= task.keys()
+            for task in raw_tasks
+        ):
+            raise ValueError("forme de plan inattendue (pas une liste d'objets id/title/scope)")
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("PlanParallelTasks: reponse LLM inexploitable (%s), repli sur une seule tache", exc)
         raw_tasks = [{"id": "task-1", "title": state.get("issue_title", "task"), "scope": ["**"]}]
 
     # Garde-fous DETERMINISTES. Le prompt enonce ces regles, mais une consigne
