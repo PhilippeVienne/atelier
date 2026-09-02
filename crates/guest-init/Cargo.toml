@@ -9,4 +9,4 @@ name = "atelier-guest-init"
 path = "src/main.rs"
 
 [dependencies]
-nix = { version = "0.31.3", features = ["mount", "process"] }
+nix = { version = "0.31.3", features = ["mount", "process", "signal"] }

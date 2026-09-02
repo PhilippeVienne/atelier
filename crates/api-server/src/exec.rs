@@ -188,6 +188,52 @@ fn in_workspace(workspace_dir: &str, command: &str) -> String {
     format!("cd {workspace_dir} 2>/dev/null || true; {command}")
 }
 
+/// Plafond dur, en secondes, impose a CHAQUE `exec_in_workshop` : voir
+/// `with_ceiling` pour la justification complete. Volontairement bien en
+/// deca du garde-fou cote PM (`pm_engine.exec_client.DEFAULT_TOTAL_TIMEOUT_S`,
+/// 45 min) : c'est ce plafond-ci qui doit se declencher en premier, avec un
+/// vrai code de sortie diagnosticable, plutot que de laisser le PM abandonner
+/// sur un silence de 45 minutes sans savoir pourquoi.
+fn exec_ceiling_secs() -> u64 {
+    std::env::var("ATELIER_EXEC_CEILING_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1200)
+}
+
+/// Enveloppe la commande dans `timeout --kill-after`, pour qu'un
+/// `exec_in_workshop` TERMINE TOUJOURS, quoi que fasse le shell de l'agent.
+///
+/// Un agent qui met son propre serveur en arriere-plan pour le tester
+/// (`node server.js & ...; kill %1; wait`) et se trompe dans son propre
+/// script de nettoyage laissait la commande entiere bloquee indefiniment :
+/// dans un shell SSH NON INTERACTIF (le controle de tache — "job control" —
+/// est desactive par defaut), `kill %1`/`kill $PID` echoue souvent en
+/// silence, et le `wait` qui suit attend alors un process encore vivant qui
+/// ne se terminera jamais. Constate deux fois de suite en Workshop reel le
+/// 2026-09-02 (memes symptomes, scripts differents) : `exit_code: None`
+/// apres plusieurs minutes de silence, rien commite ni pousse, sans le
+/// moindre message explicite.
+///
+/// GNU `timeout`, SANS `--foreground` (le defaut), place la commande
+/// surveillee dans son PROPRE groupe de processus et, a expiration, envoie
+/// le signal a CE GROUPE ENTIER — pas seulement a son enfant direct. Le
+/// serveur oublie en arriere-plan par l'agent (meme groupe que le shell qui
+/// l'a lance, tant qu'il n'a pas explicitement demande `setsid`/un nouveau
+/// groupe) meurt donc avec le reste. `--kill-after` est le filet de
+/// securite si `SIGTERM` est ignore. Necessite `timeout` (coreutils) et
+/// `bash` dans l'image cible : les deux sont quasi-universels sur les
+/// images de devcontainer Debian/Ubuntu ; une image minimale qui en serait
+/// depourvue perdrait ce filet, pas la commande elle-meme (`timeout`
+/// absent produirait juste une erreur `not found`, remontee normalement).
+fn with_ceiling(command: &str) -> String {
+    let escaped = command.replace('\'', "'\\''");
+    format!(
+        "timeout --kill-after=30s {}s bash -c '{escaped}'",
+        exec_ceiling_secs()
+    )
+}
+
 async fn run_over_ssh(
     state: &AppState,
     id: Uuid,
@@ -227,7 +273,7 @@ async fn run_over_ssh(
         .await
         .map_err(|err| anyhow::anyhow!("ouverture du canal SSH echouee: {err}"))?;
     channel
-        .exec(true, in_workspace(workspace_dir, command))
+        .exec(true, with_ceiling(&in_workspace(workspace_dir, command)))
         .await
         .map_err(|err| anyhow::anyhow!("exec SSH echoue: {err}"))?;
 
@@ -492,7 +538,7 @@ async fn fetch_row(
 
 #[cfg(test)]
 mod workspace_tests {
-    use super::{in_workspace, stream_is_done, workspace_dir};
+    use super::{in_workspace, stream_is_done, with_ceiling, workspace_dir};
 
     /// Regression (2026-08-30) : une commande SSH non interactive demarre
     /// dans `/home/vscode`, pas dans les sources. `RunDevcontainerTests`
@@ -546,5 +592,25 @@ mod workspace_tests {
         );
         assert!(!stream_is_done(false, true), "commande encore en cours");
         assert!(!stream_is_done(false, false), "commande encore en cours");
+    }
+
+    /// `with_ceiling` doit produire une commande shell valide meme quand la
+    /// commande d'origine porte deja des guillemets simples — le cas courant
+    /// ici, `in_workspace`/`delegate_to_opencode` cote pm-engine construisant
+    /// des commandes via `shlex.quote` (guillemets simples).
+    #[test]
+    fn wraps_the_command_in_a_hard_timeout_escaping_single_quotes() {
+        let wrapped = with_ceiling("echo 'hello world' && exit 1");
+        assert!(
+            wrapped.starts_with("timeout --kill-after=30s "),
+            "{wrapped}"
+        );
+        assert!(wrapped.contains("bash -c '"), "{wrapped}");
+        // Les guillemets simples d'origine survivent, correctement echappes
+        // pour rester a l'interieur des guillemets simples englobants.
+        assert!(
+            wrapped.contains("echo '\\''hello world'\\'' && exit 1"),
+            "{wrapped}"
+        );
     }
 }

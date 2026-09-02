@@ -239,9 +239,11 @@ async fn main() -> anyhow::Result<()> {
     }
     let metadata_addr = std::env::var("ATELIER_NET_PROXY_METADATA_ADDR")
         .unwrap_or_else(|_| DEFAULT_METADATA_ADDR.to_string());
+    let last_heartbeat: metadata::LastHeartbeat = std::sync::Arc::new(RwLock::new(None));
     let metadata_router = metadata::router(metadata::MetadataState {
         session_auth: session_auth_cache,
         ssh_authorized_key: ssh_authorized_key_cache,
+        last_heartbeat,
     });
     let metadata_listener = TcpListener::bind(&metadata_addr).await?;
     tracing::info!(%metadata_addr, "serveur metadata guest (session-auth) en ecoute");

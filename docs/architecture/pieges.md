@@ -988,3 +988,42 @@
   Constate en Workshop reel : un agent dont la suite de tests venait de
   passer (3/3) a conclu, sur la foi de ce faux `502`, que son propre serveur
   ne repondait pas. `localhost,127.0.0.1` ajoutes a `NO_PROXY`/`no_proxy`.
+- **Un exec pouvait rester coince pour toujours : deux gardes-fous distincts,
+  pas un seul** (2026-09-02) : un agent qui met son propre serveur en
+  arriere-plan pour le tester (`node server.js & ...; kill %1; wait`) et se
+  trompe dans son propre nettoyage bloquait `exec_in_workshop` indefiniment.
+  Cause reelle, pas une supposition : dans un shell SSH NON INTERACTIF, le
+  controle de tache ("job control") est desactive par defaut — `kill %1`/
+  `kill $PID` echoue souvent en silence, et le `wait` qui suit attend alors
+  un process encore vivant qui ne se terminera jamais. Constate deux fois de
+  suite (2026-09-02), scripts differents, memes symptomes : `exit_code: None`
+  apres plusieurs minutes de silence, rien commite ni pousse.
+  Ce n'est PAS un bug reseau — le process est reellement encore vivant, du
+  point de vue du shell qui l'a lance. Deux mecanismes complementaires,
+  chacun avec une portee differente :
+  1. **`timeout --kill-after` autour de CHAQUE `exec_in_workshop`**
+     (`crates/api-server/src/exec.rs::with_ceiling`) : GNU `timeout`, sans
+     `--foreground` (le defaut), place la commande dans son PROPRE groupe de
+     processus et, a expiration, envoie le signal a CE GROUPE ENTIER — pas
+     seulement a son enfant direct. Le serveur oublie en arriere-plan meurt
+     donc avec le reste. Verifie manuellement en conditions reelles :
+     `timeout --kill-after=3s 2s bash -c 'sleep 30 & wait'` tue effectivement
+     le `sleep` arrere-plan, confirme par son absence dans `ps` apres coup —
+     ne JAMAIS supposer ce genre de comportement documente sans le
+     verifier une fois en pratique.
+  2. **Watchdog dans `atelier-guest-init`** (PID 1 du guest,
+     `kill_stale_orphans` + heartbeat `POST /heartbeat` vers `net-proxy`
+     toutes les 15s) : complementaire, PAS redondant. Il ne voit QUE les
+     processus deja reparentes a PID 1 (de vrais orphelins), jamais un
+     process encore rattache a un parent vivant plus haut dans l'arbre — le
+     cas le plus courant d'un exec SSH bloque, ou la session `sshd` qui l'a
+     lance reste en vie tout du long et empeche justement toute
+     reparentation. Couvre le reste (un `disown`/`nohup` dont le parent
+     direct est deja sorti) et donne une preuve positive, horodatee, cote
+     hote (`killed_stale_orphans` dans le heartbeat, en `WARN` cote
+     net-proxy) qu'un process est reellement reste coince — utile meme
+     quand le plafond `timeout` a deja fait son travail par ailleurs.
+  Le heartbeat est pour l'instant purement observationnel (logs `net-proxy`) :
+  il n'est pas encore remonte dans `status.conditions` du Workshop, ce qui
+  demanderait que `crates/controller` vienne LIRE cet etat en plus de
+  simplement le stocker.
