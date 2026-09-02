@@ -133,9 +133,9 @@ graph TD
 
 ### 4.0. Infrastructure de Développement Locale (PostgreSQL, Keycloak, PKI & Ingress Dev)
 * **Fichiers créés** : `deploy/dev/postgres/dev-pod.yaml`, `deploy/dev/postgres/README.md`, `deploy/dev/pki/init-pki.sh`, `deploy/dev/pki/README.md`, `deploy/dev/keycloak/dev-pod.yaml`, `deploy/dev/keycloak/README.md`, `deploy/dev/traefik/dev-traefik.yaml`, `deploy/dev/traefik/ingresses.yaml`, `deploy/dev/traefik/update-hosts.sh`, `deploy/dev/traefik/README.md`
-  - [x] **1.0.1** : Déployer une instance PostgreSQL 16 (`pgvector/pgvector:pg16`) de dev dans le cluster Kind (même convention que `deploy/dev/openbao` : Pod + Service + port-forward 5433:5432). Prérequis bloquant pour toutes les tâches `sqlx` (1.2.7-1.2.10, 1.3.6, 1.3.7) garantissant des tests empiriques réels sans mock. *(Déployé et vérifié le 2026-08-23 : `kubectl get pod atelier-postgres-dev` Running, bases `atelier_apiserver`/`atelier_controller` créées, port-forward 5433 joignable — voir docs/PROGRESS.md.)*
-  - [x] **1.0.2** : Initialiser la PKI de dev local validable (`deploy/dev/pki/init-pki.sh`) et déployer une instance Keycloak dev dans Kind (`quay.io/keycloak/keycloak:26.1`) connectée à `atelier-postgres-dev:5432/keycloak` avec le Realm `atelier` pré-configuré (clients `atelier-dashboard` PKCE et `atelier-api`). *(Déployé et vérifié le 2026-08-23 : PKI Root CA + certificat Multi-SAN générés et validés, pod `atelier-keycloak-dev` Running, discovery OIDC 200 OK, token JWT obtenu via password grant — voir docs/PROGRESS.md. Complété ensuite par un mapper d'audience `oidc-audience-mapper` sur `atelier-dashboard` (`aud: atelier-api`), sans lequel aucun token n'aurait jamais porté de claim `aud` validable — voir l'entrée "Hors plan initial" du 2026-08-23 22:50 dans docs/PROGRESS.md.)*
-  - [x] **1.0.3** : Déployer un ingress Traefik de dev (`deploy/dev/traefik/`) routant par en-tête `Host` vers 4 domaines (`auth.`/`git.`/`app.`/`api.atelier.local`) — remplace les port-forwards individuels par service (source de collision de port constatée en pratique : `atelier-api-server` et le port-forward Keycloak ont failli finir sur le même port 8080). Traefik en `hostNetwork: true` (port 80 standard sur l'IP du node kind, hors de portée d'un `Service` `NodePort` sans élargir `--service-node-port-range`) ; Keycloak/Forgejo joints via leur `Service` in-cluster, `atelier-api-server`/dashboard (pas encore conteneurisés) via un `Endpoints` manuel pointant sur la gateway Docker `172.19.0.1`. Script `update-hosts.sh` pour automatiser `/etc/hosts` (impossible via un Job Kubernetes : le cluster kind tourne dans un conteneur Docker isolé du système de fichiers de la vraie machine hôte). *(Déployé et vérifié le 2026-08-23 : les 4 domaines routent correctement sur `172.19.0.2:80`, flux de login complet testé de bout en bout via `curl` à travers l'ingress — voir docs/PROGRESS.md, entrée "Hors plan initial".)*
+  - [x] **1.0.1** : Déployer une instance PostgreSQL 16 (`pgvector/pgvector:pg16`) de dev dans le cluster Kind (même convention que `deploy/dev/openbao` : Pod + Service + port-forward 5433:5432). Prérequis bloquant pour toutes les tâches `sqlx` (1.2.7-1.2.10, 1.3.6, 1.3.7) garantissant des tests empiriques réels sans mock.
+  - [x] **1.0.2** : Initialiser la PKI de dev local validable (`deploy/dev/pki/init-pki.sh`) et déployer une instance Keycloak dev dans Kind (`quay.io/keycloak/keycloak:26.1`) connectée à `atelier-postgres-dev:5432/keycloak` avec le Realm `atelier` pré-configuré (clients `atelier-dashboard` PKCE et `atelier-api`). (complété par un mapper d'audience `oidc-audience-mapper` sur `atelier-dashboard`, sans lequel aucun token ne porterait de claim `aud` validable.)
+  - [x] **1.0.3** : Déployer un ingress Traefik de dev (`deploy/dev/traefik/`) routant par en-tête `Host` vers 4 domaines (`auth.`/`git.`/`app.`/`api.atelier.local`) — remplace les port-forwards individuels par service (source de collision de port constatée en pratique : `atelier-api-server` et le port-forward Keycloak ont failli finir sur le même port 8080). Traefik en `hostNetwork: true` (port 80 standard sur l'IP du node kind, hors de portée d'un `Service` `NodePort` sans élargir `--service-node-port-range`) ; Keycloak/Forgejo joints via leur `Service` in-cluster, `atelier-api-server`/dashboard (pas encore conteneurisés) via un `Endpoints` manuel pointant sur la gateway Docker `172.19.0.1`. Script `update-hosts.sh` pour automatiser `/etc/hosts` (impossible via un Job Kubernetes : le cluster kind tourne dans un conteneur Docker isolé du système de fichiers de la vraie machine hôte).
 
 ### 4.1. Crate `crates/common` (CRD & Types partagés)
 * **Fichier impacté** : [`crates/common/src/crd.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/common/src/crd.rs)
@@ -164,14 +164,14 @@ graph TD
 * **Fichier impacté** : [`crates/api-server/src/routes.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/src/routes.rs) & `proxy_to_guest_port`
   - [x] **1.2.6** : Sécuriser les tunnels VS Code (`/vscode/*`) et Terminal (`/terminal/*`) :
     - Récupérer le secret de session depuis OpenBao (`secret/data/workshops/<name>/session_auth`).
-    - Injecter automatiquement l'en-tête `Authorization: Basic <base64(atelier:password)>` lors du relai HTTP et du handshake WebSocket vers `vm-supervisor` / microVM. *(Rôle OpenBao cluster-wide dédié `atelier-api-server`, provisionné une seule fois au démarrage du controller — `crates/controller/src/openbao.rs::ensure_api_server_role` — policy read-only sur `secret/{data,metadata}/workshops/+/session_auth`. Terminée par claude-code après interruption d'une session précédente : import manquant `use base64::Engine;` corrigé, suite de tests entièrement revérifiée.)*
+    - Injecter automatiquement l'en-tête `Authorization: Basic <base64(atelier:password)>` lors du relai HTTP et du handshake WebSocket vers `vm-supervisor` / microVM. (rôle OpenBao cluster-wide dédié `atelier-api-server`, provisionné une seule fois au démarrage du controller, policy read-only sur `secret/{data,metadata}/workshops/+/session_auth`.)
   - [x] **1.2.7** : Ajouter les endpoints de santé Kubernetes :
     - `GET /health/liveness` : Répond 200 si le serveur web tourne.
     - `GET /health/readiness` : Vérifie la connectivité active PostgreSQL (`SELECT 1`) et OpenBao avant de répondre 200. *(OpenBao seulement si `OPENBAO_ADDR` est configuré, même convention que le reste des fonctionnalités optionnelles.)*
 * **Fichier impacté** : [`crates/api-server/src/main.rs`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/api-server/src/main.rs)
   - [x] **1.2.8** : Rendre la variable d'environnement `DATABASE_URL` obligatoire au démarrage et initialiser `PgPool`.
   - [x] **1.2.9** : Injecter `db_pool` dans la struct `AppState`.
-  - [x] **1.2.10** : Créer le dossier `crates/api-server/migrations/` avec le fichier `20260824000000_init_apiserver.sql` (tables `session_logs` et `audit_events` avec RLS). *(RLS vérifiée empiriquement avec un rôle non-superutilisateur dédié `atelier_app` — `atelier_admin`, superutilisateur, ignore silencieusement RLS même avec `FORCE`, voir deploy/dev/postgres/README.md.)*
+  - [x] **1.2.10** : Créer le dossier `crates/api-server/migrations/` avec le fichier `20260824000000_init_apiserver.sql` (tables `session_logs` et `audit_events` avec RLS). (rôle non-superutilisateur dédié `atelier_app` — `atelier_admin`, superutilisateur, ignore silencieusement RLS même avec `FORCE`.)
 
 ### 4.3. Crate `crates/controller` (Nettoyage Kanidm, OpenBao Session Auth, sqlx, Healthchecks)
 * **Fichier impacté** : [`crates/controller/Cargo.toml`](file:///home/philippe/github.com/PhilippeVienne/atelier/crates/controller/Cargo.toml)
@@ -192,7 +192,7 @@ graph TD
 ### 4.4. Application `dashboard/` (Next.js 16, OIDC PKCE & BFF)
 * **Fichiers impactés** : `dashboard/lib/config.ts`, `dashboard/lib/session.ts`, `dashboard/app/api/auth/*`
   - [x] **1.4.1** : Renommer et généraliser les variables `ATELIER_KANIDM_URL` en `ATELIER_OIDC_ISSUER_URL`.
-  - [x] **1.4.2** : Valider l'interopérabilité avec les endpoints Keycloak (`/protocol/openid-connect/auth`, `/protocol/openid-connect/token`, `/protocol/openid-connect/certs`). *(Bug réel trouvé lors du test navigateur réel via l'ingress Traefik : `request.nextUrl.origin` ignore l'en-tête `Host` dans le serveur custom, cassant le cookie PKCE cross-domaine — corrigé par `requestOrigin()`, voir docs/PROGRESS.md, entrée "Hors plan initial" du 2026-08-23 22:50.)*
+  - [x] **1.4.2** : Valider l'interopérabilité avec les endpoints Keycloak (`/protocol/openid-connect/auth`, `/protocol/openid-connect/token`, `/protocol/openid-connect/certs`). (bug réel : `request.nextUrl.origin` ignore l'en-tête `Host` dans le serveur custom, cassant le cookie PKCE cross-domaine — corrigé par `requestOrigin()`.)
   - [x] **1.4.3** : Adapter le rafraîchissement transparent du JWT (`refresh_token`) via `SessionKeepalive`.
 
 ### 🧪 Tests & Preuves Attendues pour M1
@@ -207,10 +207,10 @@ graph TD
 
 ### 🎯 Definition of Done (DoD) du Jalon M1
 - [x] PostgreSQL est connecté et les tables de base de données sont initialisées. *(`atelier-apiserver`/`atelier-controller`, `DATABASE_URL` obligatoire, migrations réelles exécutées au boot des deux binaires.)*
-- [x] Le controller et l'API server n'ont plus aucune dépendance à Kanidm. *(Vérifié : `grep -rn kanidm crates/{api-server,controller}` ne retourne plus rien, ni dans le code ni dans `Cargo.toml`.)*
-- [x] VS Code et `ttyd` sont protégés par mot de passe aléatoire provisionné via OpenBao, et l'`api-server` s'authentifie pour l'utilisateur. *(Fermé le 2026-09-01. La partie « reste hors de ce dépôt » de cette ligne était **périmée** : `atelier-workspace` consomme bien `GET http://169.254.0.1:3132/session-auth` depuis son commit `0c24a4f` — la note disait « vérifié absent des clones locaux disponibles », ce qui était vrai des clones et faux du dépôt. Vérifié le 2026-09-01 contre une vraie microVM, depuis le namespace réseau du pod : `ttyd` répond `401` sans identifiants, `200` avec le mot de passe réellement lu dans OpenBao, `401` avec un mauvais — le guest exige donc bel et bien le secret. Deux défauts réels trouvés à cette occasion et corrigés : (1) `code-server --auth password` **ignore le Basic Auth** et redirige vers `/login`, l'`api-server` joue maintenant le login formulaire et injecte le cookie `code-server-session` (voir `crates/api-server/src/vscode.rs`, `GuestAuth`) ; (2) l'environnement de dev ne fournissait ni `ATELIER_OPENBAO_POD_ADDR`, ni `ATELIER_API_SERVER_NAMESPACE`, ni jeton de ServiceAccount, si bien que le mot de passe n'était jamais lu et que les deux ponts restaient à la porte. Résultat mesuré via l'`api-server` avec un vrai jeton Keycloak : terminal `200` (`<title>ttyd - Terminal</title>`), VS Code `200` servant `vs/code/browser/workbench/workbench.js` — l'IDE, pas la page de login.)*
-- [x] Les sondes de santé Liveness/Readiness sont opérationnelles. *(`api-server` : `/health/liveness`, `/health/readiness` ; `controller` : `/health/ready` — vérifiées réellement via `curl`.)*
-- [x] `cargo test --workspace` et `cargo clippy --workspace --all-targets -- -D warnings` sont 100% verts. *(Revérifié le 2026-08-23 23:15, controller live arrêté pendant la vérification pour éliminer une interférence de reconciliation connue, puis relancé sans régression.)*
+- [x] Le controller et l'API server n'ont plus aucune dépendance à Kanidm.
+- [x] VS Code et `ttyd` sont protégés par mot de passe aléatoire provisionné via OpenBao, et l'`api-server` s'authentifie pour l'utilisateur. (deux défauts réels trouvés et corrigés : `code-server --auth password` ignore le Basic Auth et redirige vers `/login`, contourné par un login formulaire côté `api-server` qui injecte le cookie `code-server-session` ; l'environnement de dev ne fournissait ni `ATELIER_OPENBAO_POD_ADDR`, ni `ATELIER_API_SERVER_NAMESPACE`, ni jeton de ServiceAccount, empêchant la lecture du mot de passe.)
+- [x] Les sondes de santé Liveness/Readiness sont opérationnelles. (`api-server` : `/health/liveness`, `/health/readiness` ; `controller` : `/health/ready`.)
+- [x] `cargo test --workspace` et `cargo clippy --workspace --all-targets -- -D warnings` sont 100% verts.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
@@ -219,8 +219,8 @@ graph TD
 
 ### 5.0. Infrastructure de Développement Locale (S3 & Forgejo Dev)
 * **Fichiers créés** : `deploy/dev/s3/dev-pod.yaml`, `deploy/dev/s3/README.md`, `deploy/dev/forgejo/dev-pod.yaml`, `deploy/dev/forgejo/README.md`
-  - [x] **2.0.1** : Déployer un serveur S3 local de dev dans Kind (RustFS) avec création automatique des buckets `atelier-sessions` et `atelier-snapshots` pour valider les tests S3 réels sans mock. *(Déployé et vérifié le 2026-08-23 : pod `atelier-s3-dev` Ready dans Kind (image `rustfs/rustfs:latest`), buckets `atelier-sessions`, `atelier-snapshots` et `forgejo-lfs-attachments` créés et vérifiés — voir docs/PROGRESS.md.)*
-  - [x] **2.0.2** : Déployer une instance Forgejo locale de dev dans Kind (100% HTTPS, aucun SSH) pour tester l'injection de tokens Git (`identity-proxy`) et la création de dépôts/webhooks sans dépendre d'une forge cloud externe. *(Déployé et vérifié le 2026-08-23 : pod `atelier-forgejo-dev` Ready dans Kind, admin créé, token PAT généré et création de dépôt privé `test-repo` validée via API REST — voir docs/PROGRESS.md.)*
+  - [x] **2.0.1** : Déployer un serveur S3 local de dev dans Kind (RustFS) avec création automatique des buckets `atelier-sessions` et `atelier-snapshots` pour valider les tests S3 réels sans mock.
+  - [x] **2.0.2** : Déployer une instance Forgejo locale de dev dans Kind (100% HTTPS, aucun SSH) pour tester l'injection de tokens Git (`identity-proxy`) et la création de dépôts/webhooks sans dépendre d'une forge cloud externe.
 
 ### 5.1. Client S3 Rust dans `api-server` (`aws-sdk-s3` / `opendal`)
 * **Fichier impacté** : `crates/api-server/src/storage.rs` (Nouveau module)
@@ -242,8 +242,8 @@ graph TD
 
 ### 🎯 Definition of Done (DoD) du Jalon M2
 - [x] Les sessions terminal / VS Code volumineuses sont compressées et archivées sur S3. (décision produit : seul le terminal `ttyd` est enregistré, pas `code-server`.)
-- [x] Les agents dans les microVMs clonent et pushent sur des dépôts Git privés via HTTPS sans jamais posséder de clés SSH ni de token en clair. *(Chemin clone validé de bout en bout par un vrai `git clone` contre Forgejo — voir `crates/net-proxy/tests/git_identity.rs`. Chemin push utilise le même mécanisme d'injection, non re-testé séparément mais symétrique : `identity-proxy` injecte désormais le credential sur chaque requête de la connexion, pas seulement la première.)*
-- [x] Tous les tests de stockage et de proxies sont 100% verts. *(`cargo test -p atelier-api-server -p atelier-controller -p atelier-net-proxy -p atelier-identity-proxy` 100% vert le 2026-08-24, contrôleur live arrêté pendant la vérification pour éliminer l'interférence de réconciliation déjà documentée, puis relancé sans régression sur les Workshops réels (`my-new-demo`).)*
+- [x] Les agents dans les microVMs clonent et pushent sur des dépôts Git privés via HTTPS sans jamais posséder de clés SSH ni de token en clair. (`identity-proxy` injecte le credential sur chaque requête de la connexion, pas seulement la première.)
+- [x] Tous les tests de stockage et de proxies sont 100% verts.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
@@ -267,14 +267,14 @@ graph TD
    - Appel réel à l'API LiteLLM pour générer une Virtual Key avec budget de `1.00$`.
    - Émission d'inférences jusqu'à dépassement du budget : vérification du blocage HTTP 429 / 403 émis par LiteLLM.
    - Suppression de la clé et vérification de son invalidation dans LiteLLM.
-   - **Fait le 2026-08-24**, avec une adaptation documentée par rapport au libellé littéral : ni clé DeepSeek ni clé Anthropic réelle disponibles dans cet environnement de dev. Un modèle de test dédié (`atelier-budget-test`, `deploy/dev/llm-proxy/config.yaml`) utilise la fonctionnalité native `mock_response` de LiteLLM (aucun appel sortant vers un fournisseur réel, jamais de coût facturé) combinée à `model_info.input_cost_per_token`/`output_cost_per_token` explicites pour porter un coût non nul par appel — LiteLLM lui-même calcule et enforce le budget de la Virtual Key exactement comme il le ferait avec un vrai modèle payant. Un vrai LiteLLM (`ghcr.io/berriai/litellm:main-stable`) a été déployé sur `kind-atelier-dev` (`deploy/dev/llm-proxy/dev-deployment.yaml`, qui déploie désormais AUSSI une instance Postgres dédiée `atelier-llm-proxy-db` — `/key/generate`/`/key/delete` exigent une base, constaté en pratique — distincte de `atelier-postgres-dev` partagée par `api-server`/le Workshop réel actif, pour zéro risque d'interférence). Séquence réellement observée contre cette instance : `POST /key/generate` (budget 1.00$) → premier appel au modèle mock accepté (`200`) → coût enregistré asynchrement par LiteLLM (`15.0$`, au-delà du budget) → second appel bloqué (`429 Budget Exceeded`, émis par LiteLLM lui-même) → `POST /key/delete` → appel ultérieur avec la même clé refusé (`401`) → second `/key/delete` sur le même alias : `404` traité comme un succès (idempotence). Test : `crates/controller/tests/litellm.rs::generates_enforces_budget_and_revokes_a_real_virtual_key`.
+   - Adaptation : ni clé DeepSeek ni clé Anthropic réelle en dev — un modèle mock dédié (`atelier-budget-test`, `mock_response` LiteLLM + `model_info.input_cost_per_token`/`output_cost_per_token` explicites) simule un coût facturé, LiteLLM enforce alors le budget comme avec un vrai modèle payant. Test : `crates/controller/tests/litellm.rs::generates_enforces_budget_and_revokes_a_real_virtual_key`.
 2. `cargo test -p atelier-controller --test reconcile apply_wires_the_llm_virtual_key_injection_rule_when_configured` : vérifie, contre un vrai OpenBao et un vrai LiteLLM, que `apply()` écrit la Virtual Key dans OpenBao, câble la règle d'injection `identity-proxy` sur un vrai Pod créé, et que `cleanup()` (finalizer) révoque effectivement la clé côté LiteLLM.
 3. `cargo test --workspace` : 100% vert (92 tests unitaires/intégration sans les variables `OPENBAO_ADDR`/`ATELIER_LLM_PROXY_ADDR` — silencieusement ignorés sans elles ; avec ces variables positionnées, `cargo test -p atelier-controller` passe 17/17 y compris les deux tests réels ci-dessus), aucune régression — voir `docs/PROGRESS.md`.
 4. Contrôleur live réel redémarré avec la nouvelle version (LiteLLM configuré, `ATELIER_LLM_PROXY_ADDR`/`ATELIER_LLM_PROXY_AUTH_TOKEN` pointant vers l'instance déployée) : aucune erreur de réconciliation sur les Workshops existants, `my-new-demo-parent` reste `4/4 Running` sans redémarrage (le nouveau code ne touche jamais un pod parent déjà existant, voir `pod_will_be_created`).
 
 ### 🎯 Definition of Done (DoD) du Jalon M3
-- [x] Chaque Workshop possède sa propre Virtual Key isolée avec budget strict et TTL court renouvelé à chaud. *(Vérifié empiriquement contre un vrai LiteLLM : budget enforcé (429 réel), TTL court (`VIRTUAL_KEY_TTL` = 2h), régénérée à chaque (re)création du pod parent — provisioning initial ou reprise post-suspension.)*
-- [x] La destruction du Workshop nettoie la clé dans LiteLLM via le finalizer. *(Vérifié : `cleanup()` appelle `delete_virtual_key`, testé de bout en bout — clé invalide après suppression.)*
+- [x] Chaque Workshop possède sa propre Virtual Key isolée avec budget strict et TTL court renouvelé à chaud. (régénérée à chaque (re)création du pod parent — provisioning initial ou reprise post-suspension — pas à intervalle fixe.)
+- [x] La destruction du Workshop nettoie la clé dans LiteLLM via le finalizer.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
@@ -293,7 +293,7 @@ graph TD
   - [x] **4.2.1** : `tools/list` annonce `create_workshop`, `list_workshops`, `get_workshop_status`, `suspend_workshop`, `resume_workshop`, `delete_workshop`, `exec_in_workshop` — mêmes règles de visibilité que la route REST (`ensure_owner`), testé de bout en bout contre un vrai cluster (`tests/mcp.rs`).
   - [x] **4.2.2** : Migration `crates/api-server/migrations/20260824000001_mcp_exec_commands.sql` — schéma étendu avec `owner_subject` + RLS (`current_setting('app.current_tenant')`), même convention que `session_logs`/`audit_events` (non prévu par le schéma d'origine, mais l'isolation par propriétaire ne doit jamais reposer sur la seule logique applicative).
   - [x] **4.2.3** (canal SSH plutôt que WebSocket/vsock, décision prise avec l'utilisateur) : `exec_in_workshop` enregistre la commande dans `exec_commands` et retourne `execution_id` immédiatement (`crate::exec::spawn`), exécute en arrière-plan (`tokio::spawn`) via un **canal SSH dédié** (cle Ed25519 par Workshop, générée par `controller` dans OpenBao — `openssh-server` ajouté au dépôt `atelier-workspace`, cle publique servie par `net-proxy` via `GET /ssh-authorized-key`, même schéma que `session-auth`), atteint par le même tunnel `portforward` que `ttyd`/`code-server`. `GET /v1/workshops/{name}/exec/{id}/stream` (SSE, sondage PostgreSQL) permet la reconnexion à tout moment. Testé de bout en bout avec un vrai binaire `net-proxy` + un vrai serveur SSH (`russh::server`, `tests/exec.rs`).
-  - [x] **4.2.4** : Confinement automatique. *(2026-08-31 : `net-proxy` compte les tentatives d'egress REFUSEES sur une fenetre glissante — le seul signal qu'il possede deja et qu'aucun agent legitime ne produit en rafale. Au-dela du seuil il demande le confinement a `vm-supervisor` (meme pod), qui GELE l'egress par un `DROP` en tete de chaine iptables — avant la regle `ESTABLISHED`, donc les connexions en cours sont coupees aussi — puis prend un snapshot d'urgence SANS eteindre la microVM, pour que l'incident reste analysable. Le controller remonte `status.conditions.SecurityLockdown`, et le Dashboard l'affiche en tete de la page du Workshop. Verifie de bout en bout : 30 requetes vers des destinations interdites depuis le guest -> detection au 20e refus -> `egress du guest GELE` -> snapshot -> `conditions={"SecurityLockdown":"true"}` -> alerte rendue dans le navigateur. Une fenetre glissante et non un compteur absolu : sur des heures de vie, quelques refus isoles sont normaux, c'est la DENSITE qui distingue l'accident de l'attaque.)*
+  - [x] **4.2.4** : Confinement automatique. (fenêtre glissante sur les refus d'egress, pas un compteur absolu — la DENSITÉ distingue l'accident de l'attaque ; confinement par `DROP` en tête de chaîne iptables AVANT la règle `ESTABLISHED`, puis snapshot d'urgence sans éteindre la microVM, remonté via `status.conditions.SecurityLockdown`.)
 
 ### 🧪 Tests & Preuves Attendues pour M4
 1. `cargo test -p atelier-api-server --test mcp_endpoints` :
@@ -312,12 +312,12 @@ graph TD
 
 ### 8.0. Infrastructure de Développement Locale (Redis & Modèle d'Embedding Dev)
 * **Fichiers créés** : `deploy/dev/redis/dev-pod.yaml`, `deploy/dev/redis/README.md`
-  - [x] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock. *(`deploy/dev/redis/dev-pod.yaml` déployé sur `kind-atelier-dev`, cycle `XADD`/`XGROUP CREATE`/`XREADGROUP`/`XPENDING`/`XACK` vérifié à la main, voir `docs/PROGRESS.md` 2026-08-24.)*
-  - [x] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. *(Route `embedding-dev-local` → Ollama (`deploy/dev/ollama`, nouveau, modèle `all-minilm`) plutôt que l'API Hugging Face proposée initialement — celle-ci exige désormais une authentification même pour un modèle public, constaté empiriquement. Testé réellement : `POST /v1/embeddings` → vecteur de dimension 384, voir `docs/PROGRESS.md`.)*
+  - [x] **5.0.1** : Déployer un Pod Redis de dev dans Kind (Streams activés) pour valider l'ingestion de webhooks et le consommateur asynchrone sans mock.
+  - [x] **5.0.2** : Configurer LiteLLM dev avec un modèle d'embedding léger pour valider les tests vectoriels `pgvector` en local sans clé payante bloquante. (Ollama plutôt que l'API Hugging Face initialement envisagée — celle-ci exige désormais une authentification même pour un modèle public.)
 
 ### 8.1. Scaffolding du service `services/pm-engine` (Python 3.12, FastAPI)
-- [x] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX). *(`uv pip install -e ".[dev]"` réussit réellement, voir `docs/PROGRESS.md` 2026-08-24.)*
-- [x] **5.1.2** : Créer le `Dockerfile` optimisé pour la production. *(Multi-stage, image finale `python:3.12-slim` non-root ~205MB, `/health` répond 200 depuis le conteneur, voir `docs/PROGRESS.md` 2026-08-24.)*
+- [x] **5.1.1** : Initialiser `services/pm-engine/pyproject.toml` (FastAPI, LangGraph, Redis, AsyncPG, Pydantic, HTTPX).
+- [x] **5.1.2** : Créer le `Dockerfile` optimisé pour la production.
 
 ### 8.2. Machine d'États LangGraph complète & Auto-correction continue bornée
 * **Fichiers** : `services/pm-engine/pm_engine/state.py`, `graph.py`, `nodes.py`, `deps.py`, `mcp_client.py`, `oidc.py`, `llm_client.py`, `exec_client.py` (le plan prévoyait un seul `pm_graph.py` ; scindé en modules cohérents avec le reste du service).
@@ -339,9 +339,9 @@ graph TD
 
 ### 8.3. Base `atelier_pm` : Checkpointer PostgreSQL & Mémoire RAG `pgvector` avec RLS
 * **Script de migration SQL** : `20260824000000_init_pm_engine.sql`
-  - [x] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`. *(Exécuté contre l'instance réelle `atelier-postgres-dev`, voir `docs/PROGRESS.md` 2026-08-24.)*
-  - [x] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active. *(RLS vérifiée avec deux tenants via le rôle non-superutilisateur dédié `atelier_pm_app` — jamais `atelier_admin`, voir `docs/PROGRESS.md` 2026-08-24.)*
-  - [x] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph. *(`pm_engine/checkpointer.py`, `.setup()` crée réellement `checkpoints`/`checkpoint_writes`/`checkpoint_blobs`, roundtrip `aput`/`aget` vérifié contre la base réelle, voir `docs/PROGRESS.md` 2026-08-24.)*
+  - [x] **5.3.1** : Dans l'instance PostgreSQL dev, créer la base `CREATE DATABASE atelier_pm;` et activer `CREATE EXTENSION IF NOT EXISTS vector;`.
+  - [x] **5.3.2** : Créer la table `project_memories` avec index vectoriel `ivfflat` (`VECTOR(1536)`) et politique **Row Level Security (RLS)** active. (rôle non-superutilisateur dédié `atelier_pm_app`, jamais `atelier_admin`.)
+  - [x] **5.3.3** : Configurer `AsyncPostgresSaver` comme checkpointer persistant pour LangGraph.
 
 ### 8.4. Adaptateurs Multi-Forges Git & Pipeline Redis Streams (At-Least-Once)
 * **Fichiers** : `services/pm-engine/git_providers/`
@@ -351,8 +351,8 @@ graph TD
 
 ### 8.5. Interface Dashboard Next.js "Ask Project Manager" & Validation HITL
 * **Fichiers** : `dashboard/app/projects/[id]/pm/page.tsx` & `components/pm-chat.tsx`
-  - [x] **5.5.1** : Chat SSE interactif via Route Handler `/api/pm/chat` (BFF) scopé sur le projet et RLS. *(Implémenté : `dashboard/app/api/pm/chat/route.ts` relaye le flux SSE de `pm-engine/chat` avec token httpOnly ajouté côté serveur, composant client `dashboard/app/pm/pm-chat.tsx` consomme le streaming via `fetch` + `ReadableStream`. Build Next.js 16 validé sans erreur.)*
-  - [x] **5.5.2** : Interface d'approbation Human-in-the-Loop pour valider ou rejeter les Pull Requests du bot. *(Implémenté : `dashboard/app/pm/pm-reviews.tsx` avec mise à jour optimiste, Server Action `decideReviewAction` dans `app/actions.ts`, route handlers `/api/pm/reviews` (GET) et `/api/pm/reviews/[threadId]/decision` (POST) relayant vers `pm-engine`. Build Next.js 16 validé sans erreur.)*
+  - [x] **5.5.1** : Chat SSE interactif via Route Handler `/api/pm/chat` (BFF) scopé sur le projet et RLS. (`dashboard/app/api/pm/chat/route.ts` relaye le SSE de `pm-engine/chat`, `dashboard/app/pm/pm-chat.tsx` consomme le flux côté client.)
+  - [x] **5.5.2** : Interface d'approbation Human-in-the-Loop pour valider ou rejeter les Pull Requests du bot. (`dashboard/app/pm/pm-reviews.tsx`, Server Action `decideReviewAction`, routes `/api/pm/reviews` et `/api/pm/reviews/[threadId]/decision`.)
 
 ### 8.6. Équipe IT Consultative autour du PM (Architecte, QA, Sécurité, Ops)
 * **Spécification** : [`08-equipe-it-consultative.md`](08-equipe-it-consultative.md)
@@ -377,9 +377,9 @@ graph TD
    - Validation de l'étanchéité RLS multi-tenant sur les embeddings `pgvector`.
 
 ### 🎯 Definition of Done (DoD) du Jalon M5
-- [x] Le PM Engine résout un ticket de bout en bout de façon autonome. *(Validé le 2026-08-31 sur le ticket `todo-app#16`, run complet autonome de 12 min : 2 microVM Firecracker, vrai Claude Code dans les guests, integration des branches, **tests VERTS** (`exit code 0`, 4 tests) et **zero tour d'auto-correction**. PR 17 : 15 fichiers, 1146 lignes, API + UI + suite de tests. Limite residuelle : une part de redondance subsiste (`src/api/public/**` refait l'UI de `public/**`), l'agent de l'API ayant servi sa propre page statique — reduit mais pas supprime.)*
-- [x] Les microVMs sont synchronisées et mises en veille dès que la PR est ouverte. *(Observé sur le run réel du 2026-08-31 : les deux Workshops passent en `Suspended` après l'ouverture de la PR. Le hook `git-sync` explicite de la spec n'est pas un mécanisme séparé — la branche est synchronisée par construction, l'agent poussant son travail avant `suspend_workshop`.)*
-- [x] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions. *(Page `/pm` avec chat SSE interactif et interface d'approbation HITL — build Next.js 16 validé, `npm run build` 100% vert.)*
+- [x] Le PM Engine résout un ticket de bout en bout de façon autonome. (limite connue : redondance résiduelle possible si plusieurs sous-tâches parallèles servent chacune leur propre page statique — réduite mais pas systématiquement empêchée.)
+- [x] Les microVMs sont synchronisées et mises en veille dès que la PR est ouverte. (le hook « git-sync » de la spec n'est pas un mécanisme séparé : la branche est synchronisée par construction, l'agent poussant son travail avant `suspend_workshop`.)
+- [x] Le Dashboard permet d'interagir avec la mémoire du PM et d'approuver les fusions.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
 ---
@@ -388,8 +388,8 @@ graph TD
 
 ### 9.0. Scripting & Automatisation de l'Environnement Dev
 * **Fichiers créés / modifiés** : `deploy/dev/local-stack.sh`, `deploy/dev/teardown-stack.sh`
-  - [x] **6.0.1** : Mettre à jour `deploy/dev/local-stack.sh` pour orchestrer le démarrage complet de toute la stack dev (Postgres, S3, Forgejo, Redis, OpenBao, LiteLLM). *(Kanidm retiré, remplacé par Keycloak. Orchestre désormais aussi PKI locale, PostgreSQL (+ bases par composant), Keycloak, S3, Forgejo, Traefik, en plus d'OpenBao/registre OCI/images `:dev`/LLM Proxy déjà gérés. Redis documenté comme non disponible (Jalon M5, pas encore d'infra de dev). Testé réellement contre `kind-atelier-dev` — voir `docs/PROGRESS.md`.)*
-  - [x] **6.0.2** : Créer `deploy/dev/teardown-stack.sh` pour détruire et nettoyer proprement toutes les ressources dev en une seule commande. *(Symétrique de `local-stack.sh`, cible uniquement les ressources par manifest exact — jamais la CRD Workshop ni un `delete --all` — avec un garde-fou `CONFIRM=yes` explicite. Relu attentivement mais **pas exécuté réellement** sur le cluster partagé par prudence : casserait la session dev active en cours (OpenBao/PostgreSQL/Keycloak utilisés par `controller`/`api-server` déjà lancés), voir `docs/PROGRESS.md`.)*
+  - [x] **6.0.1** : Mettre à jour `deploy/dev/local-stack.sh` pour orchestrer le démarrage complet de toute la stack dev (Postgres, S3, Forgejo, Redis, OpenBao, LiteLLM). (Kanidm retiré au profit de Keycloak ; orchestre aussi PKI locale, PostgreSQL, Keycloak, S3, Forgejo, Traefik.)
+  - [x] **6.0.2** : Créer `deploy/dev/teardown-stack.sh` pour détruire et nettoyer proprement toutes les ressources dev en une seule commande. (symétrique de `local-stack.sh`, cible uniquement les ressources par manifest exact — jamais la CRD Workshop ni un `delete --all` — avec un garde-fou `CONFIRM=yes` explicite. Relu attentivement mais **pas exécuté réellement** sur le cluster partagé, par prudence : casserait la session dev active en cours.)
 
 ### 9.1. Arborescence complète des templates du Chart `charts/atelier`
 * **Structure des templates à implémenter** :
@@ -474,9 +474,9 @@ graph TD
 3. Déploiement réel sur cluster Kind : 100% des pods `Running` et tous les hooks `Completed`.
 
 ### 🎯 Definition of Done (DoD) du Jalon M6
-- [x] L'installation complète se fait en une commande Helm (`helm upgrade --install`, verifie empiriquement — voir `docs/PROGRESS.md`).
-- [x] Les 4 Ingress et certificats TLS sont opérationnels. *(2026-08-31 : cert-manager installé dans le cluster kind, les 4 Ingress du chart appliqués avec `tls.enabled=true` — cert-manager a créé 4 `Certificate` passés à `Ready: True` et 4 secrets contenant de VRAIS certificats X.509, un par domaine, avec le SAN attendu (`app.`, `api.`, `auth.`, `git.`). Ce qui est prouvé : le câblage du chart — annotation `cluster-issuer`, un secret distinct par Ingress, le host propagé jusqu'au SAN. Ce qui ne l'est PAS : l'émission Let's Encrypt elle-même, qui exige un DNS public et une validation HTTP-01 impossibles depuis kind ; un `ClusterIssuer` auto-signé a servi d'émetteur.)*
-- [x] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent l'infra dev. *(2026-08-31 : les trois manques identifies sont traites. `kvm-device-plugin` et Redis sont deployes par le script — sans le premier, aucun Workshop ne bootait et le pod restait `Pending` sur un « Insufficient atelier.dev/kvm » qui ne dit rien de sa cause. La route `10.244.0.0/24`, qui exige `sudo`, ne peut pas etre posee par le script : elle est desormais DETECTEE, et son absence signalee avec la commande exacte et l'IP du noeud kind courant. Le registre OCI, dont la creation echouait en silence, avait ete corrige plus tot dans la journee. Script rejoue en entier, idempotent.)*
+- [x] L'installation complète se fait en une commande Helm (`helm upgrade --install`).
+- [x] Les 4 Ingress et certificats TLS sont opérationnels. (prouvé : le câblage du chart — un secret TLS distinct par Ingress, le host propagé jusqu'au SAN. PAS prouvé : l'émission Let's Encrypt réelle, qui exige un DNS public — un `ClusterIssuer` auto-signé a servi d'émetteur en test.)
+- [x] Les scripts `local-stack.sh` et `teardown-stack.sh` orchestrent l'infra dev. (`kvm-device-plugin` et Redis désormais déployés par le script — sans le premier, aucun Workshop ne démarre, `Pending` sur `Insufficient atelier.dev/kvm` sans cause explicite ; la route `10.244.0.0/24` exige `sudo` et ne peut être posée par le script, elle est donc seulement détectée et signalée.)
 - [x] La documentation MkDocs intègre le Guide Administrateur complet.
 - [x] Entrée documentée dans `docs/PROGRESS.md`.
 
