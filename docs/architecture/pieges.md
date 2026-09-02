@@ -943,3 +943,14 @@
   ecrit le moindre octet de la suivante : aucun rejeu, aucune requete
   dupliquee. Le test de regression a ete verifie dans les deux sens (il
   echoue si l'on neutralise la detection).
+- **Une execution deleguee sans plafond global** (2026-09-02, meme run que le
+  raccrochage de destination ci-dessus) : `wait_for_exec_completion`
+  (`pm_engine/exec_client.py`) n'avait qu'un `timeout_s` PAR OPERATION
+  reseau, et le serveur emet un `ping` a chaque sondage meme quand rien
+  n'avance — il rearme donc ce delai indefiniment. Un agent reste ainsi
+  suspendu 1 h 20 sur un appel au modele parti dans une socket morte, sans
+  que rien, ni cote PM ni cote atelier, ne le signale : ni erreur, ni log, le
+  graphe attendait juste. Ajoute `total_timeout_s` (45 min par defaut,
+  `asyncio.timeout` autour de tout l'echange) : passe ce plafond, l'execution
+  echoue franchement (`status: Failed`), avec la sortie deja recue
+  conservee — c'est elle qui dit ou l'agent s'est arrete.

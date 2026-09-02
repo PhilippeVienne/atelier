@@ -12,6 +12,7 @@ client interactif qui se contenterait de streamer vers un terminal.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 
@@ -19,6 +20,23 @@ import httpx
 from httpx_sse import aconnect_sse
 
 from .oidc import OidcTokenProvider
+
+
+#: Plafond de duree d'UNE execution deleguee, tout compris.
+#:
+#: `timeout_s` ne protege de rien ici : c'est un delai par operation reseau,
+#: et le serveur emet un `ping` a chaque sondage meme quand rien n'avance —
+#: il le rearme donc indefiniment. Sans ce plafond global, une execution
+#: bloquee attend pour toujours : constate le 2026-09-02, un agent reste
+#: suspendu 1 h 20 sur un appel au modele parti dans une connexion dont la
+#: destination avait raccroche (voir `forward_rewriting` dans
+#: `crates/net-proxy`, corrige depuis). Rien, ni cote PM ni cote atelier, ne
+#: l'a signale.
+#:
+#: 45 min : une sous-tache reelle demande une quinzaine de minutes, le triple
+#: laisse donc une marge large sans transformer un blocage en attente
+#: infinie.
+DEFAULT_TOTAL_TIMEOUT_S = 2700.0
 
 
 @dataclass
@@ -36,6 +54,7 @@ async def wait_for_exec_completion(
     execution_id: str,
     *,
     timeout_s: float = 600.0,
+    total_timeout_s: float = DEFAULT_TOTAL_TIMEOUT_S,
 ) -> ExecResult:
     """Se reconnecte au flux SSE jusqu'a recevoir l'evenement `status`
     (execution terminee) — le serveur rejoue depuis le debut du buffer a
@@ -53,25 +72,39 @@ async def wait_for_exec_completion(
     result = ExecResult()
 
     token = await token_provider.get_token()
-    async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"}, timeout=httpx.Timeout(timeout_s)
-    ) as client:
-        async with aconnect_sse(client, "GET", url) as event_source:
-            async for sse in event_source.aiter_sse():
-                if sse.event == "stdout":
-                    result.stdout += sse.data
-                elif sse.event == "stderr":
-                    result.stderr += sse.data
-                elif sse.event == "status":
-                    payload = json.loads(sse.data)
-                    result.status = payload["status"]
-                    result.exit_code = payload.get("exitCode")
-                    break
-                elif sse.event == "error":
-                    result.status = "Failed"
-                    result.stderr += sse.data
-                    break
-                # "ping" : aucune donnee nouvelle depuis le dernier sondage
-                # cote serveur, on continue simplement d'attendre.
+    try:
+        async with asyncio.timeout(total_timeout_s):
+            async with httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {token}"}, timeout=httpx.Timeout(timeout_s)
+            ) as client:
+                async with aconnect_sse(client, "GET", url) as event_source:
+                    async for sse in event_source.aiter_sse():
+                        if sse.event == "stdout":
+                            result.stdout += sse.data
+                        elif sse.event == "stderr":
+                            result.stderr += sse.data
+                        elif sse.event == "status":
+                            payload = json.loads(sse.data)
+                            result.status = payload["status"]
+                            result.exit_code = payload.get("exitCode")
+                            break
+                        elif sse.event == "error":
+                            result.status = "Failed"
+                            result.stderr += sse.data
+                            break
+                        # "ping" : aucune donnee nouvelle depuis le dernier
+                        # sondage cote serveur, on continue simplement
+                        # d'attendre.
+    except TimeoutError:
+        # Un echec franc, pas une exception qui traverse le graphe : les
+        # noeuds appelants savent deja traiter un `status` en echec (boucle
+        # d'auto-correction, remontee dans la PR), et la sortie partielle
+        # deja recue est conservee — c'est elle qui dira ou l'agent s'est
+        # arrete.
+        result.status = "Failed"
+        result.stderr += (
+            f"\n[atelier] execution abandonnee : aucune fin apres "
+            f"{total_timeout_s:.0f}s (agent bloque ?)"
+        )
 
     return result
