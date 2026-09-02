@@ -12,6 +12,7 @@ via `config["configurable"]["deps"]`, jamais construites ici — voir
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import re
@@ -902,6 +903,76 @@ def route_after_tests(state: PMWorkflowState) -> str:
         # via AwaitHitlApproval.
         return "OpenPullRequest"
     return "AutoCorrectionLoop"
+
+
+# --------------------------------------------------------------------------
+# 6bis. Detection deterministe des chemins sensibles/infra
+# (docs/specs/08-equipe-it-consultative.md, section 4.2 — brique 5.6.2)
+# --------------------------------------------------------------------------
+# Volontairement generiques : le PM Engine pilote des depots CIBLES
+# quelconques (le run de validation de reference portait sur
+# `pm-validation-url-shortener`, une app Node.js sans aucun rapport avec ce
+# depot), jamais son propre code. Ces motifs ne doivent donc JAMAIS nommer
+# un composant interne d'Atelier — seulement des conventions de nommage
+# qu'on retrouve dans n'importe quel projet (Node.js, Rust, Python, Go...).
+SECURITY_SENSITIVE_PATTERNS = [
+    "**/*auth*",
+    "**/*credential*",
+    "**/*secret*",
+    "**/*password*",
+    "**/*token*",
+    "**/*session*",
+    "**/*.pem",
+    "**/*.key",
+    "**/.env*",
+    "**/*oauth*",
+    "**/*jwt*",
+]
+OPS_SENSITIVE_PATTERNS = [
+    "**/*.tf",
+    "**/migrations/**",
+    "Dockerfile*",
+    "docker-compose*",
+    "**/*.yaml",
+    "**/*.yml",
+    ".devcontainer/**",
+    "**/Chart.yaml",
+]
+
+# Capture le chemin CIBLE (« b/... ») de chaque fichier touche. Format
+# commun aux trois implementations de `BaseGitProvider.get_diff` : Forgejo
+# et GitHub emettent nativement cette ligne, et `GitLabProvider.get_diff` la
+# synthetise (voir sa docstring) precisement pour que ce motif reste unique
+# quelle que soit la forge.
+_DIFF_GIT_HEADER_RE = re.compile(r"^diff --git a/(?:.+) b/(.+)$", re.MULTILINE)
+
+
+def _diff_file_paths(diff: str) -> list[str]:
+    return [match.group(1) for match in _DIFF_GIT_HEADER_RE.finditer(diff)]
+
+
+def _path_matches(path: str, pattern: str) -> bool:
+    """`fnmatch` traite `*` comme un caractere generique qui traverse aussi
+    les `/` (ce n'est PAS un glob de chemin comme celui d'un shell) : un
+    motif `**/*.tf` exige donc un `/` REELLEMENT present dans le chemin
+    compare (`src/main.tf` correspond, `main.tf` a la racine non). On
+    retente alors sans le prefixe `**/`, qui matche `*.tf` — couvrant le cas
+    racine sans jamais faire regresser le cas imbrique deja couvert par le
+    motif complet."""
+    if fnmatch.fnmatch(path, pattern):
+        return True
+    if pattern.startswith("**/"):
+        return fnmatch.fnmatch(path, pattern[3:])
+    return False
+
+
+def diff_matches_any_pattern(diff: str, patterns: list[str]) -> bool:
+    """Le diff touche-t-il au moins un fichier correspondant a l'un de ces
+    motifs ? Deterministe, sans appel LLM — voir la doctrine de
+    `_plan_is_credible` : une decision verifiable par du code ne doit
+    jamais dependre de l'approximation d'un modele."""
+    paths = _diff_file_paths(diff)
+    return any(_path_matches(path, pattern) for path in paths for pattern in patterns)
 
 
 # --------------------------------------------------------------------------

@@ -134,6 +134,61 @@ def test_test_trace_keeps_the_real_output_when_there_is_one() -> None:
     assert "aucune sortie" not in trace
 
 
+_AUTH_DIFF = (
+    "diff --git a/src/auth.js b/src/auth.js\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/src/auth.js\n"
+    "@@ -0,0 +1,3 @@\n"
+    "+module.exports = {};\n"
+)
+_ROUTES_DIFF = (
+    "diff --git a/src/routes.js b/src/routes.js\n"
+    "--- a/src/routes.js\n"
+    "+++ b/src/routes.js\n"
+    "@@ -1,2 +1,3 @@\n"
+    "+// no security-relevant change here\n"
+)
+_TERRAFORM_DIFF = (
+    "diff --git a/infra/main.tf b/infra/main.tf\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/infra/main.tf\n"
+    "@@ -0,0 +1,1 @@\n"
+    "+resource \"null_resource\" \"x\" {}\n"
+)
+_ROOT_TERRAFORM_DIFF = (
+    "diff --git a/main.tf b/main.tf\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/main.tf\n"
+    "@@ -0,0 +1,1 @@\n"
+    "+resource \"null_resource\" \"y\" {}\n"
+)
+
+
+def test_diff_matches_any_pattern_detects_a_generic_auth_path() -> None:
+    """Motifs volontairement generiques (docs/specs/08-...) : un depot
+    CIBLE quelconque (jamais le code d'Atelier) qui ajoute un module
+    d'authentification doit declencher ReviewSecurity."""
+    assert nodes.diff_matches_any_pattern(_AUTH_DIFF, nodes.SECURITY_SENSITIVE_PATTERNS)
+
+
+def test_diff_matches_any_pattern_ignores_unrelated_paths() -> None:
+    """Preuve que la detection n'est pas un simple 'toujours vrai' : un
+    diff sans rapport ne declenche ni ReviewSecurity ni ReviewOps."""
+    assert not nodes.diff_matches_any_pattern(_ROUTES_DIFF, nodes.SECURITY_SENSITIVE_PATTERNS)
+    assert not nodes.diff_matches_any_pattern(_ROUTES_DIFF, nodes.OPS_SENSITIVE_PATTERNS)
+
+
+def test_diff_matches_any_pattern_detects_terraform_nested_and_at_root() -> None:
+    """`**/*.tf` doit matcher un chemin imbrique (`infra/main.tf`) ET un
+    chemin a la racine (`main.tf`, sans aucun `/`) — voir la docstring de
+    `_path_matches` sur la semantique non intuitive de `fnmatch` avec `**`."""
+    assert nodes.diff_matches_any_pattern(_TERRAFORM_DIFF, nodes.OPS_SENSITIVE_PATTERNS)
+    assert nodes.diff_matches_any_pattern(_ROOT_TERRAFORM_DIFF, nodes.OPS_SENSITIVE_PATTERNS)
+
+
 def test_route_after_tests_proceeds_when_tests_pass() -> None:
     state = PMWorkflowState(test_passed=True, correction_attempts=0, max_correction_attempts=3)
     assert nodes.route_after_tests(state) == "OpenPullRequest"
