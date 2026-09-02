@@ -1054,3 +1054,4 @@
   INCONDITIONNELLEMENT), ou travail deja correctement termine (no-op,
   verifie qu'aucun commit vide n'est ajoute). Trois cas verifies par de
   vrais depots git jetables, pas des mocks.
+  `open_pull_request` a ete durci en consequence (2026-09-02, meme session) : une PR encore vide malgre ce commit garanti ne peut plus signifier "l'agent a oublie" — elle echoue desormais bruyamment (`RuntimeError`) au lieu de continuer vers une revue humaine qui n'a rien a approuver.

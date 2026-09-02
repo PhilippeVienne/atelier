@@ -336,6 +336,50 @@ async def test_open_pull_request_and_merge_and_close_via_real_forgejo(deps, test
 
 
 @pytest.mark.asyncio
+async def test_open_pull_request_fails_loudly_on_an_empty_diff(deps, test_repo) -> None:
+    """Regression (2026-09-02) : un run entierement propre par ailleurs
+    (planificateur, tests 5/5) a neanmoins abouti a une PR au diff vide —
+    l'agent avait tout fait sauf `git commit`/`git push`. Depuis que
+    `delegate_to_opencode` garantit lui-meme le commit ET le push (voir
+    `test_delegate_auto_commit.py`), une PR encore vide ICI ne peut plus
+    signifier "l'agent a oublie" : elle signifie que la sous-tache n'a rien
+    produit du tout, un vrai echec — `open_pull_request` doit echouer
+    bruyamment plutot que de laisser passer une revue humaine sur du vide."""
+    async with httpx.AsyncClient(
+        base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+        headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+        timeout=30.0,
+    ) as admin_client:
+        created = await admin_client.post(
+            f"/repos/{test_repo}/issues", json={"title": "issue", "body": "body"}
+        )
+        created.raise_for_status()
+        issue_number = created.json()["number"]
+
+        # Branche creee depuis `main`, SANS aucun commit supplementaire :
+        # exactement l'etat d'une sous-tache dont l'agent n'a rien produit.
+        branch = await admin_client.post(
+            f"/repos/{test_repo}/branches",
+            json={"new_branch_name": "feature/task-1", "old_branch_name": "main"},
+        )
+        branch.raise_for_status()
+
+    plan = [SubTask(id="task-1", title="t", scope=["**"], workshop_name="w", branch_name="feature/task-1")]
+    state = PMWorkflowState(
+        repo=test_repo,
+        issue_number=issue_number,
+        issue_title="issue",
+        analysis="resolu",
+        test_passed=True,
+        plan=plan,
+    )
+    config = _FakeConfig(configurable={"deps": deps})
+
+    with pytest.raises(RuntimeError, match="AUCUN fichier"):
+        await nodes.open_pull_request(state, config)
+
+
+@pytest.mark.asyncio
 async def test_index_knowledge_writes_a_real_padded_embedding_with_rls(deps) -> None:
     state = PMWorkflowState(
         repo="atelier_admin/pm-nodes-test",

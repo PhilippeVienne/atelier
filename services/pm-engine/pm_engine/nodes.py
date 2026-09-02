@@ -889,21 +889,32 @@ async def open_pull_request(state: PMWorkflowState, config: RunnableConfig) -> d
         head_branch=head_task["branch_name"],
         base_branch="main",
     )
-    # Garde-fou : une PR sans aucun fichier modifie signifie presque toujours
-    # que le travail de l'agent n'a jamais atteint la branche. Trois causes
-    # distinctes ont deja produit exactement ce symptome, chacune en silence
-    # (voir docs/architecture/pieges.md). On avertit bruyamment plutot que de
-    # laisser passer : le graphe continue quand meme vers la revue humaine,
-    # qui reste seule juge — bloquer ici priverait l'humain de la seule vue
-    # d'ensemble disponible.
+    # Garde-fou : une PR sans aucun fichier modifie signifie que le travail
+    # de l'agent n'a jamais atteint la branche. Ce n'etait pas toujours vrai
+    # (le commit/push pouvait auparavant echouer a l'insu de tous, voir
+    # `delegate_to_opencode`) — mais depuis que celui-ci garantit lui-meme le
+    # commit ET le push, une PR encore vide ICI ne peut plus signifier
+    # "l'agent a oublie de committer" : elle signifie que la sous-tache n'a
+    # RIEN produit du tout, un vrai echec.
+    #
+    # Ancien comportement (jusqu'au 2026-09-02) : avertir en log puis laisser
+    # le graphe continuer vers la revue humaine, "seule juge" — mais le
+    # paquet transmis a `AwaitHitlApproval` (`interrupt`) ne porte que
+    # `question`/`pr_url`, jamais `pr_changed_files` : un relecteur qui
+    # approuve sans re-verifier la PR lui-meme ne voit jamais qu'elle est
+    # vide. Constate en pratique : un run entierement propre par ailleurs
+    # (planificateur, tests 5/5) a neanmoins abouti a une PR vide passee
+    # inapercue jusqu'a verification manuelle. Meme doctrine que
+    # `delegate_to_opencode` : echouer immediatement, sans passer par
+    # `AutoCorrectionLoop` (reformuler le prompt ne corrige rien ici) ni par
+    # une revue humaine qui n'a rien a approuver.
     changed_files = await deps.git_provider.changed_file_count(state["repo"], pr.number)
     if changed_files == 0:
-        logger.error(
-            "OpenPullRequest: la PR %s ne contient AUCUN fichier modifie — "
-            "le travail de l'agent n'a probablement pas ete commite/pousse "
-            "dans les Workshops %s",
-            pr.url,
-            [t["workshop_name"] for t in plan],
+        raise RuntimeError(
+            f"OpenPullRequest: la PR {pr.url} ne contient AUCUN fichier "
+            "modifie — la sous-tache n'a rien produit malgre le commit/push "
+            f"garanti par DelegateToOpencode, dans les Workshops "
+            f"{[t['workshop_name'] for t in plan]}"
         )
 
     return {
