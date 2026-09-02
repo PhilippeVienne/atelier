@@ -1027,3 +1027,30 @@
   il n'est pas encore remonte dans `status.conditions` du Workshop, ce qui
   demanderait que `crates/controller` vienne LIRE cet etat en plus de
   simplement le stocker.
+- **Le vrai bug que la validation devait trouver : le bug des PR vides est
+  revenu** (2026-09-02) : un run complet et propre de bout en bout —
+  planificateur greenfield en une seule sous-tache, sshd/proxy corriges,
+  tests devcontainer passes 5/5 — a quand meme abouti a une PR (#20) au diff
+  VIDE (`base` et `head` au meme SHA). L'agent avait ecrit un code
+  entierement correct, fait passer sa propre suite de tests, puis
+  simplement OUBLIE d'executer `git commit`/`git push` — le tout dernier
+  geste d'une longue session agentique, precisement celui qu'un LLM (comme
+  un humain) est le plus susceptible d'oublier. `exit_code: 0` malgre tout :
+  rien ne distinguait ce run d'un succes reel avant d'aller verifier la PR
+  elle-meme.
+  `open_pull_request` (`pm_engine/nodes.py`) DETECTAIT deja ce cas
+  (`OpenPullRequest: la PR ... ne contient AUCUN fichier modifie`, decision
+  documentee et deliberee de ne pas bloquer le graphe, pour laisser
+  l'humain seul juge) — mais rien ne CORRIGEAIT la situation en amont, et le
+  paquet transmis a la revue humaine (`interrupt`) ne porte que `question`
+  et `pr_url`, pas `pr_changed_files` : un relecteur qui approuve sans aller
+  re-verifier la PR lui-meme ne voit jamais qu'elle est vide.
+  Corrige structurellement, pas en esperant que l'agent s'en souvienne mieux
+  la prochaine fois : `delegate_to_opencode` enchaine desormais un SECOND
+  `exec_in_workshop`, construit par pm-engine lui-meme (`git add -A && (diff
+  --cached --quiet || commit) && push`), qui garantit le commit ET le push
+  quel que soit ce que l'agent a fait ou pas fait — commit oublie, push
+  oublie (l'autre moitie du meme oubli, silencieuse si on ne pousse pas
+  INCONDITIONNELLEMENT), ou travail deja correctement termine (no-op,
+  verifie qu'aucun commit vide n'est ajoute). Trois cas verifies par de
+  vrais depots git jetables, pas des mocks.

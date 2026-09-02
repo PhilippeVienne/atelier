@@ -607,6 +607,55 @@ async def delegate_to_opencode(state: PMWorkflowState, config: RunnableConfig) -
                     f"{format_test_trace(task['workshop_name'], delegate_result)}"
                 )
 
+            # Le commit/push n'est plus laisse a la SEULE diligence de
+            # l'agent : la consigne dans le prompt ci-dessus reste (elle
+            # aide l'agent a laisser un historique lisible s'il y pense),
+            # mais ce n'est plus elle qui garantit quoi que ce soit.
+            # Constate en Workshop reel le 2026-09-02 : un agent peut
+            # terminer avec exit_code 0, ecrire un code entierement correct,
+            # faire passer sa propre suite de tests (5/5) — et neanmoins
+            # ne JAMAIS executer `git commit`/`git push`, le dernier geste
+            # d'une longue session agentique etant precisement celui qu'un
+            # LLM (comme un humain) est le plus susceptible d'oublier.
+            # `OpenPullRequest` ouvrait alors une PR au diff vide malgre un
+            # travail par ailleurs correct et teste, sans qu'aucun message
+            # d'erreur clair ne remonte a l'humain charge de l'approuver.
+            #
+            # `shlex.quote` sur le titre, jamais une f-string interpolee
+            # directement dans le message de commit : meme raisonnement que
+            # pour le prompt lui-meme, le titre peut porter des caracteres
+            # que le shell interpreterait.
+            # `git push` s'execute TOUJOURS a la fin, meme quand il n'y avait
+            # rien a committer : un agent qui commite localement mais oublie
+            # le `push` (l'autre moitie du meme oubli) laisserait sinon son
+            # travail invisible cote Forgejo sans qu'aucune erreur ne le
+            # signale — `git diff --cached --quiet` n'aurait alors plus rien
+            # a se mettre sous la dent (deja commite), le `||` sauterait le
+            # commit, et sans ce `push` inconditionnel, la branche distante
+            # resterait figee au commit initial.
+            commit_command = (
+                "git add -A && "
+                f"(git diff --cached --quiet || git commit -m {shlex.quote(task['title'])}) "
+                "&& git push origin HEAD"
+            )
+            commit_execution = await call_tool_json(
+                session,
+                "exec_in_workshop",
+                {"name": task["workshop_name"], "command": commit_command},
+            )
+            commit_result = await wait_for_exec_completion(
+                deps.atelier_api_url,
+                deps.mcp_token_provider,
+                task["workshop_name"],
+                commit_execution["executionId"],
+            )
+            if commit_result.exit_code != 0:
+                raise RuntimeError(
+                    "DelegateToOpencode: le commit/push automatique a echoue dans "
+                    f"{task['workshop_name']} — "
+                    f"{format_test_trace(task['workshop_name'], commit_result)}"
+                )
+
     return {"phase": "DelegateToOpencode"}
 
 
