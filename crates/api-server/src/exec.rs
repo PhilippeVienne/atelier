@@ -42,14 +42,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Port sur lequel `sshd` ecoute dans la microVM agent (voir
-/// github.com/PhilippeVienne/atelier-workspace `.devcontainer/atelier-sshd.conf`)
-/// — canal separe de `ttyd`/`code-server`, dedie a `exec_in_workshop`.
+/// Port sur lequel `sshd` ecoute dans la microVM agent — canal separe de
+/// `ttyd`/`code-server`, dedie a `exec_in_workshop`.
+///
+/// `2222`, et non plus `22` : `crates/image-builder` injecte desormais son
+/// propre `sshd` dans TOUT devcontainer (`inject_sshd`), sur un port dedie
+/// choisi pour ne jamais entrer en conflit avec un `sshd` systeme
+/// preexistant. Le defaut `22` datait de l'epoque ou seul le devcontainer de
+/// demo (`atelier-workspace`) fournissait SSH, via le service systeme. Il ne
+/// vaut plus : sur toute image de base ordinaire, l'exec se connectait a un
+/// port que plus personne n'ecoutait, et echouait en `connexion SSH echouee:
+/// Disconnected` — un message qui donne a croire a un refus de `sshd` alors
+/// que c'est le port qui est faux.
 fn ssh_port() -> u16 {
     std::env::var("ATELIER_SSH_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(22)
+        .unwrap_or(2222)
 }
 
 /// Utilisateur systeme du devcontainer (voir
