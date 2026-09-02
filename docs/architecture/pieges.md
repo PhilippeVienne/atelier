@@ -1055,3 +1055,46 @@
   verifie qu'aucun commit vide n'est ajoute). Trois cas verifies par de
   vrais depots git jetables, pas des mocks.
   `open_pull_request` a ete durci en consequence (2026-09-02, meme session) : une PR encore vide malgre ce commit garanti ne peut plus signifier "l'agent a oublie" — elle echoue desormais bruyamment (`RuntimeError`) au lieu de continuer vers une revue humaine qui n'a rien a approuver.
+- **La session MCP pm-engine/api-server ne survivait pas non plus a une
+  longue attente** (2026-09-02, meme journee, troisieme couche du meme
+  defaut) : `delegate_to_opencode` ouvrait UNE session MCP
+  (`atelier_mcp_session`) et la gardait ouverte pendant TOUTE la boucle —
+  y compris les deux longues attentes (`wait_for_exec_completion`, dix a
+  vingt minutes ou plus le temps qu'`opencode` reflechisse). Un hop
+  intermediaire (Traefik, `http://api.atelier.local`) a fini par couper
+  cette connexion pour inactivite : `MCPError: Session terminated` au
+  moment du DEUXIEME appel (le commit automatique), alors que le premier
+  (la delegation elle-meme) avait reussi.
+  `run_devcontainer_tests` avait pourtant deja la bonne convention : la
+  session n'enveloppe que l'appel `exec_in_workshop` lui-meme (qui rend la
+  main immediatement, l'attente reelle se faisant sur un flux SSE separe),
+  jamais l'attente. `delegate_to_opencode` derogeait seul a cette regle.
+  Corrige en alignant sur cette convention : une session COURTE par appel,
+  ouverte puis refermee avant chaque `wait_for_exec_completion`.
+- **Aucun outil MCP ne permet a `pm-engine` de provisionner des identifiants
+  git en ecriture pour un Workshop** (2026-09-02, decouverte en creusant
+  pourquoi `git push` echouait avec `fatal: could not read Username ... No
+  such device or address`) : le mecanisme d'injection de credential existe
+  bel et bien (`identity-proxy` + secret OpenBao
+  `secret/data/workshops/<name>/git`, champ `password`, injecte comme
+  `Authorization: token <PAT>` sur les requetes vers l'alias
+  `git.atelier.internal` — voir `crates/controller/src/git_identity.rs`) et
+  `crates/image-builder` sait deja LIRE ce meme secret pour un clone
+  authentifie. Mais RIEN ne l'ECRIT automatiquement : `create_workshop`
+  (`crates/api-server/src/mcp_server.rs::CreateWorkshopParams`) n'a aucun
+  parametre de credential, et le seul mecanisme d'ecriture existant
+  (`crates/api-server/src/credentials.rs`) est concu pour etre pilote
+  MANUELLEMENT depuis le dashboard par un humain (une regle d'injection
+  generique par hote), jamais appele par `pm-engine`.
+  Consequence probable : AUCUN run PM automatise, dans cette session comme
+  vraisemblablement dans les precedentes, n'a jamais pu reellement pousser
+  du code sans qu'un humain ait prealablement configure ce credential a la
+  main — ce qui explique retrospectivement une bonne part de la saga des
+  "PR vides" documentee plus haut, au-dela de la seule negligence de
+  l'agent. Contourne manuellement pour cette session en ecrivant le secret
+  via le token OpenBao root (exactement le geste qu'un operateur ferait via
+  le dashboard) avant de lancer un nouveau run. Reste a faire : soit
+  `create_workshop` gagne un parametre de credential optionnel, soit
+  pm-engine appelle un nouvel outil MCP dedie avant de deleguer — non
+  implemente cette session, une decision de conception qui merite d'etre
+  prise consciemment plutot que corrigee dans l'urgence.

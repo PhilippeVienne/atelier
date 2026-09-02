@@ -510,151 +510,166 @@ async def delegate_to_opencode(state: PMWorkflowState, config: RunnableConfig) -
     l'ecosysteme MCP/skills existant."""
     deps = _deps(config)
 
-    async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
-        for task in state.get("plan", []):
-            scope = " ".join(task["scope"])
-            # Le commit/push fait partie de la consigne : sans lui, le
-            # travail de l'agent reste dans le systeme de fichiers de la
-            # microVM et n'atteint jamais la branche de la sous-tache —
-            # `OpenPullRequest` ouvrait alors une PR systematiquement VIDE
-            # (0 fichier modifie), sans que rien ne signale l'anomalie.
-            # Constate en executant le graphe complet pour la premiere fois
-            # (2026-08-30).
-            greenfield_spec = state.get("greenfield_spec")
-            spec_section = (
-                f"\n\nArchitecture a suivre (depot vierge, decide en amont pour "
-                f"eviter tout choix arbitraire) :\n{greenfield_spec}"
-                if greenfield_spec
-                else ""
-            )
-            prompt = (
-                f"{task['title']}\n\n{state.get('analysis', '')}{spec_section}\n\n"
-                f"IMPORTANT: ne modifie QUE les fichiers sous {scope} — un autre agent "
-                "travaille en parallele sur le reste de ce depot.\n\n"
-                "Quand ton travail est termine, commite-le puis pousse-le sur la "
-                f"branche courante ({task['branch_name']}) : "
-                "`git add -A && git commit -m \"<message>\" && git push origin HEAD`."
-            )
-            # `shlex.quote`, JAMAIS `json.dumps` : ce dernier produit une
-            # chaine entre guillemets DOUBLES, dans lesquels bash interprete
-            # encore les backticks, `$(...)` et `$VAR`. Or ce prompt contient
-            # du texte genere par un LLM a partir du ticket (`analysis`) et
-            # des chemins entoures de backticks — bash executait donc des
-            # fragments du prompt comme des commandes (`api/: No such file or
-            # directory`, `fatal: not a git repository`...), et l'agent
-            # recevait un prompt tronque. Bug reel constate le 2026-08-30 en
-            # executant le graphe complet (avec Claude Code, meme risque
-            # avec n'importe quel CLI).
-            #
-            # Au-dela du dysfonctionnement, c'est une injection de commande :
-            # le corps d'un ticket est une entree non fiable, et il finissait
-            # interprete par le shell du Workshop. `shlex.quote` produit des
-            # guillemets SIMPLES, ou plus rien n'est interprete.
-            # `--auto` (opencode) : approuve automatiquement les permissions
-            # non explicitement refusees — l'equivalent de
-            # `--permission-mode bypassPermissions` cote Claude Code, requis
-            # pour la meme raison : en mode non-interactif (`opencode run`),
-            # il n'y a personne pour approuver `git add`/`commit`/`push`
-            # autrement, et l'agent ecrivait alors un travail complet et
-            # correct qui restait en fichiers NON SUIVIS dans la microVM —
-            # `OpenPullRequest` ouvrait une PR vide (constate avec Claude
-            # Code le 2026-08-31, meme mecanisme applicable ici).
-            #
-            # Deleguer les permissions est ici sans danger, et c'est meme la
-            # raison d'etre d'Atelier : l'agent s'execute dans une microVM
-            # Firecracker jetable, sans acces reseau hors allowlist. La
-            # frontiere de securite est la microVM, pas l'invite de
-            # confirmation d'un CLI.
-            # `< /dev/null` : sans stdin ferme, `opencode run` n'ecrit
-            # STRICTEMENT RIEN sur sa sortie — pas meme ses messages
-            # d'erreur — et reste bloque jusqu'au timeout. Constate le
-            # 2026-09-02 en Workshop reel : la meme commande, au caractere
-            # pres, passe de "aucune sortie, aucun code d'erreur" a une
-            # reponse complete selon que stdin est ferme ou non. Ce n'est
-            # pas cosmetique : c'est la difference entre un echec
-            # diagnosticable et un blocage muet.
-            command = (
-                "opencode run --auto "
-                f"--model {shlex.quote(deps.opencode_model)} "
-                f"{shlex.quote(prompt)} < /dev/null"
-            )
+    # Une session MCP COURTE par appel, jamais une seule gardee ouverte
+    # pendant toute la duree des attentes : la meme classe de defaut que
+    # celui deja corrige cote net-proxy/identity-proxy (voir
+    # docs/architecture/pieges.md), un cran plus haut dans la chaine.
+    # `exec_in_workshop` ne fait que SOUMETTRE la commande et rend la main
+    # immediatement (l'attente reelle se fait via `wait_for_exec_completion`,
+    # sur un flux SSE totalement separe) — la session MCP n'a donc besoin de
+    # vivre que quelques secondes. La garder ouverte pendant l'attente (qui
+    # peut durer 10-20+ minutes le temps qu'`opencode` reflechisse) l'exposait
+    # a l'idle-timeout d'un hop intermediaire (Traefik, `http://api.atelier.local`) :
+    # `MCPError: Session terminated` au moment du DEUXIEME appel (le commit
+    # automatique), constate en Workshop reel le 2026-09-02. Meme convention
+    # deja en place dans `run_devcontainer_tests` (session fermee avant
+    # d'attendre) — ce noeud-ci derogeait seul a la regle.
+    for task in state.get("plan", []):
+        scope = " ".join(task["scope"])
+        # Le commit/push fait partie de la consigne : sans lui, le
+        # travail de l'agent reste dans le systeme de fichiers de la
+        # microVM et n'atteint jamais la branche de la sous-tache —
+        # `OpenPullRequest` ouvrait alors une PR systematiquement VIDE
+        # (0 fichier modifie), sans que rien ne signale l'anomalie.
+        # Constate en executant le graphe complet pour la premiere fois
+        # (2026-08-30).
+        greenfield_spec = state.get("greenfield_spec")
+        spec_section = (
+            f"\n\nArchitecture a suivre (depot vierge, decide en amont pour "
+            f"eviter tout choix arbitraire) :\n{greenfield_spec}"
+            if greenfield_spec
+            else ""
+        )
+        prompt = (
+            f"{task['title']}\n\n{state.get('analysis', '')}{spec_section}\n\n"
+            f"IMPORTANT: ne modifie QUE les fichiers sous {scope} — un autre agent "
+            "travaille en parallele sur le reste de ce depot.\n\n"
+            "Quand ton travail est termine, commite-le puis pousse-le sur la "
+            f"branche courante ({task['branch_name']}) : "
+            "`git add -A && git commit -m \"<message>\" && git push origin HEAD`."
+        )
+        # `shlex.quote`, JAMAIS `json.dumps` : ce dernier produit une
+        # chaine entre guillemets DOUBLES, dans lesquels bash interprete
+        # encore les backticks, `$(...)` et `$VAR`. Or ce prompt contient
+        # du texte genere par un LLM a partir du ticket (`analysis`) et
+        # des chemins entoures de backticks — bash executait donc des
+        # fragments du prompt comme des commandes (`api/: No such file or
+        # directory`, `fatal: not a git repository`...), et l'agent
+        # recevait un prompt tronque. Bug reel constate le 2026-08-30 en
+        # executant le graphe complet (avec Claude Code, meme risque
+        # avec n'importe quel CLI).
+        #
+        # Au-dela du dysfonctionnement, c'est une injection de commande :
+        # le corps d'un ticket est une entree non fiable, et il finissait
+        # interprete par le shell du Workshop. `shlex.quote` produit des
+        # guillemets SIMPLES, ou plus rien n'est interprete.
+        # `--auto` (opencode) : approuve automatiquement les permissions
+        # non explicitement refusees — l'equivalent de
+        # `--permission-mode bypassPermissions` cote Claude Code, requis
+        # pour la meme raison : en mode non-interactif (`opencode run`),
+        # il n'y a personne pour approuver `git add`/`commit`/`push`
+        # autrement, et l'agent ecrivait alors un travail complet et
+        # correct qui restait en fichiers NON SUIVIS dans la microVM —
+        # `OpenPullRequest` ouvrait une PR vide (constate avec Claude
+        # Code le 2026-08-31, meme mecanisme applicable ici).
+        #
+        # Deleguer les permissions est ici sans danger, et c'est meme la
+        # raison d'etre d'Atelier : l'agent s'execute dans une microVM
+        # Firecracker jetable, sans acces reseau hors allowlist. La
+        # frontiere de securite est la microVM, pas l'invite de
+        # confirmation d'un CLI.
+        # `< /dev/null` : sans stdin ferme, `opencode run` n'ecrit
+        # STRICTEMENT RIEN sur sa sortie — pas meme ses messages
+        # d'erreur — et reste bloque jusqu'au timeout. Constate le
+        # 2026-09-02 en Workshop reel : la meme commande, au caractere
+        # pres, passe de "aucune sortie, aucun code d'erreur" a une
+        # reponse complete selon que stdin est ferme ou non. Ce n'est
+        # pas cosmetique : c'est la difference entre un echec
+        # diagnosticable et un blocage muet.
+        command = (
+            "opencode run --auto "
+            f"--model {shlex.quote(deps.opencode_model)} "
+            f"{shlex.quote(prompt)} < /dev/null"
+        )
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
             execution = await call_tool_json(
                 session, "exec_in_workshop", {"name": task["workshop_name"], "command": command}
             )
-            delegate_result = await wait_for_exec_completion(
-                deps.atelier_api_url,
-                deps.mcp_token_provider,
-                task["workshop_name"],
-                execution["executionId"],
+        delegate_result = await wait_for_exec_completion(
+            deps.atelier_api_url,
+            deps.mcp_token_provider,
+            task["workshop_name"],
+            execution["executionId"],
+        )
+        # Un agent qui crashe AVANT d'ecrire quoi que ce soit (constate
+        # en pratique avec `claude --print` : segfault Bun au demarrage,
+        # exit_code `None`, `stdout` vide — voir
+        # docs/architecture/pieges.md) laissait ce noeud continuer comme
+        # si de rien n'etait. Le symptome ne remontait alors qu'a
+        # `RunDevcontainerTests`, sous une forme trompeuse
+        # (`.devcontainer/test.sh: No such file or directory`, qui
+        # ressemble a un oubli de l'agent) — et `AutoCorrectionLoop`
+        # rappelait le meme binaire casse jusqu'a epuiser tout le budget
+        # de correction sans qu'une seule ligne de code soit ecrite. Une
+        # erreur d'ENVIRONNEMENT ne se corrige pas en reformulant le
+        # prompt : echouer immediatement, sans passer par la boucle de
+        # correction.
+        if delegate_result.exit_code != 0:
+            raise RuntimeError(
+                "DelegateToOpencode: opencode n'a pas termine normalement dans "
+                f"{task['workshop_name']} — "
+                f"{format_test_trace(task['workshop_name'], delegate_result)}"
             )
-            # Un agent qui crashe AVANT d'ecrire quoi que ce soit (constate
-            # en pratique avec `claude --print` : segfault Bun au demarrage,
-            # exit_code `None`, `stdout` vide — voir
-            # docs/architecture/pieges.md) laissait ce noeud continuer comme
-            # si de rien n'etait. Le symptome ne remontait alors qu'a
-            # `RunDevcontainerTests`, sous une forme trompeuse
-            # (`.devcontainer/test.sh: No such file or directory`, qui
-            # ressemble a un oubli de l'agent) — et `AutoCorrectionLoop`
-            # rappelait le meme binaire casse jusqu'a epuiser tout le budget
-            # de correction sans qu'une seule ligne de code soit ecrite. Une
-            # erreur d'ENVIRONNEMENT ne se corrige pas en reformulant le
-            # prompt : echouer immediatement, sans passer par la boucle de
-            # correction.
-            if delegate_result.exit_code != 0:
-                raise RuntimeError(
-                    "DelegateToOpencode: opencode n'a pas termine normalement dans "
-                    f"{task['workshop_name']} — "
-                    f"{format_test_trace(task['workshop_name'], delegate_result)}"
-                )
 
-            # Le commit/push n'est plus laisse a la SEULE diligence de
-            # l'agent : la consigne dans le prompt ci-dessus reste (elle
-            # aide l'agent a laisser un historique lisible s'il y pense),
-            # mais ce n'est plus elle qui garantit quoi que ce soit.
-            # Constate en Workshop reel le 2026-09-02 : un agent peut
-            # terminer avec exit_code 0, ecrire un code entierement correct,
-            # faire passer sa propre suite de tests (5/5) — et neanmoins
-            # ne JAMAIS executer `git commit`/`git push`, le dernier geste
-            # d'une longue session agentique etant precisement celui qu'un
-            # LLM (comme un humain) est le plus susceptible d'oublier.
-            # `OpenPullRequest` ouvrait alors une PR au diff vide malgre un
-            # travail par ailleurs correct et teste, sans qu'aucun message
-            # d'erreur clair ne remonte a l'humain charge de l'approuver.
-            #
-            # `shlex.quote` sur le titre, jamais une f-string interpolee
-            # directement dans le message de commit : meme raisonnement que
-            # pour le prompt lui-meme, le titre peut porter des caracteres
-            # que le shell interpreterait.
-            # `git push` s'execute TOUJOURS a la fin, meme quand il n'y avait
-            # rien a committer : un agent qui commite localement mais oublie
-            # le `push` (l'autre moitie du meme oubli) laisserait sinon son
-            # travail invisible cote Forgejo sans qu'aucune erreur ne le
-            # signale — `git diff --cached --quiet` n'aurait alors plus rien
-            # a se mettre sous la dent (deja commite), le `||` sauterait le
-            # commit, et sans ce `push` inconditionnel, la branche distante
-            # resterait figee au commit initial.
-            commit_command = (
-                "git add -A && "
-                f"(git diff --cached --quiet || git commit -m {shlex.quote(task['title'])}) "
-                "&& git push origin HEAD"
-            )
+        # Le commit/push n'est plus laisse a la SEULE diligence de
+        # l'agent : la consigne dans le prompt ci-dessus reste (elle
+        # aide l'agent a laisser un historique lisible s'il y pense),
+        # mais ce n'est plus elle qui garantit quoi que ce soit.
+        # Constate en Workshop reel le 2026-09-02 : un agent peut
+        # terminer avec exit_code 0, ecrire un code entierement correct,
+        # faire passer sa propre suite de tests (5/5) — et neanmoins
+        # ne JAMAIS executer `git commit`/`git push`, le dernier geste
+        # d'une longue session agentique etant precisement celui qu'un
+        # LLM (comme un humain) est le plus susceptible d'oublier.
+        # `OpenPullRequest` ouvrait alors une PR au diff vide malgre un
+        # travail par ailleurs correct et teste, sans qu'aucun message
+        # d'erreur clair ne remonte a l'humain charge de l'approuver.
+        #
+        # `shlex.quote` sur le titre, jamais une f-string interpolee
+        # directement dans le message de commit : meme raisonnement que
+        # pour le prompt lui-meme, le titre peut porter des caracteres
+        # que le shell interpreterait.
+        # `git push` s'execute TOUJOURS a la fin, meme quand il n'y avait
+        # rien a committer : un agent qui commite localement mais oublie
+        # le `push` (l'autre moitie du meme oubli) laisserait sinon son
+        # travail invisible cote Forgejo sans qu'aucune erreur ne le
+        # signale — `git diff --cached --quiet` n'aurait alors plus rien
+        # a se mettre sous la dent (deja commite), le `||` sauterait le
+        # commit, et sans ce `push` inconditionnel, la branche distante
+        # resterait figee au commit initial.
+        commit_command = (
+            "git add -A && "
+            f"(git diff --cached --quiet || git commit -m {shlex.quote(task['title'])}) "
+            "&& git push origin HEAD"
+        )
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
             commit_execution = await call_tool_json(
                 session,
                 "exec_in_workshop",
                 {"name": task["workshop_name"], "command": commit_command},
             )
-            commit_result = await wait_for_exec_completion(
-                deps.atelier_api_url,
-                deps.mcp_token_provider,
-                task["workshop_name"],
-                commit_execution["executionId"],
+        commit_result = await wait_for_exec_completion(
+            deps.atelier_api_url,
+            deps.mcp_token_provider,
+            task["workshop_name"],
+            commit_execution["executionId"],
+        )
+        if commit_result.exit_code != 0:
+            raise RuntimeError(
+                "DelegateToOpencode: le commit/push automatique a echoue dans "
+                f"{task['workshop_name']} — "
+                f"{format_test_trace(task['workshop_name'], commit_result)}"
             )
-            if commit_result.exit_code != 0:
-                raise RuntimeError(
-                    "DelegateToOpencode: le commit/push automatique a echoue dans "
-                    f"{task['workshop_name']} — "
-                    f"{format_test_trace(task['workshop_name'], commit_result)}"
-                )
 
     return {"phase": "DelegateToOpencode"}
 
