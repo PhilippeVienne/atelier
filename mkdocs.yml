@@ -99,6 +99,10 @@ nav:
       - 04. Serveur MCP Externe (/v1/mcp): specs/04-external-mcp-server.md
       - 05. Moteur DevFactory & LangGraph: specs/05-devfactory-pm-engine.md
       - 06. Dashboard & Cadrage BFF: specs/06-dashboard-architecture-cadrage.md
+      - 07. Groupes: specs/07-groupes.md
+      - 08. Équipe IT Consultative (PM Engine): specs/08-equipe-it-consultative.md
+      - 09. Validation QA Dynamique Post-Merge: specs/09-qa-validation-post-merge.md
+      - 10. Installation Single-Node Low-Cost: specs/10-low-cost-single-node-install.md
       - Plan d'Action Global & DoD: specs/PLAN-ACTION-GLOBAL.md
   - 🤝 Communauté & Gouvernance:
       - Guide de Contribution: contributing.md

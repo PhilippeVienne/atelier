@@ -463,6 +463,11 @@ graph TD
 - [x] **6.5.1** : Rédiger le guide complet (KVM bare-metal & cloud nested virt, 4 domaines DNS, S3 multi-cloud, AWS IRSA/AssumeRole, backup/restore PostgreSQL et dépannage).
 - [x] **6.5.2** : Déclarer la page dans [`mkdocs.yml`](file:///home/philippe/github.com/PhilippeVienne/atelier/mkdocs.yml).
 
+### 9.6. Installation Single-Node Low-Cost (`curl | bash`)
+* **Spécification** : [`10-low-cost-single-node-install.md`](10-low-cost-single-node-install.md)
+* **Fichiers** : `scripts/install.sh`, `README.md` (section "Installation Serveur Single-Node")
+  - [x] **6.6.1** : Script d'installation k3s + ingress-nginx + cert-manager + chart `atelier`, idempotent (`helm upgrade --install`), avec génération d'identifiants aléatoires et garde-fou `/dev/kvm` bloquant. *(Fait le 2026-09-02 : vérifié par `shellcheck` réel (0.10.0, niveau `style`, zéro avertissement) et par vérification réelle des 11 images GHCR référencées par le chart (toutes publiques, taguées `:latest`, via l'API GHCR avec jeton anonyme — un `401` sans jeton ne suffit pas à conclure, GHCR l'impose même pour les images publiques). Bug réel trouvé et corrigé avant publication : les invites interactives (`read -p`) auraient lu depuis un `stdin` deja occupé par le flux du script sous `curl | bash`, corrigé via `/dev/tty`. **Non exécuté de bout en bout sur un serveur frais** dans cette session (l'environnement de dev héberge déjà un cluster `kind` actif, ne doit pas être perturbé par un second runtime Kubernetes) — limite assumée, à lever au premier run réel sur une vraie VM/un vrai serveur.)*
+
 ### 🧪 Tests & Preuves Attendues pour M6
 1. `helm lint charts/atelier` : Zéro erreur de syntaxe.
 2. `helm template atelier charts/atelier -f values-test.yaml` : Rendu valide de tous les manifests.

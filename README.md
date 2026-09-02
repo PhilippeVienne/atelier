@@ -111,6 +111,18 @@ atelier/
 
 ---
 
+## 🖥️ Installation Serveur Single-Node (Low-Cost)
+
+Pour un premier essai ou une petite exploitation sur un seul serveur (bare-metal ou instance cloud avec **accès réel à `/dev/kvm`** — voir [`docs/specs/10-low-cost-single-node-install.md`](docs/specs/10-low-cost-single-node-install.md), la plupart des VPS grand public n'en disposent pas) :
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PhilippeVienne/atelier/main/scripts/install.sh | bash -s -- --domain atelier.exemple.com --email admin@exemple.com
+```
+
+Installe k3s, ingress-nginx, cert-manager (TLS Let's Encrypt automatique) et le chart `atelier`, avec des identifiants générés aléatoirement. Voir la spec pour les compromis assumés de ce mode (OpenBao sans persistance par défaut, pas de haute disponibilité) — le [guide administrateur](docs/admin-guide.md) reste la référence pour un déploiement multi-nœud/production.
+
+---
+
 ## 🚀 Démarrage Rapide en Développement Local
 
 Atelier s'appuie sur le principe fondamental **« Vérification Empirique Réelle (Zéro Mock) »** : tous les tests et le développement s'exécutent contre des composants réels déployés dans un cluster [Kind](https://kind.sigs.k8s.io/) local.
