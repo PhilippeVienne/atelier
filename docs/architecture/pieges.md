@@ -542,3 +542,329 @@
   `pending` indéfiniment, et l'hydratation React (`hydrateRoot` / `useEffect`)
   ne s'exécutait sur aucune page sans lever la moindre erreur en console.
   Résolu en utilisant `(app as any).upgradeHandler(req, socket, head)`.
+- Le binaire `claude` standalone (compile Bun,
+  `/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, ~245 Mo)
+  segfault systematiquement dans un Workshop batti sur
+  `mcr.microsoft.com/devcontainers/python:1-3.12`, avec une adresse fautive
+  DIFFERENTE a chaque invocation (`0xFFFFFFFFFFFFFFBE` avec un prompt,
+  `0x0` sur `--version`, `0xBBADBEEF` — une valeur de poison memoire
+  classique — en `chroot`). Deux fausses pistes ecartees par la preuve
+  avant la bonne (2026-09-01) :
+  1. Pas une corruption reseau/registre : `claude.exe` extrait directement
+     des layers OCI du registre (`sha256sum` calcule sans erreur) est
+     bit-a-bit identique a celui lu depuis le `rootfs.ext4` monte en loop
+     sur le noeud kind (meme `sha256`).
+  2. Pas une corruption du systeme de fichiers ext4 : `e2fsck -n` sur le
+     `rootfs.ext4` reellement utilise par le Workshop (retrouve dans le PVC
+     `atelier-image-cache`, `/var/local-path-provisioner/.../sha256_<digest
+     du Workshop>/rootfs.ext4` sur le conteneur du noeud kind) rapporte
+     `clean` — aucune corruption de metadonnees.
+  **Preuve retenue** : le meme `claude.exe`, lance en `chroot` sur ce
+  `rootfs.ext4` monte, EN DEHORS DE TOUTE MICROVM/FIRECRACKER, segfault a
+  l'identique (`Bun v1.4.0 ... panic(main thread): Segmentation fault`) —
+  sur le noeud kind lui-meme (meme CPU, meme noyau hote que le reste du
+  systeme). Le meme binaire, execute via `node
+  /usr/lib/node_modules/@anthropic-ai/claude-code/cli-wrapper.cjs
+  --version` (le launcher Node.js de secours du paquet npm, normalement
+  jamais invoque car le postinstall copie le binaire natif par-dessus)
+  fonctionne parfaitement (`2.1.197 (Claude Code)`, exit 0) dans le MEME
+  chroot. Conclusion : bug du runtime Bun standalone lui-meme dans un
+  environnement restreint (chroot minimal sans `/proc` complet au moment du
+  premier essai, microVM Firecracker ensuite) — pas une corruption de
+  donnees ni un probleme de CPU/architecture. Contournement immediat pour
+  `pm-engine` (non applique) : invoquer `node
+  .../claude-code/cli-wrapper.cjs` au lieu de `claude` dans
+  `DelegateToClaudeCode`, ou reinstaller le paquet npm avec
+  `--ignore-scripts` pour empecher le postinstall d'ecraser le wrapper par
+  le binaire Bun.
+  Constate en validant reellement le chantier planificateur (ticket
+  greenfield, 2026-09-01).
+  Defaut connexe corrige le meme jour (reste utile independamment de la
+  cause ci-dessus) : `DelegateToClaudeCode`
+  (`pm_engine.nodes`) ne verifiait PAS DU TOUT le resultat de son propre
+  `exec_in_workshop` — le crash restait invisible jusqu'a
+  `RunDevcontainerTests`, qui echouait sur `.devcontainer/test.sh: No such
+  file or directory` (symptome trompeur, pointe vers un oubli de l'agent
+  alors qu'il n'a jamais tourne), et `AutoCorrectionLoop` rappelait le meme
+  binaire casse jusqu'a epuiser tout le budget de correction (3 tentatives
+  identiques, aucune ligne de code ecrite). Le noeud echoue desormais
+  immediatement des que `exit_code != 0`, sans passer par la boucle de
+  correction — une erreur d'environnement ne se corrige pas en reformulant
+  le prompt. Reverifie en reel : la deuxieme tentative de delegation crashe
+  a l'identique mais fait echouer le graphe immediatement, sans les 3 tours
+  de correction inutiles.
+- `ensure_image_build_job` (`crates/controller/src/reconcile.rs`) ne cable
+  PAS `ATELIER_GIT_ALIAS_ADDR`/`ATELIER_LLM_PROXY_ADDR`/`hostAliases` sur le
+  sidecar `net-proxy` du Job `image-builder`, contrairement a
+  `ensure_parent_pod` (le pod RUNTIME du Workshop, lui correctement cable) —
+  verifie en lisant les deux fonctions cote a cote. Constate en pratique
+  (2026-09-01) : un Job `image-builder` pointant `devcontainerRepo` vers le
+  depot cible sur `git.atelier.internal` echoue avec `connexion directe a
+  git.atelier.internal:3000` (`net-proxy::upstream::connect`, resolution DNS
+  normale, PAS l'alias interne) — la microVM builder clone donc dans le
+  vide et s'eteint en ~3s sans avoir rien construit. Pourquoi ca n'a pas
+  bloque le run reel de validation du meme jour : le nom de Workshop
+  `pm-1-task-1` avait deja 16 versions en cache dans le registre
+  (`atelier-workshops/pm-1-task-1`, sessions anterieures) — le Job a
+  probablement reutilise une image cachee au lieu de rebuild depuis MON
+  `.devcontainer/devcontainer.json`. Autrement dit : tout Workshop dont le
+  `devcontainerRepo` EST le depot cible (le flux normal de `pm-engine`,
+  pas un devcontainer externe type `vscode-remote-try-python`) risque de ne
+  jamais pouvoir (re)construire son image la premiere fois, en silence si
+  le cache masque le probleme.
+  **Corrige et verifie en reel le meme jour** : `ensure_image_build_job`
+  cable desormais `ATELIER_GIT_ALIAS_ADDR` sur son sidecar `net-proxy`
+  (resolution directe du ClusterIP de la forge via
+  `git_identity::resolve_cluster_ip`, sans passer par `identity-proxy` —
+  ce Job n'en a pas, l'auth Git au build passe deja par
+  `resolve_git_credentials` cote `image-builder`, jamais par l'injection
+  d'en-tete). Deuxieme cause distincte trouvee en verifiant :
+  `ATELIER_GIT_HOST_SERVICE` n'etait meme pas defini dans l'environnement
+  du controller de dev (`ctx.git_identity` valait `None`, feature
+  entierement inactive, RUNTIME compris) — ajoute a
+  `deploy/dev/local-stack/env.sh`. Avec les deux, une microVM builder
+  fraiche (nom de Workshop jamais vu, donc sans cache registre) reste
+  active des minutes durant au lieu de s'eteindre en 3s : preuve que
+  `git.atelier.internal` resout desormais et que le clone demarre
+  reellement.
+- Une microVM builder qui clone avec succes peut ensuite rester bloquee
+  SANS AUCUNE erreur, en plein telechargement d'un binaire externe
+  volumineux (constate deux fois, 2026-09-01, en installant `opencode`
+  dans un devcontainer — `curl | bash` PUIS, separement, le postinstall npm
+  de `opencode-ai`, memes symptomes les deux fois) : `net-proxy` journalise
+  `egress autorise ... host="release-assets.githubusercontent.com" ...
+  allowed=true` (le tunnel CONNECT s'etablit), puis plus AUCUNE ligne
+  pendant 10+ minutes, alors que le process `firecracker` de la microVM
+  reste vivant (CPU/memoire en hausse lente, pas de crash). Aucun
+  `rx_rate_limiter`/`tx_rate_limiter` configure cote Firecracker
+  (`crates/firecracker/src/vm.rs`) — la lenteur n'est donc pas une
+  limitation de bande passante deliberee. Cause non identifiee : a
+  suspecter le relais CONNECT de `net-proxy` face a un gros telechargement
+  HTTPS (redirections de CDN GitHub, HTTP/2, ou un bug de streaming qui
+  bufferise tout avant de relayer).
+  **Contourne, pas corrige, le meme jour** : `opencode` est desormais baque
+  dans l'image `atelier-image-builder` elle-meme (telecharge au `docker
+  build`, reseau normal du host — 2,7s reels mesures, contre 10+ minutes
+  bloquees via ce chemin) et injecte directement dans le rootfs par
+  `inject_opencode_binary` (`crates/image-builder/src/main.rs`), sans
+  jamais passer par `net-proxy`. Le bug lui-meme (le tunnel CONNECT qui se
+  bloque) reste non identifie et non corrige — seul le cas d'usage
+  `opencode` n'en depend plus.
+- **`opencode` segfault EXACTEMENT comme `claude.exe`** (2026-09-01,
+  meme jour) : c'est aussi un executable Bun standalone
+  (`bun run --compile`, confirme par `npm pack opencode-linux-x64` —
+  meme `sha256` que le binaire injecte par `inject_opencode_binary`, donc
+  pas un probleme de mauvaise variante baseline/avx2 selectionnee au
+  build). Meme signature de crash (`Bun vX.Y.Z ... panic(main thread):
+  Segmentation fault`, adresse fautive differente a chaque essai, dont
+  `0xBBADBEEF`), reproduite dans le MEME `chroot` du `rootfs.ext4` reel qui
+  avait fait crasher `claude.exe` plus tot ce jour. **Consequence directe
+  pour le chantier "remplacer Claude Code par opencode"** : le motif
+  initial (fuir ce crash) ne tient pas — les deux CLI partagent la meme
+  fragilite Bun dans cet environnement precis. Le motif licence/open
+  source, lui, reste valable independamment. Contrairement a
+  `@anthropic-ai/claude-code`, le paquet npm `opencode-ai` ne fournit
+  AUCUN launcher Node de secours (`postinstall.mjs` ne pose que
+  `bin/opencode.exe`, pas de `.cjs` invocable via `node`) : pas de
+  contournement equivalent a `node cli-wrapper.cjs` disponible ici. Cause
+  racine du crash Bun toujours non identifiee (`strace` indisponible sur le
+  noeud kind pour investiguer plus loin) — reste ouvert, bloquant pour
+  toute execution reelle d'un agent Bun-compile dans ce Workshop, quel que
+  soit le CLI choisi.
+- `ttyd` (terminal web), `code-server` (IDE web), et l'utilisateur
+  `vscode`/uid 1000 dont `inject_workspace_refresh` supposait deja
+  l'existence n'etaient fournis QUE par le devcontainer de demo externe
+  (`github.com/PhilippeVienne/atelier-workspace`), jamais par
+  `image-builder` — verifie en lisant `crates/vm-supervisor`,
+  `crates/net-proxy` et `crates/controller/src/openbao.rs` : aucun
+  n'installe quoi que ce soit, tout est seulement *consomme* (sonde de
+  readiness `GUEST_TERMINAL_PORT=7681`, endpoints metadata
+  `/session-auth`/`/ssh-authorized-key`). Consequence reelle : un Workshop
+  sur n'importe quel autre depot cible ne repondait jamais sur `ttyd:7681`
+  et ne passait donc jamais `Running`.
+  **Corrige et verifie en reel le meme jour** (2026-09-01, meme technique
+  qu'`inject_opencode_binary`) : `ttyd` (binaire statique) et
+  `code-server` (archive autonome, Node embarque) sont desormais baques
+  dans l'image `atelier-image-builder` au `docker build` et injectes par
+  `inject_terminal_and_ide` (`crates/image-builder/src/main.rs`), avec
+  `ensure_vscode_user` qui cree l'utilisateur/groupe `vscode` directement
+  dans `/etc/passwd`/`/etc/group`/`/etc/shadow` du rootfs SI absent (au
+  lieu de le supposer). Verifie sur un vrai rootfs monte en boucle : les
+  deux unites systemd sont installees et activees (symlinks
+  `multi-user.target.wants/`), `ttyd --version` s'execute sans probleme en
+  `chroot` (binaire natif, aucun rapport avec le crash Bun ci-dessus).
+  **Non couvert par cette correction** (reste ouvert) :
+  - `sshd` et le script `atelier-fetch-ssh-authorized-key.sh`
+    (`ssh-authorized-key` du meme endpoint metadata) — plus complexe
+    (config sshd, generation de host keys) et pas sur le chemin critique
+    du readiness-probe, laisse pour un chantier separe.
+  - Aucune image de base sans systemd n'a ete testee : `vm-supervisor` ne
+    passe aucun `init=` au noyau (`ATELIER_VM_BOOT_ARGS`), donc PID1 du
+    guest reste `/sbin/init` de l'image cible tel quel — une image sans
+    systemd (beaucoup d'images "slim" le sont) n'executerait AUCUNE des
+    unites installees ici, silencieusement. Question deja posee sans
+    reponse dans `docs/archive/PROGRESS-2026-08.md:860-864` : soit le
+    devcontainer source installe son propre systeme init, soit
+    `image-builder`/`vm-supervisor` devront un jour en injecter un
+    generique (a la maniere d'`atelier-builder-vm-init` pour la microVM
+    builder) — toujours non tranche.
+  **Les deux points corriges et verifies en reel le meme jour (2026-09-01)** :
+  - `sshd` : embarque (binaire Debian + bibliotheques resolues par `ldd`,
+    executees via `ld.so --library-path`) et injecte par `inject_sshd`.
+    Deux bugs reels trouves en testant une vraie connexion SSH de bout en
+    bout (pas seulement `sshd -t`) :
+    1. `sshd` se RE-EXECUTE lui-meme (`execve`) a chaque connexion
+       entrante, en repartant du chemin binaire brut — le wrapper
+       `ld.so --library-path` ne survit pas a ce re-exec
+       (`libwrap.so.0: cannot open shared object file`, alors meme que le
+       fichier est present dans le lot de bibliotheques embarquees).
+       `LD_LIBRARY_PATH` (variable d'environnement normale, heritee par
+       tout processus enfant/re-exec) est necessaire EN PLUS du wrapper,
+       pas a sa place.
+    2. Un compte avec `!` en `/etc/shadow` (verrou explicite pose par
+       `ensure_system_user` pour "aucun mot de passe utilisable") est vu
+       par `sshd` comme ADMINISTRATIVEMENT VERROUILLE ("User vscode not
+       allowed because account is locked") — un blocage qui s'applique a
+       TOUTE methode d'authentification, y compris par cle publique,
+       contrairement a ce qu'on pourrait supposer. `*` a la place n'a pas
+       ce defaut. Touche aussi les comptes `vscode` PRE-EXISTANTS de
+       l'image de base (Microsoft en pose un avec `!`) : `unlock_shadow_
+       password` corrige desormais tout compte, cree par nous ou non.
+    3. (Mineur mais reel) `UsePrivilegeSeparation no` est un directive
+       DEPRECIEE, silencieusement ignoree par OpenSSH >= 7.5 — `sshd`
+       exige toujours un compte systeme dedie (`sshd`, cree par
+       `ensure_sshd_user`) pour sa separation de privileges, quoi que dise
+       la config.
+    Verifie par une vraie connexion `ssh vscode@<guest> whoami` reussie
+    (cle publique, cle hote generee au premier demarrage).
+  - Init sans systemd : nouveau crate `crates/guest-init`
+    (`atelier-guest-init`), modele sur `atelier-builder-vm-init` mais
+    PERSISTANT (ne reboote jamais) — monte les pseudo-filesystems, lance
+    les scripts de service en arriere-plan avec relance sur sortie, et
+    boucle sur `waitpid` pour recolter les zombies (responsabilite non
+    negociable d'un PID 1). Le reseau n'a pas besoin d'etre reconfigure :
+    le noyau le fait lui-meme au boot (`ip=`, deja pose par
+    `vm-supervisor::kernel_ip_boot_arg`). `ensure_init_system`
+    (`image-builder`) detecte l'absence de `systemd` dans le rootfs
+    construit et bascule `/sbin/init` vers ce binaire dans ce cas
+    seulement — les images avec systemd gardent leur fonctionnement
+    inchange. Verifie sur `debian:bookworm-slim` (sans systemd, sans
+    utilisateur `vscode` prealable) : `ttyd`/`code-server`/`sshd` demarrent
+    tous les trois sous ce nouvel init (`unshare --pid` reel, pas une
+    simulation), et un `kill -9` sur l'un d'eux declenche bien sa relance
+    automatique.
+- `deploy/dev/keycloak/realm-export.json` contenait un faux champ
+  `"//serviceAccountRoles": "<note explicative>"`, invente pour glisser un
+  commentaire dans du JSON (qui n'en supporte pas). Keycloak avait importe
+  ce fichier une seule fois avec succes a la creation du realm ; l'import
+  n'est rejoue qu'a la prochaine absence du realm en base, jamais a un
+  simple redemarrage — le fichier invalide est donc reste latent, invisible,
+  pendant des jours. Constate le 2026-09-02 quand un redemarrage du
+  conteneur du noeud kind (recuperation apres un incident sans rapport, voir
+  plus bas) a fait perdre l'etat du realm : Keycloak a retente l'import et a
+  echoue net (`Unrecognized field "//serviceAccountRoles"`),
+  `atelier-keycloak-dev` en `CrashLoopBackOff`. Le vrai role
+  (`atelier-pm-bot` -> `developer`, sans quoi l'api-server refuse la
+  creation de Workshops en 403, voir `DEVELOPER_ROLE` dans
+  `crates/api-server/src/routes.rs`) est correctement pose ailleurs dans le
+  fichier (`users[].realmRoles`) — ce faux champ n'etait qu'une note
+  redondante. Retire ; toute note sur ce fichier doit vivre dans un
+  commentaire Markdown a cote, jamais comme un champ JSON invente.
+- **Incident reel, cause par une erreur de nettoyage** (2026-09-02) : un
+  `rm -rf` lance sur un repertoire de test QUI CONTENAIT ENCORE DES
+  MONTAGES LIES (`mount --bind /dev`, pose pour un test `chroot` du crash
+  Bun ci-dessus) a traverse le bind-mount et supprime pour de vrai
+  `/dev/null` du conteneur du noeud kind — un bind-mount partage les memes
+  entrees que la source, une suppression a travers l'un supprime l'autre.
+  Consequence : `docker exec` casse entierement sur ce conteneur
+  (`unable to setup user: stat /dev/null: no such file or directory`),
+  aucune commande possible dedans, y compris pour reparer. Recupere par un
+  `docker restart` du conteneur (choix de l'utilisateur, l'autre option
+  etant un `mknod` manuel en root — indisponible sans `sudo` interactif
+  depuis cette session) : `/dev` de ce noeud est un `devtmpfs`, repeuple
+  automatiquement par le noyau au (re)demarrage. Le redemarrage a lui-meme
+  revele le bug ci-dessus (Keycloak). Regle a appliquer desormais, sans
+  exception : ne JAMAIS `rm -rf` un repertoire qui a servi de point de
+  montage sans verifier `mount | grep <repertoire>` et tout demonter
+  d'abord — un repertoire de test avec des bind-mounts actifs n'est jamais
+  "juste des fichiers".
+- **Le crash Bun ne se reproduit PAS dans une vraie microVM** (2026-09-02,
+  conclusion de l'enquete ouverte la veille) : `opencode --version` puis un
+  `opencode run` complet tournent sans incident dans un Workshop
+  Firecracker fraichement construit (`/proc`, `/sys` et `/dev` y sont tous
+  les trois montes, verifie). Le SIGILL — rapporte par le gestionnaire de
+  crash de Bun comme un "segfault", ce qui a longtemps oriente le
+  diagnostic a cote — ne survient que dans un environnement d'execution
+  ampute de ces pseudo-systemes de fichiers, typiquement un `chroot` de
+  diagnostic monte a la main. Ce n'est ni la glibc (binaire strictement
+  identique, il tourne sur l'hote comme dans un `docker run`), ni le CPU
+  hybride (teste sous `taskset`), ni une corruption de l'image. Corollaire
+  de methode : un `chroot` minimal n'est PAS un substitut fidele a la
+  microVM pour reproduire un plantage d'exécutable.
+- **La console serie du guest est journalisee en `debug!`** (2026-09-02) :
+  `drain_console_pipes` (`crates/firecracker/src/vm.rs`) envoie toute la
+  sortie de la microVM builder dans `tracing::debug!`. Au niveau `INFO` par
+  defaut du Job `*-image-build`, un echec d'`envbuilder` est donc
+  totalement invisible : le seul symptome visible est une microVM qui
+  "s'eteint trop vite" puis un `crane export` qui echoue en
+  `MANIFEST_UNKNOWN` — message qui ne dit rien de la vraie cause. Plusieurs
+  heures ont ete perdues a soupconner KVM, le registre et le redemarrage du
+  noeud, alors qu'un seul run avec `RUST_LOG=debug` donnait la reponse en
+  clair (ici : `reference not found`, le depot de test n'avait pas de
+  branche `main`). Reflexe a avoir : devant un build de devcontainer qui
+  echoue sans explication, rejouer le Job avec `RUST_LOG=debug` AVANT toute
+  autre hypothese.
+- **`opencode` exige une section `models` explicite** (2026-09-02) : pour un
+  fournisseur OpenAI-compatible declare a la main, `opencode` ne decouvre
+  RIEN via `/v1/models` — il ne connait que le catalogue models.dev et ce
+  qui est declare dans `provider.<nom>.models`. Sans cette section,
+  `opencode models` ne liste rien pour le fournisseur et
+  `opencode run --model atelier/atelier-workshop-agent` se bloque
+  indefiniment, sans message, sans code d'erreur. Ajoutee dans la config
+  generee par `inject_net_proxy_config` (`crates/image-builder/src/main.rs`).
+  A cote de ca, `opencode run` n'ecrit strictement rien tant que son stdin
+  n'est pas ferme : diagnostiquer avec `< /dev/null`, sinon meme les
+  messages d'erreur restent invisibles.
+- **Une variable d'environnement DEFINIE mais VIDE n'est pas "absente"**
+  (2026-09-02) : `deploy/dev/local-stack.sh` n'ecrit le bloc LiteLLM que si
+  `DEEPSEEK_API_KEY` ou `ANTHROPIC_API_KEY` est exporte au moment ou on le
+  lance ; sinon il genere `ATELIER_LLM_PROXY_AUTH_TOKEN=""`. Le motif
+  `std::env::var(...).ok()` acceptait cette chaine vide, et le guest
+  recevait un jeton d'authentification vide dans `/etc/environment` — pire
+  qu'une absence franche de configuration, puisque l'agent partait quand
+  meme et echouait sans rien dire. Corrige par un
+  `.filter(|v| !v.trim().is_empty())` dans `crates/controller` et
+  `crates/image-builder` : une valeur vide vaut desormais "non configure",
+  comme l'absence de la variable. En dev, `ATELIER_LLM_PROXY_ADDR` doit
+  valoir l'adresse vue par le controller (port-forward `127.0.0.1:14000`)
+  et `ATELIER_LLM_PROXY_POD_ADDR` celle vue par les pods — meme
+  dedoublement que `OPENBAO_ADDR`/`ATELIER_OPENBAO_POD_ADDR`.
+- **La ConfigMap LiteLLM ne se met pas a jour toute seule** (2026-09-02) :
+  editer `deploy/dev/llm-proxy/config.yaml` ne change rien tant que la
+  ConfigMap n'est pas recreee ET le Deployment redemarre. L'alias
+  `atelier-workshop-agent` ajoute pour `opencode` etait donc absent du
+  proxy en fonctionnement : la requete retombait sur le wildcard `"*"`
+  (route vers `anthropic/deepseek-chat`, l'endpoint Anthropic de DeepSeek),
+  qui rejette les outils d'`opencode` en `400` — `tools[0]: unknown variant
+  'custom'`. `opencode` retente alors en silence, ce qui se voit seulement
+  comme un blocage. Les `400` n'apparaissent que dans les logs du pod
+  LiteLLM : c'est la premiere chose a regarder quand un agent "ne repond
+  pas" sans erreur.
+- **Ce qu'un redemarrage du noeud kind detruit dans OpenBao** (2026-09-02) :
+  le pod OpenBao de dev perd ses METHODES D'AUTH au redemarrage (les
+  secrets KV, eux, survivent — ce qui rend le diagnostic trompeur : le
+  secret cherche est bien la, mais plus personne ne peut s'authentifier
+  pour le lire). Symptome cote api-server : `cle SSH indisponible pour ce
+  Workshop`, avec un `login OpenBao refuse` en `WARN` comme seule trace.
+  Remise en etat : rejouer le bloc `bao auth enable kubernetes` +
+  `bao write auth/kubernetes/config` de `deploy/dev/local-stack.sh`, puis
+  REDEMARRER le controller — c'est lui qui cree le role et la policy
+  `atelier-api-server`, et seulement a son demarrage. Cause voisine et
+  meme symptome exact : le jeton de ServiceAccount
+  (`deploy/dev/local-stack/api-server-sa-token`) a une duree de vie de 24 h
+  et expire donc chaque jour ; `kubectl create token atelier-api-server
+  --duration=24h` le regenere. Verifier lequel des deux est en cause en
+  rejouant le login a la main
+  (`POST /v1/auth/kubernetes/login`) : le message y est explicite
+  (`token is expired`), contrairement au `login OpenBao refuse` cote
+  api-server.
