@@ -1285,6 +1285,10 @@ async fn ensure_parent_pod(
     // services embarques par le devcontainer, utilise comme signal de
     // readiness avant de marquer le Workshop `Running`.
     const GUEST_TERMINAL_PORT: u16 = 7681;
+    /// Port SSH du guest, tel qu'ecrit dans le `sshd_config` injecte par
+    /// `crates/image-builder` et attendu par `crate::exec` cote api-server
+    /// (`ATELIER_SSH_PORT`).
+    const GUEST_SSH_PORT: u16 = 2222;
     // "Edge port" LocalStack (sert la quasi-totalite des API AWS emulees
     // sur ce seul port) : lie a `127.0.0.1` du pod, jamais expose
     // directement a la VM (seulement via l'alias `simulator` de net-proxy,
@@ -1715,12 +1719,28 @@ async fn ensure_parent_pod(
                 .and_then(|s| s.pod_ip.clone())
             {
                 Some(pod_ip) => {
+                    // `ttyd` NE SUFFIT PAS comme preuve d'utilisabilite : il
+                    // ecoute avant `sshd`, et un Workshop annonce `Running`
+                    // sur cette seule base faisait echouer tout
+                    // `exec_in_workshop` lance dans la foulee
+                    // (`connexion SSH echouee: Disconnected`). C'est ce qui
+                    // arretait net le graphe du PM des la delegation a
+                    // l'agent, en donnant l'apparence d'une panne de SSH
+                    // alors qu'il s'agissait d'une simple course. Un
+                    // Workshop n'est utilisable que quand SES DEUX portes
+                    // d'entree repondent : le terminal et l'exec.
                     crate::guest_probe::guest_tcp_port_open(
                         &pod_ip,
                         NET_PROXY_CONTROL_PORT,
                         GUEST_TERMINAL_PORT,
                     )
                     .await
+                        && crate::guest_probe::guest_tcp_port_open(
+                            &pod_ip,
+                            NET_PROXY_CONTROL_PORT,
+                            GUEST_SSH_PORT,
+                        )
+                        .await
                 }
                 None => false,
             });
