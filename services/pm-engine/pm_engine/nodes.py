@@ -1658,8 +1658,19 @@ async def _provision_qa_workshop(
     """Meme filet d'idempotence que `provision_workshop` (une reprise
     LangGraph peut retomber ici alors que le Workshop existe deja), pointe
     sur `main` — pas sur une branche de sous-tache — puisque c'est
-    precisement le code FUSIONNE qu'on veut exercer."""
-    if not await _workshop_exists(deps, workshop_name):
+    precisement le code FUSIONNE qu'on veut exercer.
+
+    Reprend explicitement un Workshop deja `Suspended` (contrairement a
+    `provision_workshop`, dont le Workshop de sous-tache ne peut jamais
+    l'etre avant que CE noeud n'ait fini) : `QAValidation` suspend elle-
+    meme son Workshop en fin de course (`_finish_qa_validation`), donc une
+    reprise de CE noeud precis (crash entre la suspension et le retour du
+    noeud, LangGraph rejoue depuis le debut) peut plausiblement retomber
+    sur son propre Workshop deja mis en veille — `_await_workshop_running`
+    seule attendrait alors indefiniment (jusqu'au timeout) une transition
+    qui ne viendra jamais toute seule."""
+    exists = await _workshop_exists(deps, workshop_name)
+    if not exists:
         async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
             await call_tool_json(
                 session,
@@ -1679,6 +1690,14 @@ async def _provision_qa_workshop(
                     ),
                 },
             )
+    else:
+        async with atelier_mcp_session(deps.atelier_api_url, deps.mcp_token_provider) as session:
+            status = await call_tool_json(session, "get_workshop_status", {"name": workshop_name})
+        if (status or {}).get("phase") == "Suspended":
+            async with atelier_mcp_session(
+                deps.atelier_api_url, deps.mcp_token_provider
+            ) as session:
+                await call_tool_json(session, "resume_workshop", {"name": workshop_name})
     await _await_workshop_running(deps, workshop_name)
 
 
