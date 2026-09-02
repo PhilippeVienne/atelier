@@ -248,7 +248,17 @@ pub async fn run() -> anyhow::Result<()> {
     let registry_insecure = std::env::var("ATELIER_REGISTRY_INSECURE")
         .map(|v| v == "true")
         .unwrap_or(false);
-    let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR").ok();
+    // `.filter(...)` et pas seulement `.ok()` : une variable DEFINIE mais
+    // VIDE (cas reel — `deploy/dev/local-stack/env.sh` genere
+    // `ATELIER_LLM_PROXY_AUTH_TOKEN=""` quand le bloc LiteLLM optionnel du
+    // script ne s'est pas declenche) passait le test et etait injectee telle
+    // quelle dans `/etc/environment` du guest. L'agent du Workshop
+    // s'authentifiait alors aupres de LiteLLM avec un jeton vide et
+    // n'obtenait aucune reponse, sans la moindre erreur visible. Une valeur
+    // vide vaut "non configure", comme l'absence de la variable.
+    let llm_proxy_addr = std::env::var("ATELIER_LLM_PROXY_ADDR")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     // Adresse injectee dans les pods, distincte de celle qu'utilise le
     // controller pour ses propres appels d'administration — meme raison et
     // meme convention que `OpenBaoConfig::pod_addr` : en developpement le
@@ -260,7 +270,9 @@ pub async fn run() -> anyhow::Result<()> {
     let llm_proxy_pod_addr = std::env::var("ATELIER_LLM_PROXY_POD_ADDR")
         .ok()
         .or_else(|| llm_proxy_addr.clone());
-    let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok();
+    let llm_proxy_auth_token = std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     let git_identity = git_identity::config_from_env();
     // `litellm` sert aux appels d'ADMINISTRATION faits par le controller
     // lui-meme (generation de Virtual Keys) : c'est bien `llm_proxy_addr`,
@@ -805,6 +817,37 @@ async fn ensure_image_build_job(
     // `crates/net-proxy::internal`).
     let egress_allowlist = workshop.spec.egress_allowlist.join(",");
 
+    // Alias `git.atelier.internal` pour LE BUILD (2026-09-01, correction
+    // d'un bug reel constate en validant le chantier planificateur puis en
+    // migrant `pm-engine` de Claude Code vers `opencode` : sans cet alias,
+    // `envbuilder` (dans la microVM builder) tentait une connexion DIRECTE
+    // a `git.atelier.internal`, que rien ne resout depuis ce Job — la
+    // microVM builder s'eteignait en quelques secondes sans avoir clone le
+    // depot cible, et `crane export` echouait ensuite sur un manifeste
+    // absent (`MANIFEST_UNKNOWN`). Ce Job n'a PAS de sidecar
+    // `identity-proxy` (contrairement au pod parent, `ensure_parent_pod`) :
+    // inutile pour l'authentification Git au moment du build, deja geree en
+    // amont, directement depuis OpenBao, par
+    // `crates/image-builder::resolve_git_credentials` (voir le commentaire
+    // de tete de `crate::git_identity`, qui documente explicitement cette
+    // separation). Il suffit donc de router `git.atelier.internal` vers le
+    // ClusterIP resolu de la forge, sans passer par identity-proxy — best
+    // effort et non bloquant, meme convention que le reste de ce module :
+    // un echec de resolution ne desactive que cet alias pour ce cycle.
+    let git_alias_addr = match &ctx.git_identity {
+        Some(git_config) => match git_identity::resolve_cluster_ip(&ctx.client, git_config).await {
+            Ok(ip) => Some(format!("{ip}:{}", git_config.port)),
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "resolution du ClusterIP de la forge Git echouee (Job image-builder), alias git desactive pour ce cycle"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
     let job = Job {
         metadata: ObjectMeta {
             name: Some(job_name.clone()),
@@ -839,26 +882,35 @@ async fn ensure_image_build_job(
                             name: "net-proxy".into(),
                             image: Some(ctx.component_image("net-proxy")),
                             restart_policy: Some("Always".into()),
-                            env: Some(vec![
-                                env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
-                                env_var(
-                                    "ATELIER_NET_PROXY_LISTEN_ADDR",
-                                    &format!("0.0.0.0:{net_proxy_port}"),
-                                ),
-                                env_var(
-                                    "ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR",
-                                    &format!("0.0.0.0:{net_proxy_transparent_http_port}"),
-                                ),
-                                env_var(
-                                    "ATELIER_NET_PROXY_TRANSPARENT_TLS_ADDR",
-                                    &format!("0.0.0.0:{net_proxy_transparent_tls_port}"),
-                                ),
-                                // Alias interne hors allowlist : voir
-                                // `crates/net-proxy::internal` et le
-                                // commentaire sur `egress_allowlist`
-                                // ci-dessus.
-                                env_var("ATELIER_REGISTRY_ALIAS_ADDR", &ctx.registry_addr),
-                            ]),
+                            env: Some(
+                                vec![
+                                    env_var("ATELIER_EGRESS_ALLOWLIST", &egress_allowlist),
+                                    env_var(
+                                        "ATELIER_NET_PROXY_LISTEN_ADDR",
+                                        &format!("0.0.0.0:{net_proxy_port}"),
+                                    ),
+                                    env_var(
+                                        "ATELIER_NET_PROXY_TRANSPARENT_HTTP_ADDR",
+                                        &format!("0.0.0.0:{net_proxy_transparent_http_port}"),
+                                    ),
+                                    env_var(
+                                        "ATELIER_NET_PROXY_TRANSPARENT_TLS_ADDR",
+                                        &format!("0.0.0.0:{net_proxy_transparent_tls_port}"),
+                                    ),
+                                    // Alias interne hors allowlist : voir
+                                    // `crates/net-proxy::internal` et le
+                                    // commentaire sur `egress_allowlist`
+                                    // ci-dessus.
+                                    env_var("ATELIER_REGISTRY_ALIAS_ADDR", &ctx.registry_addr),
+                                ]
+                                .into_iter()
+                                .chain(
+                                    git_alias_addr
+                                        .as_ref()
+                                        .map(|addr| env_var("ATELIER_GIT_ALIAS_ADDR", addr)),
+                                )
+                                .collect::<Vec<_>>(),
+                            ),
                             ..Default::default()
                         },
                         Container {
