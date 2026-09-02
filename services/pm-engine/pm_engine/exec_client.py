@@ -21,7 +21,6 @@ from httpx_sse import aconnect_sse
 
 from .oidc import OidcTokenProvider
 
-
 #: Plafond de duree d'UNE execution deleguee, tout compris.
 #:
 #: `timeout_s` ne protege de rien ici : c'est un delai par operation reseau,
