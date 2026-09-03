@@ -1158,3 +1158,18 @@
   test. Non corrige (hors perimetre de la tache en cours, la tache 5.6.3 sur `ReviewArchitecture`
   ne touche a aucun de ces deux mecanismes) — a reprendre si quelqu'un a besoin de ces deux tests
   vraiment verts plutot que verifies "au moins jusqu'a ProvisionWorkshop".
+
+- **Un second appel LLM sans la liste `tools` peut faire fuiter la syntaxe
+  native de tool-call du modele en texte brut.** `pm_engine.main::chat`
+  (POST `/chat`) fait deux appels : un premier `chat_with_tools` (avec
+  `tools=[...]`) qui decide d'invoquer `setup_mirror_project`, puis un
+  second `chat_stream` pour la reponse finale en langage naturel — ce second
+  appel n'envoyait PAS `tools`. Un modele qui retente malgre tout un appel
+  d'outil a cette etape (constate avec DeepSeek, route par defaut de
+  `llm-proxy`) n'a alors aucun protocole structure pour l'exprimer et le
+  fait dans sa syntaxe interne (`<｜tool▁calls▁begin｜>`/balises similaires),
+  jamais filtree, streamee telle quelle au Dashboard. Correctif : passer les
+  MEMES `tools` aux deux appels. Regle generale : dans une conversation
+  outillee, TOUT appel ulterieur au meme modele doit recevoir la meme liste
+  de `tools`, meme s'il n'est pas cense en avoir besoin — le modele ne sait
+  pas qu'un appel donne du protocole est "different" du precedent.
