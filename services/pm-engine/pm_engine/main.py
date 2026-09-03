@@ -320,24 +320,38 @@ async def _run_tool_call(deps: PmEngineDeps, call: dict) -> str:
 
 
 async def _save_chat_turn(
-    deps: PmEngineDeps, user_sub: str, repo: str, query: str, answer: str
+    deps: PmEngineDeps,
+    user_sub: str,
+    repo: str,
+    query: str,
+    answer: str,
+    tool_calls: list[dict],
 ) -> None:
     """Persiste le tour user+assistant dans `pm_chat_messages` (tache
-    5.5.1, historique persistant) : appele apres coup, jamais sur le
-    chemin critique du streaming SSE — une panne d'ecriture ne doit jamais
-    empecher l'utilisateur de lire la reponse deja recue, seulement lui
-    couter la persistance de CE tour (journalise, pas leve)."""
+    5.5.1, historique persistant), `tool_calls` inclus (tache suivante,
+    "elements interactifs" : sans ca, la carte d'appel d'outil affichee en
+    direct disparaissait a chaque rechargement de page alors que le texte
+    final qui la suit restait visible — un tour visuellement incoherent
+    avec lui-meme). Appele apres coup, jamais sur le chemin critique du
+    streaming SSE — une panne d'ecriture ne doit jamais empecher
+    l'utilisateur de lire la reponse deja recue, seulement lui couter la
+    persistance de CE tour (journalise, pas leve)."""
     if not answer:
         # Reponse vide (erreur en cours de stream, connexion coupee...) :
         # rien de coherent a rejouer au tour suivant.
         return
     try:
         async with deps.db_pool.acquire() as conn:  # type: ignore[attr-defined]
-            await conn.executemany(
-                "INSERT INTO pm_chat_messages (user_sub, repo, role, content) "
-                "VALUES ($1, $2, $3, $4)",
-                [(user_sub, repo, "user", query), (user_sub, repo, "assistant", answer)],
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO pm_chat_messages (user_sub, repo, role, content) VALUES ($1, $2, 'user', $3)",
+                    user_sub, repo, query,
+                )
+                await conn.execute(
+                    "INSERT INTO pm_chat_messages (user_sub, repo, role, content, tool_calls) "
+                    "VALUES ($1, $2, 'assistant', $3, $4)",
+                    user_sub, repo, answer, json.dumps(tool_calls),
+                )
     except Exception:  # voir docstring : jamais fatal, seulement journalise
         logger.warning("echec de persistance du tour de chat PM (user=%s)", user_sub, exc_info=True)
 
@@ -361,11 +375,11 @@ async def chat(
     `tool_result`, "elements interactifs") pour que le Dashboard l'affiche
     en direct plutot que de le laisser invisible jusqu'a ce que le LLM le
     mentionne lui-meme dans son texte — voir `dashboard/app/pm/pm-chat.tsx`.
-    NON PERSISTES : `GET /chat/history` ne rejoue que le texte final de
-    chaque tour (meme limite assumee que `ChatRequest.history`), ces cartes
-    ne reapparaissent donc pas apres un rechargement de page. Le tour
-    complet (question + reponse finale) est persiste dans
-    `pm_chat_messages` (`GET /chat/history`) une fois le flux termine."""
+    Le tour complet (question, reponse finale, ET les tool_calls executes)
+    est persiste dans `pm_chat_messages` une fois le flux termine, rejouable
+    via `GET /chat/history` (colonne `tool_calls`, toujours en etat "done" a
+    la relecture — un tour interrompu en cours d'outil n'ecrit jamais de
+    reponse, voir `_save_chat_turn`)."""
     deps: PmEngineDeps = _require_deps(request)
 
     async def event_stream() -> AsyncIterator[bytes]:
@@ -392,6 +406,10 @@ async def chat(
             {"role": "user", "content": body.query},
         ]
         answer = ""
+        # Accumule les tool_calls du tour pour `_save_chat_turn` : la meme
+        # forme que les evenements SSE `tool_call`/`tool_result`, sauf que
+        # celle-ci survit a un rechargement de page (`GET /chat/history`).
+        persisted_tool_calls: list[dict] = []
         try:
             message = await deps.llm_client.chat_with_tools(
                 deps.chat_model, messages, tools=[SETUP_MIRROR_PROJECT_TOOL]
@@ -424,9 +442,18 @@ async def chat(
                         f"data: {json.dumps({'tool_call': {'id': call['id'], 'name': call['function']['name'], 'arguments': args}})}\n\n"
                     ).encode()
                     result = await _run_tool_call(deps, call)
+                    result_obj = json.loads(result)
                     yield (
-                        f"data: {json.dumps({'tool_result': {'id': call['id'], 'name': call['function']['name'], 'result': json.loads(result)}})}\n\n"
+                        f"data: {json.dumps({'tool_result': {'id': call['id'], 'name': call['function']['name'], 'result': result_obj}})}\n\n"
                     ).encode()
+                    persisted_tool_calls.append(
+                        {
+                            "id": call["id"],
+                            "name": call["function"]["name"],
+                            "arguments": args,
+                            "result": result_obj,
+                        }
+                    )
                     messages.append(
                         {"role": "tool", "tool_call_id": call["id"], "content": result}
                     )
@@ -438,7 +465,7 @@ async def chat(
         except Exception as exc:  # noqa: BLE001 - traduit en evenement SSE d'erreur
             logger.warning("erreur pendant le streaming du chat PM: %s", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n".encode()
-        await _save_chat_turn(deps, claims.sub, body.repo, body.query, answer)
+        await _save_chat_turn(deps, claims.sub, body.repo, body.query, answer, persisted_tool_calls)
         yield b"data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -460,13 +487,22 @@ async def chat_history(
     deps: PmEngineDeps = _require_deps(request)
     async with deps.db_pool.acquire() as conn:  # type: ignore[attr-defined]
         rows = await conn.fetch(
-            "SELECT role, content, created_at FROM pm_chat_messages "
+            "SELECT role, content, tool_calls, created_at FROM pm_chat_messages "
             "WHERE user_sub = $1 AND repo = $2 ORDER BY created_at ASC",
             claims.sub,
             repo,
         )
     return [
-        {"role": row["role"], "content": row["content"], "created_at": row["created_at"].isoformat()}
+        {
+            "role": row["role"],
+            "content": row["content"],
+            # asyncpg ne decode pas nativement `jsonb` sans codec dedie sur
+            # le pool (aucun configure ici, meme convention que
+            # `pm_engine.nodes.index_knowledge` pour `metadata`) : `row[...]`
+            # est donc le texte JSON brut, pas encore une valeur Python.
+            "tool_calls": json.loads(row["tool_calls"]),
+            "created_at": row["created_at"].isoformat(),
+        }
         for row in rows
     ]
 

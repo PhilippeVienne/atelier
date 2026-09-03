@@ -117,16 +117,34 @@ export async function proxyChat(
   });
 }
 
+export interface ChatHistoryToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
+export interface ChatHistoryEntry extends ChatMessage {
+  toolCalls: ChatHistoryToolCall[];
+}
+
 /**
  * Historique persiste des tours de chat PM de l'utilisateur courant pour
  * `repo` (`GET /chat/history` cote pm-engine, tache 5.5.1) : sans lui, la
  * conversation de `PmChat` (`useState` pur) disparaissait a chaque
- * rechargement de page.
+ * rechargement de page. `toolCalls` inclus (tache suivante, "elements
+ * interactifs") : sans ca, la carte d'appel d'outil affichee en direct
+ * disparaissait elle aussi au rechargement alors que le texte final qui la
+ * suit restait visible.
  */
-export async function fetchChatHistory(repo: string): Promise<ChatMessage[]> {
+export async function fetchChatHistory(repo: string): Promise<ChatHistoryEntry[]> {
   const res = await call(`/chat/history?repo=${encodeURIComponent(repo)}`);
-  const rows = (await res.json()) as Array<{ role: "user" | "assistant"; content: string }>;
-  return rows.map((r) => ({ role: r.role, content: r.content }));
+  const rows = (await res.json()) as Array<{
+    role: "user" | "assistant";
+    content: string;
+    tool_calls: ChatHistoryToolCall[];
+  }>;
+  return rows.map((r) => ({ role: r.role, content: r.content, toolCalls: r.tool_calls }));
 }
 
 // --------------------------------------------------------------------------

@@ -15,11 +15,11 @@ interface ToolCall {
 interface ChatEntry {
   role: "user" | "assistant";
   text: string;
-  // Cartes d'appel d'outil (Jalon M5, "elements interactifs") : rendues
-  // EN PLUS du texte, jamais persistees (voir `pm_engine.main::chat`,
-  // uniquement portees par les evenements SSE `tool_call`/`tool_result` —
-  // disparaissent donc a un rechargement de page, comme le texte brut de
-  // DeepSeek disparaissait deja avant elles).
+  // Cartes d'appel d'outil (Jalon M5, "elements interactifs") : rendues EN
+  // PLUS du texte. En direct, alimentees par les evenements SSE
+  // `tool_call`/`tool_result` (statut "running" puis "done"/"failed") ; a
+  // la relecture d'un tour passe (`GET /api/pm/chat/history`), reconstruites
+  // directement en statut "done" depuis `pm_chat_messages.tool_calls`.
   toolCalls?: ToolCall[];
 }
 
@@ -73,10 +73,24 @@ export function PmChat({ projects }: { projects: string[] }) {
     let cancelled = false;
     fetch(`/api/pm/chat/history?repo=${encodeURIComponent(repo)}`)
       .then((res) => (res.ok ? res.json() : []))
-      .then((rows: Array<{ role: "user" | "assistant"; content: string }>) => {
-        if (cancelled) return;
-        setEntries(rows.map((r) => ({ role: r.role, text: r.content })));
-      })
+      .then(
+        (
+          rows: Array<{
+            role: "user" | "assistant";
+            content: string;
+            toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown>; result: ToolCall["result"] }>;
+          }>,
+        ) => {
+          if (cancelled) return;
+          setEntries(
+            rows.map((r) => ({
+              role: r.role,
+              text: r.content,
+              toolCalls: r.toolCalls.map((c) => ({ ...c, status: "done" as const })),
+            })),
+          );
+        },
+      )
       .catch(() => {
         // Silencieux : l'utilisateur peut toujours discuter, il perd juste
         // la reprise de son historique pour ce chargement.
