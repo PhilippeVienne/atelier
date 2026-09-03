@@ -1173,3 +1173,20 @@
   outillee, TOUT appel ulterieur au meme modele doit recevoir la meme liste
   de `tools`, meme s'il n'est pas cense en avoir besoin — le modele ne sait
   pas qu'un appel donne du protocole est "different" du precedent.
+
+- **`apply_wires_the_llm_virtual_key_injection_rule_when_configured`
+  (`crates/controller/tests/reconcile.rs`) echouait a cause du test, pas de
+  `reconcile.rs`.** Le `ReconcileCtx` construit a la main par ce test
+  laissait `llm_proxy_pod_addr: None` — or `resolve_llm_cluster_ip`
+  (`reconcile.rs`) a besoin de cette valeur (le nom de Service Kubernetes,
+  PAS l'adresse de port-forward `ATELIER_LLM_PROXY_ADDR` utilisee pour les
+  appels d'administration) pour resoudre le ClusterIP de LiteLLM ; sans elle
+  elle echoue immediatement ("adresse cluster LiteLLM absente"), et la regle
+  d'injection `llm-proxy` n'est alors JAMAIS ajoutee a
+  `effective_identity_injection_rules` — d'ou l'assertion qui voyait `[]`.
+  Deux adresses LiteLLM DIFFERENTES coexistent partout dans ce projet
+  (`ATELIER_LLM_PROXY_ADDR`/`_POD_ADDR`, voir aussi l'entree ci-dessus sur le
+  port 14000) : ne jamais supposer qu'une seule suffit a un `ReconcileCtx`
+  de test sous pretexte que les deux "pointent vers LiteLLM". Corrige en
+  renseignant `llm_proxy_pod_addr: Some("atelier-llm-proxy.default.svc.cluster.local:4000")`
+  (nom de Service verifie contre le cluster kind de dev).

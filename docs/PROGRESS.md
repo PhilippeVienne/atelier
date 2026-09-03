@@ -48,10 +48,8 @@ attendus et font partie du processus, ils sont consignes dans
 - Offload/reload du cache d'images `image-builder` vers S3 (prevu des la
   conception, encore un `TODO` dans `crates/image-builder/src/main.rs`).
 - Stack d'observabilite complet : collector OTLP + backend de stockage + Grafana.
-- `apply_wires_the_llm_virtual_key_injection_rule_when_configured`
-  (`crates/controller/tests/reconcile.rs`) : dernier statut connu "echoue,
-  regle d'injection absente" — pas revérifié depuis, à confirmer avant d'y
-  toucher.
+- Configuration des modeles LiteLLM par un admin (`docs/specs/11-admin-litellm-model-config.md`,
+  PLAN-ACTION-GLOBAL.md section 9.7) : spec rédigée, implementation non commencee.
 
 > Le récit complet des jalons 1 à 6 (microVM builder, canal suspend/resume,
 > reseau du pod parent, OAuth2/OIDC, `mcp-gateway`, device plugin `/dev/kvm`,

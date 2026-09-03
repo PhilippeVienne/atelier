@@ -896,7 +896,16 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         registry_addr: "localhost:5000".to_string(),
         registry_insecure: true,
         llm_proxy_addr: None,
-        llm_proxy_pod_addr: None,
+        // Sans ceci, `resolve_llm_cluster_ip` (reconcile.rs) echoue avant
+        // meme de tenter quoi que ce soit ("adresse cluster LiteLLM
+        // absente") : la regle d'injection `llm-proxy` n'est alors JAMAIS
+        // pushee dans `effective_identity_injection_rules`, et ce test
+        // echouait avec `[]` — pas un bug de reconcile.rs, un `ReconcileCtx`
+        // de test incomplet (en production, cette valeur vient de
+        // `ATELIER_LLM_PROXY_POD_ADDR`, voir reconcile.rs:270 et
+        // `deploy/dev/local-stack/env.sh`). Nom de Service verifie
+        // empiriquement contre le cluster kind de dev (`kubectl get svc`).
+        llm_proxy_pod_addr: Some("atelier-llm-proxy.default.svc.cluster.local:4000".to_string()),
         llm_proxy_auth_token: None,
         git_identity: None,
         litellm: Some(litellm_config),
