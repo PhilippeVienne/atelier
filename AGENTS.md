@@ -73,6 +73,7 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
    - *Lire [`docs/specs/02-helm-deployment-admin-doc.md`](docs/specs/02-helm-deployment-admin-doc.md) avant d'éditer `charts/atelier/` ou `docs/admin-guide.md`.*
 4. **Sur la passerelle IA & gestion des Budgets LLM** :
    - *Lire [`docs/specs/03-litellm-proxy.md`](docs/specs/03-litellm-proxy.md) avant d'éditer `crates/controller/src/litellm.rs` ou le finalizer.*
+   - *Lire [`docs/specs/11-admin-litellm-model-config.md`](docs/specs/11-admin-litellm-model-config.md) avant d'éditer `crates/api-server/src/llm_budget.rs`, ses routes `/v1/admin/llm/*`, ou `dashboard/app/admin/llm/`.*
 5. **Sur le Serveur MCP Externe** :
    - *Lire [`docs/specs/04-external-mcp-server.md`](docs/specs/04-external-mcp-server.md) avant d'implémenter les routes `/v1/mcp` dans `api-server`.*
 6. **Sur le Moteur DevFactory & LangGraph** :

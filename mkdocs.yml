@@ -103,6 +103,7 @@ nav:
       - 08. Équipe IT Consultative (PM Engine): specs/08-equipe-it-consultative.md
       - 09. Validation QA Dynamique Post-Merge: specs/09-qa-validation-post-merge.md
       - 10. Installation Single-Node Low-Cost: specs/10-low-cost-single-node-install.md
+      - 11. Configuration Admin des Modèles LiteLLM: specs/11-admin-litellm-model-config.md
       - Plan d'Action Global & DoD: specs/PLAN-ACTION-GLOBAL.md
   - 🤝 Communauté & Gouvernance:
       - Guide de Contribution: contributing.md

@@ -468,6 +468,15 @@ graph TD
 * **Fichiers** : `scripts/install.sh`, `README.md` (section "Installation Serveur Single-Node")
   - [x] **6.6.1** : Script d'installation k3s + ingress-nginx + cert-manager + chart `atelier`, idempotent (`helm upgrade --install`), avec génération d'identifiants aléatoires et garde-fou `/dev/kvm` bloquant. (piège : `read -p` échoue sous `curl | bash` car `stdin` est déjà occupé par le flux du script — lu via `/dev/tty`.)
 
+### 9.7. Configuration des Modèles LiteLLM par un Admin
+* **Spécification** : [`11-admin-litellm-model-config.md`](11-admin-litellm-model-config.md)
+* **Constat** : `charts/atelier/templates/infra/litellm-deployment.yaml` démarre LiteLLM sans aucun `model_list` — aucun mécanisme, aujourd'hui, ne permet à un admin de déclarer un provider/modèle en production sans `kubectl`.
+* **Fichiers** : `crates/api-server/src/llm_budget.rs`, `crates/api-server/src/routes.rs`, `dashboard/app/admin/llm/page.tsx`, `dashboard/lib/api-server.ts`, `charts/atelier/values.yaml`/`litellm-deployment.yaml` (variable `LITELLM_SALT_KEY`).
+  - [ ] **6.7.1** : Vérifier empiriquement contre l'instance LiteLLM de dev les verbes/routes admin exacts (`/model/new`, `/model/update`, `/model/delete`) avant d'écrire le moindre client.
+  - [ ] **6.7.2** : `LlmModel` gagne un `id` stable (préalable à `update`/`delete`, voir spec §3.2) ; trois nouvelles méthodes sur `LlmBudgetClient` + routes `POST`/`PATCH`/`DELETE` `/v1/admin/llm/models[/{id}]`, réservées à `ADMIN_ROLE`.
+  - [ ] **6.7.3** : `LITELLM_SALT_KEY` ajoutée au chart (générée aléatoirement par `scripts/install.sh` comme `LITELLM_MASTER_KEY`), garde-fou de démarrage si absente (spec §4.2).
+  - [ ] **6.7.4** : Formulaire d'ajout/édition/suppression dans `dashboard/app/admin/llm/page.tsx`, identifiants provider jamais réaffichés une fois enregistrés (write-only).
+
 ### 🧪 Tests & Preuves Attendues pour M6
 1. `helm lint charts/atelier` : Zéro erreur de syntaxe.
 2. `helm template atelier charts/atelier -f values-test.yaml` : Rendu valide de tous les manifests.
