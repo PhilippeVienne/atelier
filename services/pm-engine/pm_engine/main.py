@@ -319,11 +319,34 @@ async def _run_tool_call(deps: PmEngineDeps, call: dict) -> str:
     )
 
 
+async def _save_chat_turn(
+    deps: PmEngineDeps, user_sub: str, repo: str, query: str, answer: str
+) -> None:
+    """Persiste le tour user+assistant dans `pm_chat_messages` (tache
+    5.5.1, historique persistant) : appele apres coup, jamais sur le
+    chemin critique du streaming SSE — une panne d'ecriture ne doit jamais
+    empecher l'utilisateur de lire la reponse deja recue, seulement lui
+    couter la persistance de CE tour (journalise, pas leve)."""
+    if not answer:
+        # Reponse vide (erreur en cours de stream, connexion coupee...) :
+        # rien de coherent a rejouer au tour suivant.
+        return
+    try:
+        async with deps.db_pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.executemany(
+                "INSERT INTO pm_chat_messages (user_sub, repo, role, content) "
+                "VALUES ($1, $2, $3, $4)",
+                [(user_sub, repo, "user", query), (user_sub, repo, "assistant", answer)],
+            )
+    except Exception:  # voir docstring : jamais fatal, seulement journalise
+        logger.warning("echec de persistance du tour de chat PM (user=%s)", user_sub, exc_info=True)
+
+
 @app.post("/chat")
 async def chat(
     body: ChatRequest,
     request: Request,
-    _claims: Claims = Depends(require_auth),
+    claims: Claims = Depends(require_auth),
 ) -> StreamingResponse:
     """"Ask Project Manager" (tache 5.5.1) : RAG sur `project_memories`
     scope par tenant `atelier-pm-bot` (voir `pm_engine.rag`), puis reponse
@@ -333,7 +356,16 @@ async def chat(
     deja etabli cote BFF). Le LLM dispose aussi de l'outil
     `setup_mirror_project` ci-dessus ("Projets") : un premier appel
     non-streamant decide s'il l'invoque, seule la reponse finale en langage
-    naturel est ensuite streamee — voir `LlmClient.chat_with_tools`."""
+    naturel est ensuite streamee — voir `LlmClient.chat_with_tools`. Un
+    appel d'outil produit aussi deux evenements SSE dedies (`tool_call` puis
+    `tool_result`, "elements interactifs") pour que le Dashboard l'affiche
+    en direct plutot que de le laisser invisible jusqu'a ce que le LLM le
+    mentionne lui-meme dans son texte — voir `dashboard/app/pm/pm-chat.tsx`.
+    NON PERSISTES : `GET /chat/history` ne rejoue que le texte final de
+    chaque tour (meme limite assumee que `ChatRequest.history`), ces cartes
+    ne reapparaissent donc pas apres un rechargement de page. Le tour
+    complet (question + reponse finale) est persiste dans
+    `pm_chat_messages` (`GET /chat/history`) une fois le flux termine."""
     deps: PmEngineDeps = _require_deps(request)
 
     async def event_stream() -> AsyncIterator[bytes]:
@@ -359,6 +391,7 @@ async def chat(
             *[{"role": m.role, "content": m.content} for m in body.history],
             {"role": "user", "content": body.query},
         ]
+        answer = ""
         try:
             message = await deps.llm_client.chat_with_tools(
                 deps.chat_model, messages, tools=[SETUP_MIRROR_PROJECT_TOOL]
@@ -367,22 +400,75 @@ async def chat(
             if not tool_calls:
                 content = message.get("content") or ""
                 if content:
+                    answer = content
                     yield f"data: {json.dumps({'delta': content})}\n\n".encode()
             else:
                 messages.append(message)
                 for call in tool_calls:
+                    # Evenement SSE dedie (Jalon M5, "elements interactifs") :
+                    # avant cette carte, un appel d'outil restait invisible
+                    # tant que le LLM ne le racontait pas lui-meme dans son
+                    # texte final — le Dashboard ne peut afficher que ce
+                    # qu'il recoit explicitement, pas deviner un tool_call
+                    # execute silencieusement cote serveur.
+                    try:
+                        args = json.loads(call["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    # `id` (pas seulement `name`) identifie la carte cote
+                    # Dashboard : deux appels au MEME outil dans un seul tour
+                    # (rare mais permis par le protocole tool_calls) ne
+                    # doivent pas se faire ecraser l'un l'autre au moment de
+                    # rattacher le `tool_result` correspondant.
+                    yield (
+                        f"data: {json.dumps({'tool_call': {'id': call['id'], 'name': call['function']['name'], 'arguments': args}})}\n\n"
+                    ).encode()
                     result = await _run_tool_call(deps, call)
+                    yield (
+                        f"data: {json.dumps({'tool_result': {'id': call['id'], 'name': call['function']['name'], 'result': json.loads(result)}})}\n\n"
+                    ).encode()
                     messages.append(
                         {"role": "tool", "tool_call_id": call["id"], "content": result}
                     )
-                async for delta in deps.llm_client.chat_stream(deps.chat_model, messages):
+                async for delta in deps.llm_client.chat_stream(
+                    deps.chat_model, messages, tools=[SETUP_MIRROR_PROJECT_TOOL]
+                ):
+                    answer += delta
                     yield f"data: {json.dumps({'delta': delta})}\n\n".encode()
         except Exception as exc:  # noqa: BLE001 - traduit en evenement SSE d'erreur
             logger.warning("erreur pendant le streaming du chat PM: %s", exc)
             yield f"data: {json.dumps({'error': str(exc)})}\n\n".encode()
+        await _save_chat_turn(deps, claims.sub, body.repo, body.query, answer)
         yield b"data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/chat/history")
+async def chat_history(
+    request: Request,
+    repo: str = "",
+    claims: Claims = Depends(require_auth),
+) -> list[dict]:
+    """Historique persiste des tours de chat PM de L'UTILISATEUR COURANT
+    pour `repo` (tache 5.5.1) : consomme au montage de
+    `dashboard/app/pm/pm-chat.tsx` pour ne plus perdre la conversation a
+    chaque rechargement de page. Scope par `user_sub` (JWT), pas par
+    `pm_bot_subject` — voir la docstring de la migration
+    `pm_chat_messages` pour la raison (donnees personnelles, pas
+    partagees comme `project_memories`/`pm_reviews`)."""
+    deps: PmEngineDeps = _require_deps(request)
+    async with deps.db_pool.acquire() as conn:  # type: ignore[attr-defined]
+        rows = await conn.fetch(
+            "SELECT role, content, created_at FROM pm_chat_messages "
+            "WHERE user_sub = $1 AND repo = $2 ORDER BY created_at ASC",
+            claims.sub,
+            repo,
+        )
+    return [
+        {"role": row["role"], "content": row["content"], "created_at": row["created_at"].isoformat()}
+        for row in rows
+    ]
 
 
 @app.get("/reviews")

@@ -117,6 +117,18 @@ export async function proxyChat(
   });
 }
 
+/**
+ * Historique persiste des tours de chat PM de l'utilisateur courant pour
+ * `repo` (`GET /chat/history` cote pm-engine, tache 5.5.1) : sans lui, la
+ * conversation de `PmChat` (`useState` pur) disparaissait a chaque
+ * rechargement de page.
+ */
+export async function fetchChatHistory(repo: string): Promise<ChatMessage[]> {
+  const res = await call(`/chat/history?repo=${encodeURIComponent(repo)}`);
+  const rows = (await res.json()) as Array<{ role: "user" | "assistant"; content: string }>;
+  return rows.map((r) => ({ role: r.role, content: r.content }));
+}
+
 // --------------------------------------------------------------------------
 // Workflows (« mission control », suivi du pipeline PM en direct)
 // --------------------------------------------------------------------------
