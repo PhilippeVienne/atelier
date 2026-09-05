@@ -234,6 +234,14 @@ litellm:
   service:
     port: 4000
   masterKey: "change-me-litellm-master-key"
+  # Chiffre au repos les identifiants provider (cle API DeepSeek/Anthropic/...)
+  # d'un modele ajoute dynamiquement via /model/new (console d'admin, spec
+  # docs/specs/11-admin-litellm-model-config.md §4.2). Laissee au placeholder,
+  # LiteLLM stocke ces identifiants EN CLAIR dans sa base — le garde-fou
+  # cote atelier-api-server (ATELIER_LLM_SALT_KEY_CONFIGURED, voir
+  # apiserver-deployment.yaml) desactive alors la creation/modification de
+  # modele plutot que de laisser ce risque silencieux.
+  saltKey: "change-me-litellm-salt-key"
   defaultWorkshopBudgetUsd: 5.00
   resources:
     requests:

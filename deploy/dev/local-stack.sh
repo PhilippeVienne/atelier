@@ -250,20 +250,35 @@ done
 # --- 11. LLM Proxy (optionnel — voir deploy/dev/llm-proxy/README.md) -----
 LLM_PROXY_ADDR=""
 LLM_PROXY_AUTH_TOKEN=""
+LLM_SALT_KEY_CONFIGURED="false"
 if [ -n "${DEEPSEEK_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   log "LLM Proxy (LiteLLM)"
   kubectl create configmap atelier-llm-proxy-config \
     --from-file=config.yaml=deploy/dev/llm-proxy/config.yaml \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   LLM_PROXY_AUTH_TOKEN="${LITELLM_MASTER_KEY:-sk-atelier-llm-proxy-dev}"
+  # Persistee sur disque plutot que regeneree a chaque run : un salt qui
+  # change rendrait illisibles les identifiants provider deja chiffres par
+  # une precedente instance LiteLLM (spec
+  # docs/specs/11-admin-litellm-model-config.md §4.2).
+  SALT_KEY_FILE="$STACK_DIR/litellm-salt-key"
+  if [ -f "$SALT_KEY_FILE" ]; then
+    LLM_SALT_KEY="$(cat "$SALT_KEY_FILE")"
+  else
+    LLM_SALT_KEY="$(openssl rand -hex 24)"
+    umask 077
+    printf '%s' "$LLM_SALT_KEY" > "$SALT_KEY_FILE"
+  fi
   kubectl create secret generic atelier-llm-proxy-dev \
     --from-literal=DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-unset}" \
     --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-unset}" \
     --from-literal=LITELLM_MASTER_KEY="$LLM_PROXY_AUTH_TOKEN" \
+    --from-literal=LITELLM_SALT_KEY="$LLM_SALT_KEY" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -f deploy/dev/llm-proxy/dev-deployment.yaml >/dev/null
   kubectl wait --for=condition=Available deployment/atelier-llm-proxy --timeout=90s >/dev/null
   LLM_PROXY_ADDR="atelier-llm-proxy.default.svc.cluster.local:4000"
+  LLM_SALT_KEY_CONFIGURED="true"
 else
   log "LLM Proxy: ignore (DEEPSEEK_API_KEY/ANTHROPIC_API_KEY absentes)"
 fi
@@ -361,6 +376,10 @@ export ATELIER_FORGEJO_ADMIN_TOKEN="$FORGEJO_ADMIN_TOKEN"
 # LLM Proxy (optionnel, voir deploy/dev/llm-proxy/README.md).
 export ATELIER_LLM_PROXY_ADDR="$LLM_PROXY_ADDR"
 export ATELIER_LLM_PROXY_AUTH_TOKEN="$LLM_PROXY_AUTH_TOKEN"
+# Garde-fou creation/modification de modele (spec
+# docs/specs/11-admin-litellm-model-config.md §4.2, crate::routes) : reflete
+# la meme condition que le chart (ATELIER_LLM_SALT_KEY_CONFIGURED).
+export ATELIER_LLM_SALT_KEY_CONFIGURED="$LLM_SALT_KEY_CONFIGURED"
 
 # api-server/dashboard, via l'ingress Traefik (necessite /etc/hosts a jour).
 export ATELIER_API_SERVER_URL=http://api.atelier.local

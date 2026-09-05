@@ -16,10 +16,15 @@ kubectl create configmap atelier-llm-proxy-config \
 # 2. Secret (cles reelles — jamais commitees). LITELLM_MASTER_KEY est le
 #    jeton que Claude Code presentera ensuite comme ANTHROPIC_AUTH_TOKEN ;
 #    n'importe quelle chaine suffit pour un cluster de dev non expose.
+#    LITELLM_SALT_KEY chiffre au repos les identifiants provider ajoutes
+#    via la console d'admin (/model/new, spec
+#    docs/specs/11-admin-litellm-model-config.md §4.2) — sans elle, LiteLLM
+#    les stocke en clair dans sa base.
 kubectl create secret generic atelier-llm-proxy-dev \
   --from-literal=DEEPSEEK_API_KEY="<ta cle DeepSeek>" \
   --from-literal=ANTHROPIC_API_KEY="<ta cle Anthropic, pour sonnet-premium>" \
-  --from-literal=LITELLM_MASTER_KEY="sk-atelier-llm-proxy-dev"
+  --from-literal=LITELLM_MASTER_KEY="sk-atelier-llm-proxy-dev" \
+  --from-literal=LITELLM_SALT_KEY="$(openssl rand -hex 24)"
 
 # 3. Deployer
 kubectl apply -f deploy/dev/llm-proxy/dev-deployment.yaml

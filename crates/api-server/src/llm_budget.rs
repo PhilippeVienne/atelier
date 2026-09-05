@@ -419,12 +419,16 @@ impl LlmBudgetClient {
     /// Modifie un modele existant (`POST /model/update`, cible par
     /// `model_info.id` dans le corps — verifie empiriquement, spec 11 §3.1).
     ///
-    /// `api_key: None` omet le champ du payload envoye a LiteLLM plutot que
-    /// d'y mettre une chaine vide : conforme a la convention write-only de la
-    /// console (spec 11 §4.1, jamais reafficher un identifiant enregistre),
-    /// mais le comportement resultant cote LiteLLM (conserve l'ancienne
-    /// valeur vs. l'efface) n'a PAS ete verifie empiriquement — seul le cas
-    /// "toutes les valeurs fournies" l'a ete. A verifier avant `6.7.4`.
+    /// `api_key: None` omet le champ du payload envoye a LiteLLM.
+    ///
+    /// ATTENTION, verifie empiriquement contre le cluster de dev (spec 11
+    /// §3.1) : `/model/update` REMPLACE integralement `litellm_params`, donc
+    /// omettre `api_key` ici EFFACE la cle existante cote LiteLLM (ne la
+    /// preserve PAS) — et `GET /model/info` ne la rend jamais, donc cet
+    /// appelant n'a aucun moyen de la relire pour la renvoyer. Un appel avec
+    /// `api_key: None` sur un modele qui EN a deja une le rend inutilisable.
+    /// Le formulaire d'edition (`6.7.4`) doit soit toujours exiger la cle,
+    /// soit garder sa propre copie a renvoyer — voir spec 11 §5.
     pub async fn update_model(
         &self,
         id: &str,

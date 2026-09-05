@@ -76,6 +76,29 @@ spec:
             - name: OPENBAO_ADDR
               value: {{ .Values.openbao.external.url | quote }}
             {{- end }}
+            {{- if .Values.litellm.enabled }}
+            # Console d'admin LiteLLM (/v1/admin/llm*, crate::llm_budget) :
+            # adresse BARE host:port (sans schema), meme convention que
+            # crates/controller/src/reconcile.rs.
+            - name: ATELIER_LLM_PROXY_ADDR
+              value: "{{ include "atelier.componentName" (dict "root" $ "component" "litellm") }}:{{ .Values.litellm.service.port }}"
+            - name: ATELIER_LLM_PROXY_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm-auth") }}
+                  key: LITELLM_MASTER_KEY
+            {{- if ne .Values.litellm.saltKey "change-me-litellm-salt-key" }}
+            # Garde-fou (spec docs/specs/11-admin-litellm-model-config.md
+            # §4.2) : sans LITELLM_SALT_KEY reellement positionnee, LiteLLM
+            # stockerait les identifiants provider EN CLAIR. Cette variable
+            # n'est presente que si l'operateur a change le placeholder
+            # (scripts/install.sh le fait automatiquement) ; les routes de
+            # creation/modification de modele restent desactivees sinon
+            # (voir crate::routes::admin_llm_create_model).
+            - name: ATELIER_LLM_SALT_KEY_CONFIGURED
+              value: "true"
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := .Values.apiServer.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

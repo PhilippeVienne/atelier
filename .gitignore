@@ -17,6 +17,8 @@ deploy/dev/kanidm/data/
 deploy/dev/local-stack/env.sh
 # jeton ServiceAccount de l'api-server hors cluster (24 h, regenere par le script)
 deploy/dev/local-stack/api-server-sa-token
+# LITELLM_SALT_KEY persistee entre deux runs de local-stack.sh (secret local)
+deploy/dev/local-stack/litellm-salt-key
 
 # binaires/images Firecracker de dev (gros fichiers, recuperes via
 # deploy/dev/firecracker/fetch-test-assets.sh)

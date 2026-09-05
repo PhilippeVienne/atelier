@@ -49,6 +49,14 @@ pub struct AppState {
     /// absents : l'endpoint repond alors 503, plutot que d'afficher un
     /// « 0,00 $ » qui se ferait passer pour une mesure.
     pub llm_budget: Option<std::sync::Arc<crate::llm_budget::LlmBudgetClient>>,
+    /// Garde-fou pour la creation/modification de modele
+    /// (`docs/specs/11-admin-litellm-model-config.md` §4.2) : sans
+    /// `LITELLM_SALT_KEY` reellement positionnee sur le deploiement LiteLLM,
+    /// les identifiants provider (cle API DeepSeek/Anthropic/...) seraient
+    /// stockes EN CLAIR par LiteLLM. `false` par defaut — cette variable
+    /// n'existe que si l'operateur a change le placeholder du chart
+    /// (`ATELIER_LLM_SALT_KEY_CONFIGURED`, voir `apiserver-deployment.yaml`).
+    pub llm_salt_key_configured: bool,
     /// Backend S3 pour l'archivage des sessions terminal (Jalon M2, voir
     /// `crate::session_recorder`). `None` si `S3_ENDPOINT` est absent :
     /// l'archivage est alors simplement desactive, aucune session n'est
@@ -493,9 +501,9 @@ struct UpdateLlmModelRequest {
     model_name: String,
     target: String,
     api_base: Option<String>,
-    /// `None` : ne change pas l'identifiant enregistre (voir
-    /// `LlmBudgetClient::update_model`, comportement cote LiteLLM non
-    /// encore verifie empiriquement dans ce cas).
+    /// `None` : EFFACE l'identifiant enregistre plutot que de le preserver
+    /// — verifie empiriquement, voir `LlmBudgetClient::update_model`. Le
+    /// client (formulaire `6.7.4`) doit en tenir compte.
     api_key: Option<String>,
 }
 
@@ -510,6 +518,12 @@ async fn admin_llm_create_model(
     if !claims.has_role(ADMIN_ROLE) {
         return Err(ApiError::forbidden(
             "reserve aux administrateurs de l'instance",
+        ));
+    }
+    if !state.llm_salt_key_configured {
+        return Err(ApiError::service_unavailable(
+            "LITELLM_SALT_KEY non configuree sur cette instance : LiteLLM stockerait les \
+             identifiants provider en clair (docs/specs/11-admin-litellm-model-config.md §4.2)",
         ));
     }
     let client = state.llm_budget.as_ref().ok_or_else(|| {
@@ -528,7 +542,9 @@ async fn admin_llm_create_model(
 }
 
 /// Modifie un modele existant. `api_key` absent du corps = identifiant
-/// inchange (le formulaire ne le reaffiche jamais, spec §4.1).
+/// EFFACE cote LiteLLM (verifie empiriquement, voir
+/// `LlmBudgetClient::update_model`) — PAS "inchange". A l'appelant de
+/// toujours fournir une valeur s'il veut la conserver.
 async fn admin_llm_update_model(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -538,6 +554,12 @@ async fn admin_llm_update_model(
     if !claims.has_role(ADMIN_ROLE) {
         return Err(ApiError::forbidden(
             "reserve aux administrateurs de l'instance",
+        ));
+    }
+    if !state.llm_salt_key_configured {
+        return Err(ApiError::service_unavailable(
+            "LITELLM_SALT_KEY non configuree sur cette instance : LiteLLM stockerait les \
+             identifiants provider en clair (docs/specs/11-admin-litellm-model-config.md §4.2)",
         ));
     }
     let client = state.llm_budget.as_ref().ok_or_else(|| {

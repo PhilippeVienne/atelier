@@ -237,12 +237,23 @@ if [ -f "$CREDENTIALS_FILE" ]; then
   log "identifiants deja generes ($CREDENTIALS_FILE), reutilises."
   # shellcheck disable=SC1090
   source "$CREDENTIALS_FILE"
+  # Installation prealable a l'ajout de LITELLM_SALT_KEY (spec
+  # docs/specs/11-admin-litellm-model-config.md §4.2) : la generer
+  # maintenant plutot que de laisser une valeur vide passer pour
+  # "configuree" cote chart (voir apiserver-deployment.yaml).
+  if [ -z "${LITELLM_SALT_KEY:-}" ]; then
+    log "LITELLM_SALT_KEY absente des identifiants existants, generation..."
+    LITELLM_SALT_KEY="$(openssl rand -hex 24)"
+    umask 077
+    printf 'LITELLM_SALT_KEY="%s"\n' "$LITELLM_SALT_KEY" >> "$CREDENTIALS_FILE"
+  fi
 else
   log "generation des identifiants..."
   POSTGRES_ADMIN_PASSWORD="$(openssl rand -hex 24)"
   POSTGRES_MIGRATOR_PASSWORD="$(openssl rand -hex 24)"
   KEYCLOAK_ADMIN_PASSWORD="$(openssl rand -hex 24)"
   LITELLM_MASTER_KEY="$(openssl rand -hex 24)"
+  LITELLM_SALT_KEY="$(openssl rand -hex 24)"
   umask 077
   cat > "$CREDENTIALS_FILE" <<EOF
 # Genere par scripts/install.sh le $(date -u +%Y-%m-%dT%H:%M:%SZ) — a garder confidentiel.
@@ -250,6 +261,7 @@ POSTGRES_ADMIN_PASSWORD="$POSTGRES_ADMIN_PASSWORD"
 POSTGRES_MIGRATOR_PASSWORD="$POSTGRES_MIGRATOR_PASSWORD"
 KEYCLOAK_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD"
 LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY"
+LITELLM_SALT_KEY="$LITELLM_SALT_KEY"
 EOF
   chmod 600 "$CREDENTIALS_FILE"
 fi
@@ -284,6 +296,7 @@ keycloak:
 
 litellm:
   masterKey: "$LITELLM_MASTER_KEY"
+  saltKey: "$LITELLM_SALT_KEY"
 
 openbao:
   devMode: $([ "$OPENBAO_PRODUCTION" = "true" ] && echo "false" || echo "true")

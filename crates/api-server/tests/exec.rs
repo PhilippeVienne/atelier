@@ -218,6 +218,7 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         openbao_addr: None,
         litellm_addr: None,
         llm_budget: None,
+        llm_salt_key_configured: false,
         session_auth: None,
         storage: None,
     };

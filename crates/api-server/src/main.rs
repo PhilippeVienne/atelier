@@ -44,6 +44,13 @@ async fn main() -> anyhow::Result<()> {
                 addr, key,
             ))
         });
+    // Garde-fou (spec docs/specs/11-admin-litellm-model-config.md §4.2) :
+    // n'active la creation/modification de modele que si l'operateur a
+    // reellement configure LITELLM_SALT_KEY (le chart ne pose cette variable
+    // que dans ce cas, voir apiserver-deployment.yaml).
+    let llm_salt_key_configured = std::env::var("ATELIER_LLM_SALT_KEY_CONFIGURED")
+        .map(|v| v == "true")
+        .unwrap_or(false);
     let session_auth = openbao_addr
         .clone()
         .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
@@ -58,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
             openbao_addr,
             litellm_addr,
             llm_budget,
+            llm_salt_key_configured,
             session_auth,
             storage,
         },
