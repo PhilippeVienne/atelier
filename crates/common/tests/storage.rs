@@ -161,3 +161,62 @@ async fn upload_image_cache_file_is_retrievable_with_the_conventional_key() {
         eprintln!("nettoyage de l'objet de test echoue (sans impact sur le test) : {err:#}");
     }
 }
+
+/// Tache 8.4 (spec `docs/specs/13-image-cache-offload.md`) : `vm-supervisor`
+/// televerse ses fichiers de snapshot vers S3 et les retelecharge apres une
+/// eviction locale. Verifie le cycle complet ecriture-suppression-locale-
+/// retelechargement, pas seulement l'upload isole.
+#[tokio::test]
+async fn upload_snapshot_file_survives_local_eviction_via_download() {
+    let Ok(backend) = S3StorageBackend::from_env() else {
+        eprintln!("configuration S3 partielle/invalide, test ignore");
+        return;
+    };
+    let Some(backend) = backend else {
+        eprintln!("S3_ENDPOINT absent, test ignore (voir l'en-tete de ce fichier)");
+        return;
+    };
+    let bucket_snapshots =
+        std::env::var("S3_BUCKET_SNAPSHOTS").expect("S3_BUCKET_SNAPSHOTS (verifie plus haut)");
+
+    let payload = deterministic_session_payload(256 * 1024);
+    let expected_sha256 = sha256_hex(&payload);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("horloge systeme")
+        .as_nanos();
+    let prefix = format!("snapshots/default_storage-test-{nanos}");
+
+    let local_path = std::env::temp_dir().join(format!("atelier-snapshot-test-{nanos}.state"));
+    tokio::fs::File::create(&local_path)
+        .await
+        .expect("creation du fichier local")
+        .write_all(&payload)
+        .await
+        .expect("ecriture du fichier local");
+
+    backend
+        .upload_snapshot_file(&prefix, "snapshot.state", &local_path)
+        .await
+        .expect("televersement du snapshot");
+
+    // Simule une eviction locale (tache 8.5) : le fichier local disparait,
+    // seule la copie S3 subsiste.
+    tokio::fs::remove_file(&local_path).await.ok();
+    assert!(!local_path.exists());
+
+    backend
+        .download_snapshot_to_file(&prefix, "snapshot.state", &local_path)
+        .await
+        .expect("retelechargement du snapshot apres eviction locale");
+    let restored = tokio::fs::read(&local_path)
+        .await
+        .expect("lecture du fichier restaure");
+    assert_eq!(sha256_hex(&restored), expected_sha256);
+
+    tokio::fs::remove_file(&local_path).await.ok();
+    let key = format!("{prefix}/snapshot.state");
+    if let Err(err) = backend.delete_object(&bucket_snapshots, &key).await {
+        eprintln!("nettoyage de l'objet de test echoue (sans impact sur le test) : {err:#}");
+    }
+}

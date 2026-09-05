@@ -1567,6 +1567,35 @@ async fn ensure_parent_pod(
                             cpu_to_vcpu_count(&workshop.spec.resources.cpu)
                                 .map(|vcpus| env_var("ATELIER_VM_VCPU_COUNT", &vcpus.to_string())),
                         )
+                        // Offload S3 des snapshots (spec docs/specs/13-image-
+                        // cache-offload.md, tache 8.4) : meme retransmission
+                        // de `ctx.s3` que pour le Job image-builder (8.3),
+                        // avec le meme garde-fou `s3_pod_endpoint`. Prefixe
+                        // de cle S3 = meme convention que le repertoire
+                        // local (`storage::snapshot_cache_subdir`), pour que
+                        // `vm-supervisor` n'ait jamais besoin de connaitre
+                        // `ns`/`name` lui-meme — il ne recoit qu'un chemin
+                        // local et, desormais, un prefixe de cle, exactement
+                        // comme `ATELIER_VM_SNAPSHOT_DIR` deja transmis tel
+                        // quel ci-dessus.
+                        .chain(ctx.s3.iter().flat_map(|s3| {
+                            vec![
+                                env_var(
+                                    "S3_ENDPOINT",
+                                    ctx.s3_pod_endpoint.as_deref().unwrap_or(&s3.endpoint),
+                                ),
+                                env_var("S3_REGION", &s3.region),
+                                env_var("S3_BUCKET_SESSIONS", &s3.bucket_sessions),
+                                env_var("S3_BUCKET_SNAPSHOTS", &s3.bucket_snapshots),
+                                env_var("S3_FORCE_PATH_STYLE", &s3.force_path_style.to_string()),
+                                env_var("AWS_ACCESS_KEY_ID", &s3.access_key_id),
+                                env_var("AWS_SECRET_ACCESS_KEY", &s3.secret_access_key),
+                                env_var(
+                                    "ATELIER_VM_SNAPSHOT_S3_PREFIX",
+                                    &storage::snapshot_cache_subdir(ns, name),
+                                ),
+                            ]
+                        }))
                         .collect::<Vec<_>>(),
                     ),
                     volume_mounts: Some(vec![cache_mount, jailer_mount.clone()]),

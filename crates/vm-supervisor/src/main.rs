@@ -179,6 +179,58 @@ async fn main() -> anyhow::Result<()> {
     let snapshot_state_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.state"));
     let snapshot_mem_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.mem"));
 
+    // Repli S3 (spec docs/specs/13-image-cache-offload.md, tache 8.4) :
+    // le PVC local est un cache a eviction (8.5), pas la source de verite —
+    // si les fichiers de snapshot en ont ete evinces mais qu'une copie
+    // existe sur S3 (televersee par `snapshot_and_publish` ci-dessous a la
+    // suspension precedente), la retelecharger AVANT le `match` qui suit,
+    // pour qu'il la trouve comme si elle n'avait jamais quitte le disque.
+    // Best effort et jamais bloquant : un echec ici (S3 non configure,
+    // injoignable, ou simplement aucun snapshot a restaurer) laisse le
+    // `match` suivant retomber sur son comportement actuel (boot a froid).
+    if let (Some(state), Some(mem), Some(prefix)) = (
+        &snapshot_state_path,
+        &snapshot_mem_path,
+        std::env::var("ATELIER_VM_SNAPSHOT_S3_PREFIX").ok(),
+    ) {
+        if !state.exists() || !mem.exists() {
+            match atelier_common::storage::S3StorageBackend::from_env() {
+                Ok(Some(storage)) => {
+                    let state_ok = storage
+                        .download_snapshot_to_file(&prefix, "snapshot.state", state)
+                        .await;
+                    let mem_ok = storage
+                        .download_snapshot_to_file(&prefix, "snapshot.mem", mem)
+                        .await;
+                    match (state_ok, mem_ok) {
+                        (Ok(()), Ok(())) => {
+                            tracing::info!(%prefix, "snapshot files restored from S3 after local cache eviction");
+                        }
+                        (state_res, mem_res) => {
+                            // Partiel = inutilisable : un `snapshot.state`
+                            // sans son `snapshot.mem` (ou l'inverse) ferait
+                            // echouer `Vm::restore_persisted` de toute
+                            // facon — supprime les deux pour retomber
+                            // proprement sur le boot a froid ci-dessous.
+                            if let Err(err) = state_res {
+                                tracing::warn!(%err, %prefix, "telechargement S3 de snapshot.state echoue");
+                            }
+                            if let Err(err) = mem_res {
+                                tracing::warn!(%err, %prefix, "telechargement S3 de snapshot.mem echoue");
+                            }
+                            tokio::fs::remove_file(state).await.ok();
+                            tokio::fs::remove_file(mem).await.ok();
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(%err, "configuration S3 invalide, repli sur snapshot ignore");
+                }
+            }
+        }
+    }
+
     let mut vm = match (&snapshot_state_path, &snapshot_mem_path) {
         (Some(state), Some(mem)) if state.exists() && mem.exists() => {
             tracing::info!(?state, ?mem, "restoring microVM from persisted snapshot");
@@ -342,6 +394,35 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
     tokio::fs::copy(&snapshot.mem_file_path, &tmp_mem).await?;
     tokio::fs::rename(&tmp_state, &published_state).await?;
     tokio::fs::rename(&tmp_mem, &published_mem).await?;
+
+    // Offload S3 best-effort (spec docs/specs/13-image-cache-offload.md,
+    // tache 8.4) : ne bloque jamais la suspension, seule la publication
+    // locale ci-dessus est strictement necessaire pour une reprise
+    // immediate. `ATELIER_VM_SNAPSHOT_S3_PREFIX` absente = pas de prefixe
+    // calculable, offload simplement saute (meme garde que `image-builder`,
+    // tache 8.3).
+    if let Ok(prefix) = std::env::var("ATELIER_VM_SNAPSHOT_S3_PREFIX") {
+        match atelier_common::storage::S3StorageBackend::from_env() {
+            Ok(Some(storage)) => {
+                if let Err(err) = storage
+                    .upload_snapshot_file(&prefix, "snapshot.state", &published_state)
+                    .await
+                {
+                    tracing::warn!(%err, %prefix, "televersement S3 de snapshot.state echoue, ignore");
+                }
+                if let Err(err) = storage
+                    .upload_snapshot_file(&prefix, "snapshot.mem", &published_mem)
+                    .await
+                {
+                    tracing::warn!(%err, %prefix, "televersement S3 de snapshot.mem echoue, ignore");
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(%err, "configuration S3 invalide, offload du snapshot ignore");
+            }
+        }
+    }
 
     let mut hasher = Sha256::new();
     hasher.update(tokio::fs::read(&published_state).await?);

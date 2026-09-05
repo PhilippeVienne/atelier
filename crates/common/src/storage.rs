@@ -144,8 +144,6 @@ pub fn config_from_env() -> Result<Option<S3Config>> {
 pub struct S3StorageBackend {
     client: S3Client,
     bucket_sessions: String,
-    #[allow(dead_code)]
-    // branche par la tache 8.4 (docs/specs/13-image-cache-offload.md), pas encore
     bucket_snapshots: String,
     bucket_image_cache: Option<String>,
 }
@@ -207,6 +205,52 @@ impl S3StorageBackend {
             format!("ouverture de {path:?} pour televersement vers le cache d'images S3")
         })?;
         self.upload_stream(bucket, &key, Box::pin(file)).await
+    }
+
+    /// Cle S3 d'un fichier de snapshot Firecracker (`snapshot.state`/
+    /// `snapshot.mem`) sous son prefixe (meme convention que le repertoire
+    /// local, `crates/controller/src/storage.rs::snapshot_cache_subdir` —
+    /// `vm-supervisor` recoit ce prefixe deja calcule, voir
+    /// `ATELIER_VM_SNAPSHOT_S3_PREFIX`, il n'a besoin de connaitre ni `ns`
+    /// ni `name` lui-meme).
+    fn snapshot_key(prefix: &str, filename: &str) -> String {
+        format!("{prefix}/{filename}")
+    }
+
+    /// Televerse un fichier de snapshot local vers `S3_BUCKET_SNAPSHOTS`
+    /// (tache 8.4, spec `docs/specs/13-image-cache-offload.md`).
+    pub async fn upload_snapshot_file(
+        &self,
+        prefix: &str,
+        filename: &str,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let key = Self::snapshot_key(prefix, filename);
+        let file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("ouverture de {path:?} pour televersement du snapshot"))?;
+        self.upload_stream(&self.bucket_snapshots, &key, Box::pin(file))
+            .await
+    }
+
+    /// Retelecharge un fichier de snapshot depuis `S3_BUCKET_SNAPSHOTS` vers
+    /// un chemin local (tache 8.4) — utilise par `vm-supervisor` quand le
+    /// PVC local a ete evince (8.5) mais qu'une reprise est demandee.
+    pub async fn download_snapshot_to_file(
+        &self,
+        prefix: &str,
+        filename: &str,
+        dest: &std::path::Path,
+    ) -> Result<()> {
+        let key = Self::snapshot_key(prefix, filename);
+        let mut stream = self.download_stream(&self.bucket_snapshots, &key).await?;
+        let mut file = tokio::fs::File::create(dest)
+            .await
+            .with_context(|| format!("creation de {dest:?} pour reception du snapshot"))?;
+        tokio::io::copy(&mut stream, &mut file)
+            .await
+            .with_context(|| format!("ecriture de {dest:?} depuis le flux S3"))?;
+        Ok(())
     }
 
     /// Charge la configuration depuis l'environnement et construit le
