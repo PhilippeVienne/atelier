@@ -49,7 +49,14 @@ Cohérent avec l'existant plutôt qu'une nouvelle brique : les nouveaux endpoint
 
 Chacun : `claims.has_role(ADMIN_ROLE)` sinon `403` (identique à `admin_llm_overview`/`admin_llm_spend`, `crates/api-server/src/routes.rs:417-421,463-467`).
 
-`LlmBudgetClient` gagne trois méthodes miroir des endpoints admin LiteLLM correspondants : à ce stade, **noms d'endpoints/verbes exacts (`POST /model/new`, `POST /model/update`, `POST /model/delete`) donnés sous réserve** — LiteLLM ne suit pas une convention REST stricte pour ses mutations (tout est `POST`, y compris la suppression, avec le payload qui porte l'identité). **À vérifier empiriquement contre l'instance LiteLLM de dev (`deploy/dev/llm-proxy`) avant d'écrire le moindre code**, même principe que le reste du projet (`docs/architecture/pieges.md`) — ne jamais coder contre une doc non re-vérifiée contre le vrai service.
+`LlmBudgetClient` gagne trois méthodes miroir des endpoints admin LiteLLM correspondants. **Vérifié empiriquement contre l'instance de dev réelle (`atelier-llm-proxy`, cluster `kind-atelier-dev`)** — LiteLLM ne suit effectivement pas une convention REST stricte pour ses mutations : tout est `POST`, y compris la suppression, avec le payload qui porte l'identité :
+
+- `POST /model/new` — body `{"model_name", "litellm_params": {"model", "api_base"?, "api_key"}}`. Réponse `200` avec `model_info.id` (UUID généré par LiteLLM) — c'est cet `id` qui sert de cible à `update`/`delete` (voir §3.2).
+- `POST /model/update` — même forme de body que `/model/new`, plus `"model_info": {"id": "<uuid>"}` pour cibler l'entrée. Réponse `200`, mêmes champs.
+- `POST /model/delete` — body `{"id": "<uuid>"}` seul. Réponse `200` `{"message": "Model: <uuid> deleted successfully"}`.
+- **Précondition bloquante découverte en testant** : ces trois routes renvoient `500 {"error": {"message": "Set 'STORE_MODEL_IN_DB=True' in your env to enable this feature."}}` tant que la variable d'environnement `STORE_MODEL_IN_DB` n'est pas positionnée à `True` sur le déploiement LiteLLM — **absente aujourd'hui à la fois de `charts/atelier/templates/infra/litellm-deployment.yaml` et de `deploy/dev/llm-proxy/dev-deployment.yaml`**. À ajouter dans les deux (nouvelle tâche, voir 6.7.1bis) avant que `6.7.2` ait le moindre effet observable.
+- **Persistance vérifiée** : un modèle créé via `/model/new` (avec `STORE_MODEL_IN_DB=True`) survit à la suppression et recréation du pod (`kubectl delete pod` + rollout) — confirme l'hypothèse du §5 (avantage de l'option DB retenue en §4.2).
+- Note secondaire observée, non encore expliquée : la réponse de `/model/new`/`/model/update` renvoie `litellm_params.model`/`api_key`/`api_base` sous forme de chaînes qui ressemblent à du chiffré, alors que `LITELLM_SALT_KEY` n'est positionnée nulle part sur cette instance de dev — à re-vérifier avant de conclure quoi que ce soit sur le risque "stockage en clair sans salt key" du §4.2 (peut-être un chiffrement par défaut avec `LITELLM_MASTER_KEY` en l'absence de salt dédiée).
 
 ### 3.2. `LlmModel` : ajout d'un identifiant stable
 
