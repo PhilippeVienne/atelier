@@ -94,10 +94,21 @@ async fn main() -> anyhow::Result<()> {
     let admin_addr = std::env::var("ATELIER_NET_PROXY_ADMIN_ADDR")
         .unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_string());
 
+    // Tache 12.2 : cle DERIVEE par campagne, posee par le controller
+    // UNIQUEMENT si `Workshop.spec.campaign_id` est renseigne ET la
+    // fonctionnalite activee globalement (voir `crate::proxy::EgressConfig`
+    // et `crate::ingress`). Declaree ici (avant `ingress::spawn_from_env`,
+    // qui l'utilise cote RECEPTEUR) plutot que plus bas avec les autres
+    // champs d'`EgressConfig` (cote EMETTEUR).
+    let squad_token_key: Option<Arc<str>> = std::env::var("ATELIER_SQUAD_TOKEN_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(Arc::from);
+
     // Services exportes vers les autres Workshops de la campagne (tache
     // 12.1) : relais TCP independants, pas de dependance sur le reste de
     // ce `main` (voir la doc de tete de `crate::ingress`).
-    ingress::spawn_from_env(Arc::clone(&vm_addr));
+    ingress::spawn_from_env(Arc::clone(&vm_addr), squad_token_key.clone());
 
     let allowlist: Arc<RwLock<Vec<String>>> =
         Arc::new(RwLock::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST")));
@@ -165,6 +176,9 @@ async fn main() -> anyhow::Result<()> {
     // Detection d'anomalie : active des que `ATELIER_VM_CONTROL_ADDR`
     // designe le canal de controle de `vm-supervisor` (meme pod).
     let anomaly = Some(std::sync::Arc::new(anomaly::AnomalyDetector::from_env()));
+    let workshop_name: Arc<str> = std::env::var("ATELIER_WORKSHOP_NAME")
+        .unwrap_or_default()
+        .into();
     let egress_config = EgressConfig {
         allowlist,
         upstream: upstream_proxy,
@@ -173,6 +187,8 @@ async fn main() -> anyhow::Result<()> {
         identity_proxy,
         simulator: Arc::clone(&simulator),
         anomaly,
+        squad_token_key,
+        workshop_name,
     };
 
     let control_router = portforward::router(portforward::PortForwardState {

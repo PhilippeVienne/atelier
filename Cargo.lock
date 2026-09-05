@@ -308,6 +308,8 @@ dependencies = [
  "async-trait",
  "aws-sdk-s3",
  "bytes",
+ "hex",
+ "hmac 0.12.1",
  "k8s-openapi",
  "kube",
  "opentelemetry",

@@ -36,6 +36,7 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         s3: None,
         s3_pod_endpoint: None,
         ca_bundle_configmap: None,
+        squad_token_signing_key: None,
     }
 }
 
@@ -442,7 +443,10 @@ async fn apply_wires_exported_services_squad_targets_and_campaign_network_policy
     let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
     let services: Api<Service> = Api::namespaced(client.clone(), ns);
     let policies: Api<NetworkPolicy> = Api::namespaced(client.clone(), ns);
-    let ctx = ctx_without_openbao(client.clone());
+    let ctx = ReconcileCtx {
+        squad_token_signing_key: Some("global-test-signing-secret".to_string()),
+        ..ctx_without_openbao(client.clone())
+    };
     let campaign_id = unique_name("campaign");
 
     // Workshop "backend" : expose "api" sur :8080, meme campagne.
@@ -512,6 +516,23 @@ async fn apply_wires_exported_services_squad_targets_and_campaign_network_policy
         "la cible doit etre resolue en ClusterIP REEL, jamais l'alias lui-meme"
     );
 
+    // Tache 12.2 : les DEUX Workshops de la campagne doivent recevoir la
+    // MEME cle derivee (meme campaign_id, meme secret global de signature)
+    // — c'est ce qui permet au frontend d'emettre un jeton que le backend
+    // peut verifier.
+    let frontend_squad_key_env = frontend_env
+        .iter()
+        .find(|e| e.name == "ATELIER_SQUAD_TOKEN_KEY")
+        .expect("ATELIER_SQUAD_TOKEN_KEY doit etre transmise au net-proxy du frontend");
+    let expected_squad_key = atelier_common::squad_token::derive_campaign_key(
+        "global-test-signing-secret",
+        &campaign_id,
+    );
+    assert_eq!(
+        frontend_squad_key_env.value.as_deref(),
+        Some(expected_squad_key.as_str())
+    );
+
     // Le pod backend, lui, doit porter ATELIER_EXPORTED_SERVICES et les
     // labels de campagne (selectionnes par la NetworkPolicy ci-dessous).
     let backend_pod = pods
@@ -534,6 +555,18 @@ async fn apply_wires_exported_services_squad_targets_and_campaign_network_policy
         .find(|e| e.name == "ATELIER_EXPORTED_SERVICES")
         .expect("ATELIER_EXPORTED_SERVICES doit etre transmise au net-proxy du backend");
     assert_eq!(exported_env.value.as_deref(), Some("api=8080"));
+    let backend_squad_key_env = backend_net_proxy
+        .env
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|e| e.name == "ATELIER_SQUAD_TOKEN_KEY")
+        .expect("ATELIER_SQUAD_TOKEN_KEY doit etre transmise au net-proxy du backend");
+    assert_eq!(
+        backend_squad_key_env.value.as_deref(),
+        Some(expected_squad_key.as_str()),
+        "meme cle derivee des deux cotes d'une meme campagne"
+    );
     let backend_labels = backend_pod.metadata.labels.clone().unwrap_or_default();
     assert_eq!(
         backend_labels.get("atelier.dev/campaign-id"),
@@ -1211,6 +1244,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         s3: None,
         s3_pod_endpoint: None,
         ca_bundle_configmap: None,
+        squad_token_signing_key: None,
     };
 
     workshops
@@ -1361,6 +1395,7 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         s3: None,
         s3_pod_endpoint: None,
         ca_bundle_configmap: None,
+        squad_token_signing_key: None,
     };
 
     workshops
@@ -1521,6 +1556,7 @@ async fn cleanup_tolerates_an_unreachable_litellm() {
         s3: None,
         s3_pod_endpoint: None,
         ca_bundle_configmap: None,
+        squad_token_signing_key: None,
     };
 
     workshops

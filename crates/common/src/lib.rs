@@ -1,5 +1,6 @@
 pub mod crd;
 pub mod openbao_client;
+pub mod squad_token;
 pub mod status;
 pub mod storage;
 pub mod telemetry;

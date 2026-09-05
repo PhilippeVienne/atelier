@@ -60,6 +60,19 @@ pub struct EgressConfig {
     /// Detection d'anomalie reseau (tache 4.2.4) : compte les refus d'egress
     /// et demande le confinement au-dela d'un seuil. `None` en test.
     pub anomaly: Option<Arc<crate::anomaly::AnomalyDetector>>,
+    /// Cle d'escouade DERIVEE par campagne (tache 12.2, spec docs/specs/16-
+    /// escouades-multi-agents-swarms-mesh.md §3.2) — `ATELIER_SQUAD_TOKEN_KEY`,
+    /// posee par le controller UNIQUEMENT si `Workshop.spec.campaign_id`
+    /// est renseigne ET que la fonctionnalite est activee globalement. Sert
+    /// a la fois a EMETTRE un jeton (ce module, avant de relayer vers une
+    /// cible `crate::internal::InternalRoutes::resolve_squad`) et a le
+    /// VERIFIER (`crate::ingress`, cote receveur) — meme cle des deux
+    /// cotes. `None` : fonctionnalite desactivee, aucun jeton emis ni
+    /// exige.
+    pub squad_token_key: Option<Arc<str>>,
+    /// Identite de CE Workshop, incluse dans tout jeton emis (verifiable
+    /// cote receveur, `crate::ingress`) — `ATELIER_WORKSHOP_NAME`.
+    pub workshop_name: Arc<str>,
 }
 
 pub async fn handle_connection(
@@ -81,6 +94,37 @@ pub async fn handle_connection(
             return Ok(());
         }
     };
+
+    // Cible inter-Workshop autorisee (tache 12.2) : AVANT la branche
+    // generique ci-dessous (qui matcherait la meme entree via `resolve()`)
+    // pour injecter un jeton d'escouade signe — les autres alias internes
+    // (identity-proxy, simulateurs...) n'en recoivent jamais, seule une
+    // cible de `Workshop.spec.allowed_internal_targets` en a besoin, voir
+    // `crate::ingress` cote receveur.
+    if let Some((target_host, target_port)) = config.internal.resolve_squad(&host) {
+        let preamble = config.squad_token_key.as_deref().map(|key| {
+            atelier_common::squad_token::mint(
+                key,
+                &config.workshop_name,
+                atelier_common::squad_token::DEFAULT_TTL_SECS,
+            )
+        });
+        tracing::info!(
+            %peer,
+            alias = host,
+            target_host,
+            target_port,
+            method = %head.method,
+            squad_token_minted = preamble.is_some(),
+            "route inter-Workshop (escouade)"
+        );
+        return if head.method.eq_ignore_ascii_case("CONNECT") {
+            tunnel_with_preamble(client, &target_host, target_port, peer, preamble).await
+        } else {
+            forward_rewriting_with_preamble(client, head, &target_host, target_port, peer, preamble)
+                .await
+        };
+    }
 
     // Alias internes (identity-proxy, mcp-gateway) : toujours joignables,
     // sans passer par l'allowlist egress ni par un eventuel proxy parent —
@@ -297,7 +341,33 @@ async fn tunnel(
     upstream_proxy: Option<&UpstreamProxy>,
     no_proxy: &[String],
 ) -> anyhow::Result<()> {
-    tunnel_inner(client, host, port, peer, upstream_proxy, no_proxy, true).await
+    tunnel_inner(
+        client,
+        host,
+        port,
+        peer,
+        upstream_proxy,
+        no_proxy,
+        true,
+        None,
+    )
+    .await
+}
+
+/// Comme [`tunnel`], avec un jeton d'escouade (tache 12.2) ecrit sur la
+/// connexion AVANT tout octet relaye — c'est la premiere ligne que lit
+/// `crate::ingress` cote receveur, avant de commencer a relayer vers le
+/// guest. `preamble: None` (`Workshop.spec.campaign_id` absent, ou
+/// fonctionnalite globalement desactivee) : comportement strictement
+/// identique a [`tunnel`].
+async fn tunnel_with_preamble(
+    client: BufReader<TcpStream>,
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+    preamble: Option<String>,
+) -> anyhow::Result<()> {
+    tunnel_inner(client, host, port, peer, None, &[], true, preamble).await
 }
 
 /// Meme relai que [`tunnel`], mais sans repondre "200 Connection
@@ -312,9 +382,20 @@ async fn tunnel_transparent(
     upstream_proxy: Option<&UpstreamProxy>,
     no_proxy: &[String],
 ) -> anyhow::Result<()> {
-    tunnel_inner(client, host, port, peer, upstream_proxy, no_proxy, false).await
+    tunnel_inner(
+        client,
+        host,
+        port,
+        peer,
+        upstream_proxy,
+        no_proxy,
+        false,
+        None,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tunnel_inner(
     mut client: BufReader<TcpStream>,
     host: &str,
@@ -323,6 +404,7 @@ async fn tunnel_inner(
     upstream_proxy: Option<&UpstreamProxy>,
     no_proxy: &[String],
     send_connect_ack: bool,
+    preamble: Option<String>,
 ) -> anyhow::Result<()> {
     let mut upstream = match crate::upstream::connect(host, port, upstream_proxy, no_proxy).await {
         Ok(stream) => stream,
@@ -334,6 +416,13 @@ async fn tunnel_inner(
             return Ok(());
         }
     };
+
+    if let Some(token) = &preamble {
+        upstream
+            .write_all(format!("{token}\n").as_bytes())
+            .await
+            .context("envoi du jeton d'escouade")?;
+    }
 
     if send_connect_ack {
         client
@@ -395,7 +484,23 @@ async fn forward_rewriting(
     port: u16,
     peer: SocketAddr,
 ) -> anyhow::Result<()> {
-    let upstream = match crate::upstream::connect(host, port, None, &[]).await {
+    forward_rewriting_with_preamble(client, first, host, port, peer, None).await
+}
+
+/// Comme [`forward_rewriting`], avec un jeton d'escouade (tache 12.2) ecrit
+/// AVANT la premiere requete — et de nouveau apres chaque RECONNEXION a la
+/// destination (une nouvelle connexion TCP = un nouveau jeton attendu cote
+/// `crate::ingress`, qui ne suit aucun etat entre connexions).
+#[allow(clippy::too_many_arguments)]
+async fn forward_rewriting_with_preamble(
+    client: BufReader<TcpStream>,
+    first: http::RequestHead,
+    host: &str,
+    port: u16,
+    peer: SocketAddr,
+    preamble: Option<String>,
+) -> anyhow::Result<()> {
+    let mut upstream = match crate::upstream::connect(host, port, None, &[]).await {
         Ok(stream) => stream,
         Err(err) => {
             let mut client = client;
@@ -404,6 +509,12 @@ async fn forward_rewriting(
             return Ok(());
         }
     };
+    if let Some(token) = &preamble {
+        upstream
+            .write_all(format!("{token}\n").as_bytes())
+            .await
+            .context("envoi du jeton d'escouade")?;
+    }
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut client_read = BufReader::new(client_read);
@@ -426,7 +537,7 @@ async fn forward_rewriting(
         // descendant : c'est donc le signal que la destination a raccroche.
         if downstream.is_finished() {
             let _ = downstream.await;
-            let upstream = match crate::upstream::connect(host, port, None, &[]).await {
+            let mut upstream = match crate::upstream::connect(host, port, None, &[]).await {
                 Ok(stream) => stream,
                 Err(err) => {
                     tracing::warn!(%peer, host, port, %err, "reconnexion a la destination echouee");
@@ -438,6 +549,12 @@ async fn forward_rewriting(
                     return Ok(());
                 }
             };
+            if let Some(token) = &preamble {
+                upstream
+                    .write_all(format!("{token}\n").as_bytes())
+                    .await
+                    .context("envoi du jeton d'escouade (reconnexion)")?;
+            }
             tracing::debug!(%peer, host, port, "destination reconnectee (keep-alive expire cote destination)");
             (upstream_read, upstream_write) = tokio::io::split(upstream);
             downstream = spawn_downstream(upstream_read, client_write.clone());
@@ -513,6 +630,8 @@ mod tests {
             }),
             simulator: Arc::new(RwLock::new(None)),
             anomaly: None,
+            squad_token_key: None,
+            workshop_name: Arc::from("test-workshop"),
         }
     }
 
@@ -777,6 +896,8 @@ mod tests {
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
             anomaly: None,
+            squad_token_key: None,
+            workshop_name: Arc::from("test-workshop"),
         };
         let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client_addr = client_listener.local_addr().unwrap();
@@ -831,6 +952,8 @@ mod tests {
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
             anomaly: None,
+            squad_token_key: None,
+            workshop_name: Arc::from("test-workshop"),
         };
 
         // Le SNI ("127.0.0.1") sert a l'allowlist ; la connexion sortante
@@ -884,6 +1007,8 @@ mod tests {
             identity_proxy: None,
             simulator: Arc::new(RwLock::new(None)),
             anomaly: None,
+            squad_token_key: None,
+            workshop_name: Arc::from("test-workshop"),
         };
         let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client_addr = client_listener.local_addr().unwrap();

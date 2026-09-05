@@ -92,6 +92,21 @@ spec:
               value: {{ include "atelier.componentName" (dict "root" $ "component" "ca-bundle") | quote }}
             {{- end }}
             {{- /*
+            Tache 12.2 : secret GLOBAL de signature des jetons d'escouade,
+            lu par le SEUL controller (qui derive ensuite une cle PAR
+            CAMPAGNE, jamais transmise telle quelle a un Workshop — voir
+            crates/common/src/squad_token.rs). Absent si
+            squadToken.signingKey est vide (fonctionnalite desactivee par
+            defaut).
+            */}}
+            {{- if .Values.squadToken.signingKey }}
+            - name: ATELIER_SQUAD_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "squad-token") }}
+                  key: SIGNING_KEY
+            {{- end }}
+            {{- /*
             Offload S3 du cache d'images (spec docs/specs/13-image-cache-
             offload.md, tache 8.3) : le controller ne s'en sert pas
             directement, il retransmet cette configuration au Job

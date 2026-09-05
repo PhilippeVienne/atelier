@@ -185,6 +185,15 @@ impl InternalRoutes {
             .or_else(|| self.simulators.get(&host).cloned())
             .or_else(|| self.squad.get(&host).cloned())
     }
+
+    /// Comme [`Self::resolve`], mais SEULEMENT pour une cible inter-Workshop
+    /// (tache 12.2) — distinct de `resolve()` pour que `crate::proxy` sache
+    /// QUAND injecter un jeton d'escouade signe (voir `crate::main`, config
+    /// `EgressConfig`) : les autres alias internes (identity-proxy,
+    /// simulateurs...) ne doivent jamais en recevoir un.
+    pub fn resolve_squad(&self, host: &str) -> Option<(String, u16)> {
+        self.squad.get(&host.to_ascii_lowercase()).cloned()
+    }
 }
 
 fn parse_addr(addr: &str) -> anyhow::Result<(String, u16)> {
@@ -360,6 +369,27 @@ mod tests {
             .unwrap();
         assert_eq!(routes.resolve("other.ws-backend.atelier.internal"), None);
         assert_eq!(routes.resolve("api.ws-other.atelier.internal"), None);
+    }
+
+    /// `resolve_squad` ne doit matcher QUE la table `squad` — jamais un
+    /// simulateur ni un alias fixe portant le meme nom (tache 12.2 : c'est
+    /// ce distingo qui decide si `crate::proxy` injecte un jeton signe).
+    #[test]
+    fn resolve_squad_only_matches_squad_targets() {
+        let mut routes =
+            InternalRoutes::parse(Some("127.0.0.1:3129".to_string()), None, None, None, None)
+                .unwrap();
+        routes.add_simulators("api=127.0.0.1:9999").unwrap();
+        routes
+            .add_squad_targets("api.ws-backend.atelier.internal=10.96.1.5:8080")
+            .unwrap();
+
+        assert_eq!(
+            routes.resolve_squad("api.ws-backend.atelier.internal"),
+            Some(("10.96.1.5".to_string(), 8080))
+        );
+        assert_eq!(routes.resolve_squad("api.atelier.internal"), None);
+        assert_eq!(routes.resolve_squad("identity-proxy"), None);
     }
 
     #[test]

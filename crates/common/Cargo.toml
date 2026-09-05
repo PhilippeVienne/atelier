@@ -45,8 +45,13 @@ aws-sdk-s3 = { version = "1.71", default-features = false, features = ["default-
 async-compression = { version = "0.4.43", features = ["tokio", "zstd"] }
 bytes = "1"
 async-trait = "0.1.92"
+sha2 = "0.10"
+# Signature HMAC-SHA256 du jeton d'escouade inter-Workshops (`crate::
+# squad_token`, tache 12.2, spec docs/specs/16-escouades-multi-agents-
+# swarms-mesh.md §3.2).
+hmac = "0.12"
+hex = "0.4"
 
 [dev-dependencies]
 serde_yaml = "0.9"
-sha2 = "0.10"
 tempfile = "3"

@@ -310,6 +310,23 @@ gpu:
     storageClassName: ""
 
 # ------------------------------------------------------------------------
+# Escouades multi-Workshops (spec docs/specs/16-escouades-multi-agents-
+# swarms-mesh.md §3.2, jalon M12, tache 12.2) : authentification applicative
+# des connexions inter-Workshops, en plus (jamais a la place) de la
+# NetworkPolicy par campagne (tache 12.1).
+# ------------------------------------------------------------------------
+squadToken:
+  # Secret GLOBAL de signature des jetons d'escouade — jamais transmis tel
+  # quel a un Workshop (seule une cle DERIVEE par campagne l'est, voir
+  # crates/common/src/squad_token.rs::derive_campaign_key). Vide par
+  # defaut : fonctionnalite DESACTIVEE (aucun jeton mint/verifie, la
+  # NetworkPolicy de la tache 12.1 reste alors la seule defense) — a
+  # positionner explicitement (`scripts/install.sh`/`atelier server
+  # install` le font pour les autres secrets de ce fichier, voir
+  # litellm.masterKey/saltKey) pour activer cette couche.
+  signingKey: ""
+
+# ------------------------------------------------------------------------
 # Cache d'images (PVC partage) : eviction LRU (spec
 # docs/specs/13-image-cache-offload.md §3.1/8.5)
 # ------------------------------------------------------------------------

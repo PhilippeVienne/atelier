@@ -238,6 +238,15 @@ pub struct ReconcileCtx {
     /// `openbao`/`litellm` — aucun volume/variable supplementaire sur le Job
     /// `image-builder`.
     pub ca_bundle_configmap: Option<String>,
+    /// Secret GLOBAL de signature des jetons d'escouade (tache 12.2, spec
+    /// docs/specs/16-escouades-multi-agents-swarms-mesh.md §3.2) —
+    /// `ATELIER_SQUAD_TOKEN_SIGNING_KEY`, jamais transmis tel quel a un
+    /// Workshop : seule la cle DERIVEE par campagne
+    /// (`atelier_common::squad_token::derive_campaign_key`) l'est. `None` :
+    /// fonctionnalite desactivee (aucun jeton mint/verifie, la
+    /// `NetworkPolicy` de la tache 12.1 reste alors la SEULE defense),
+    /// meme convention que `openbao`/`litellm`.
+    pub squad_token_signing_key: Option<String>,
 }
 
 impl ReconcileCtx {
@@ -327,6 +336,9 @@ pub async fn run() -> anyhow::Result<()> {
     let ca_bundle_configmap = std::env::var("ATELIER_CA_BUNDLE_CONFIGMAP")
         .ok()
         .filter(|v| !v.trim().is_empty());
+    let squad_token_signing_key = std::env::var("ATELIER_SQUAD_TOKEN_SIGNING_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -347,6 +359,7 @@ pub async fn run() -> anyhow::Result<()> {
                 s3,
                 s3_pod_endpoint,
                 ca_bundle_configmap,
+                squad_token_signing_key,
             }),
         )
         .for_each(|res| async move {
@@ -1417,6 +1430,20 @@ async fn ensure_parent_pod(
     // pour ce cycle, jamais une erreur fatale pour CE Workshop.
     let allowed_internal_targets =
         resolve_allowed_internal_targets(ctx, ns, &workshop.spec.allowed_internal_targets).await;
+    // Cle de campagne pour le jeton d'escouade (tache 12.2) : derivee du
+    // secret GLOBAL de signature, jamais transmise telle quelle — un
+    // Workshop hors de cette campagne ne la recoit jamais, meme s'il
+    // connait `campaign_id` (champ public du CRD). `None` si
+    // `campaign_id` n'est pas renseigne OU si la fonctionnalite est
+    // desactivee globalement (`ctx.squad_token_signing_key`).
+    let squad_token_key = workshop
+        .spec
+        .campaign_id
+        .as_ref()
+        .zip(ctx.squad_token_signing_key.as_ref())
+        .map(|(campaign_id, signing_key)| {
+            atelier_common::squad_token::derive_campaign_key(signing_key, campaign_id)
+        });
     // Regle d'injection Git calculee cote controller (2.2.2, Jalon M2) :
     // jamais ecrite dans `workshop.spec` lui-meme (qui reste la source de
     // verite declarative de l'utilisateur), seulement ajoutee ici, a la
@@ -1925,6 +1952,20 @@ async fn ensure_parent_pod(
                                 &allowed_internal_targets,
                             )
                         }))
+                        // Tache 12.2 : meme cle des deux cotes d'une
+                        // connexion inter-Workshops — cote EMETTEUR (mint
+                        // un jeton avant de relayer vers une cible
+                        // `allowed_internal_targets`) et cote RECEPTEUR
+                        // (verifie le jeton recu sur un port de
+                        // `exported_services`), voir `crates/net-proxy/src/
+                        // ingress.rs`/`internal.rs`. `ATELIER_WORKSHOP_NAME`
+                        // (identite emise dans un jeton mint) est deja
+                        // transmise plus haut dans ce meme vecteur.
+                        .chain(
+                            squad_token_key
+                                .as_ref()
+                                .map(|key| env_var("ATELIER_SQUAD_TOKEN_KEY", key)),
+                        )
                         .collect::<Vec<_>>(),
                     ),
                     ports: (!workshop.spec.exported_services.is_empty()).then(|| {
