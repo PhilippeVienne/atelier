@@ -68,7 +68,7 @@ pub struct AppState {
 /// Role de realm requis pour les routes d'administration. Correspond au
 /// role `admin` du realm Keycloak de dev (`deploy/dev/keycloak/`), a cote de
 /// `developer` qui, lui, ne donne aucun privilege particulier.
-const ADMIN_ROLE: &str = "admin";
+pub(crate) const ADMIN_ROLE: &str = "admin";
 /// Role minimal pour PROVISIONNER un Workshop. Correspond au role
 /// `developer` du realm de dev, dont `atelier-pm-bot` est titulaire — le PM
 /// provisionne des Workshops comme un utilisateur.
@@ -101,6 +101,14 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/v1/workshops/{name}/resume", post(resume_workshop))
         .route("/v1/workshops/{name}/events", get(list_workshop_events))
         .route("/v1/workshops/{name}/llm-budget", get(workshop_llm_budget))
+        .route(
+            "/v1/workshops/{name}/approvals",
+            post(crate::approvals::create_approval).get(crate::approvals::list_approvals),
+        )
+        .route(
+            "/v1/approvals/{id}/decision",
+            post(crate::approvals::decide_approval),
+        )
         .route(
             "/v1/workshops/{name}/credentials",
             get(list_credentials).put(put_credential),
@@ -934,6 +942,17 @@ impl ApiError {
         }
     }
 
+    /// Meme statut que [`Self::not_found`], message personnalise — reutilise
+    /// par `crate::approvals` ou "introuvable" recouvre aussi "non
+    /// autorise" (jamais distingue de "n'existe pas", meme raisonnement que
+    /// pour un Workshop d'un autre groupe).
+    pub(crate) fn not_found_generic(message: &str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.to_string(),
+        }
+    }
+
     pub(crate) fn bad_request(message: &str) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -979,6 +998,19 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.status, self.message).into_response()
+    }
+}
+
+/// Reutilise par `crate::approvals` (tache 9.5) : erreur PostgreSQL
+/// inattendue, jamais exposee telle quelle au client (peut contenir des
+/// details de schema).
+impl From<sqlx::Error> for ApiError {
+    fn from(err: sqlx::Error) -> Self {
+        tracing::error!(%err, "erreur PostgreSQL inattendue");
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "erreur interne".to_string(),
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod auth;
 pub mod credentials;
 pub mod exec;
