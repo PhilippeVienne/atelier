@@ -1,0 +1,44 @@
+[package]
+name = "atelier-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "atelier"
+path = "src/main.rs"
+
+[dependencies]
+atelier-common = { path = "../common" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+clap = { version = "4", features = ["derive"] }
+# Fichier de config `~/.config/atelier/config.yaml` (spec 14 §3.3) : le seul
+# format non-JSON de ce workspace, choisi ici pour rester lisible/editable a
+# la main par un developpeur (contrairement au JSON, pas d'usage prevu de
+# round-trip programmatique cote humain).
+serde_yaml = "0.9"
+# Repertoire de config natif par OS (XDG sur Linux, %APPDATA% sur Windows,
+# Application Support sur macOS) : evite de coder en dur `~/.config`.
+dirs = "5"
+# Trousseau de cles natif de l'OS (Keychain macOS, Secret Service/libsecret
+# sur Linux, Credential Manager Windows) pour les jetons OIDC (spec 14 §3.3) :
+# jamais en clair sur disque a cote du fichier de config.
+# TODO(9.1, non finalise) : "linux-native" (keyutils, kernel keyring) evite
+# la dependance systeme libdbus-1-dev de "sync-secret-service" (pkg-config
+# echoue en dev ici) mais n'est pas cross-platform (pas de pendant
+# apple-native/windows-native actif) et n'est pas persistant a travers un
+# reboot selon la portee du trousseau kernel choisi — a trancher avant de
+# considerer 9.1 termine (voir verrou PLAN-ACTION-GLOBAL.md).
+keyring = { version = "3", features = ["linux-native"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
