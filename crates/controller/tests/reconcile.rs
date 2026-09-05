@@ -34,6 +34,7 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         component_image_registry: None,
         s3: None,
         s3_pod_endpoint: None,
+        ca_bundle_configmap: None,
     }
 }
 
@@ -189,6 +190,84 @@ async fn apply_triggers_image_build_job_when_digest_missing() {
     // Le PVC de cache est partage entre tous les Workshops du namespace : on
     // ne le supprime pas en fin de test (d'autres tests, potentiellement en
     // parallele, s'appuient sur sa presence idempotente).
+    jobs.delete(&job_name, &foreground_delete()).await.ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Tache 11.2 (spec docs/specs/15-souverainete-airgap-inference-gpu.md
+/// §3.2/§3.3) : quand `ctx.ca_bundle_configmap` est configure, le Job
+/// `image-builder` doit monter cette `ConfigMap` et transmettre
+/// `ATELIER_CA_BUNDLE_PATH` — sans cette variable, ni
+/// `trust_enterprise_ca_bundle_for_this_process` (le `git clone` du Job
+/// lui-meme) ni `inject_enterprise_ca_bundle` (le rootfs produit) ne
+/// peuvent faire confiance a la CA d'entreprise. N'exige pas que la
+/// `ConfigMap` existe reellement : ce test verifie la CONSTRUCTION du Job,
+/// pas son execution reussie (qui resterait bloquee en `ContainerCreating`
+/// sans la vraie `ConfigMap` — hors perimetre ici).
+#[tokio::test]
+async fn apply_wires_ca_bundle_volume_into_image_build_job_when_configured() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let name = unique_name("test-workshop-ca-bundle");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ReconcileCtx {
+        ca_bundle_configmap: Some("atelier-ca-bundle".to_string()),
+        ..ctx_without_openbao(client.clone())
+    };
+
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(&name, sample_spec()))
+        .await
+        .expect("creation du Workshop");
+
+    atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let job_name = format!("{name}-image-build");
+    let job = jobs
+        .get(&job_name)
+        .await
+        .expect("le job image-builder doit avoir ete cree");
+    let pod_spec = job.spec.clone().unwrap().template.spec.unwrap();
+
+    let ca_bundle_volume = pod_spec
+        .volumes
+        .as_ref()
+        .and_then(|vols| vols.iter().find(|v| v.name == "ca-bundle"))
+        .expect("le job doit monter le volume ca-bundle");
+    assert_eq!(
+        ca_bundle_volume
+            .config_map
+            .as_ref()
+            .map(|cm| cm.name.as_str()),
+        Some("atelier-ca-bundle")
+    );
+
+    let container = &pod_spec.containers[0];
+    let ca_bundle_mount = container
+        .volume_mounts
+        .as_ref()
+        .and_then(|mounts| mounts.iter().find(|m| m.name == "ca-bundle"))
+        .expect("le conteneur image-builder doit monter le volume ca-bundle");
+    assert_eq!(ca_bundle_mount.mount_path, "/etc/atelier/ca");
+    assert_eq!(ca_bundle_mount.read_only, Some(true));
+
+    let env = container.env.clone().unwrap();
+    let ca_bundle_path_env = env
+        .iter()
+        .find(|e| e.name == "ATELIER_CA_BUNDLE_PATH")
+        .expect("ATELIER_CA_BUNDLE_PATH doit etre transmise au job");
+    assert_eq!(
+        ca_bundle_path_env.value.as_deref(),
+        Some("/etc/atelier/ca/ca.crt")
+    );
+
     jobs.delete(&job_name, &foreground_delete()).await.ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
 }
@@ -899,6 +978,7 @@ async fn apply_provisions_openbao_role_when_configured() {
         component_image_registry: None,
         s3: None,
         s3_pod_endpoint: None,
+        ca_bundle_configmap: None,
     };
 
     workshops
@@ -1048,6 +1128,7 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         component_image_registry: None,
         s3: None,
         s3_pod_endpoint: None,
+        ca_bundle_configmap: None,
     };
 
     workshops
@@ -1207,6 +1288,7 @@ async fn cleanup_tolerates_an_unreachable_litellm() {
         component_image_registry: None,
         s3: None,
         s3_pod_endpoint: None,
+        ca_bundle_configmap: None,
     };
 
     workshops

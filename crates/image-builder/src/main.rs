@@ -47,6 +47,17 @@ use tokio::process::Command;
 async fn main() -> Result<()> {
     let _telemetry = atelier_common::telemetry::init("atelier-image-builder");
 
+    // Avant tout appel reseau (notamment `git clone` plus bas,
+    // `ensure_workspace_clone`) : ce process tourne dans un conteneur
+    // Debian avec `ca-certificates` installe (voir Dockerfile), sa CA
+    // d'entreprise doit donc etre ajoutee a SON PROPRE magasin systeme, pas
+    // au rootfs en cours de construction (tache 11.2, spec docs/specs/15-
+    // souverainete-airgap-inference-gpu.md §3.2). `net-proxy` (sidecar de ce
+    // pod) ne peut rien faire ici : il ne dechiffre jamais le trafic egress
+    // qu'il relaie (voir le piege documente sur la tache 11.1) — c'est bien
+    // CE process qui valide le certificat TLS du miroir Git d'entreprise.
+    trust_enterprise_ca_bundle_for_this_process().await?;
+
     let source = DevcontainerSource {
         repo: std::env::var("ATELIER_DEVCONTAINER_REPO")
             .context("ATELIER_DEVCONTAINER_REPO manquant")?,
@@ -90,6 +101,9 @@ async fn main() -> Result<()> {
 
     tracing::info!("injecting net-proxy network configuration (HTTP_PROXY/DNS)");
     inject_net_proxy_config(&rootfs_dir).await?;
+
+    tracing::info!("injecting enterprise CA bundle into rootfs (if configured)");
+    inject_enterprise_ca_bundle(&rootfs_dir).await?;
 
     tracing::info!("injecting the opencode binary");
     inject_opencode_binary(&rootfs_dir).await?;
@@ -617,6 +631,141 @@ async fn export_image_filesystem(
 /// `crates/firecracker::network`), le port `3128` est une constante partagee
 /// avec `vm-supervisor`/`controller` (`crates/controller/src/reconcile.rs`),
 /// pas encore configurable par Workshop.
+/// Ajoute un bundle PEM (une ou plusieurs CA) au fichier de bundle existant
+/// a `bundle_path`, sans jamais l'ecraser : un remplacement casserait tout
+/// acces HTTPS public (PyPI, npm, GitHub...) pour les mecanismes qui font
+/// aveuglement confiance a ce seul fichier (`GIT_SSL_CAINFO`/`CURL_CA_
+/// BUNDLE`/`REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE`, tous des variables qui
+/// REMPLACENT plutot qu'AJOUTENT le magasin de confiance de l'outil qui les
+/// lit — contrairement a `NODE_EXTRA_CA_CERTS`, cf. `inject_enterprise_ca_
+/// bundle`). Retourne `Ok(false)` sans rien ecrire si `bundle_path`
+/// n'existe pas (best-effort, jamais bloquant).
+async fn append_pem_to_bundle_file(bundle_path: &Path, extra_pem: &str) -> Result<bool> {
+    if !tokio::fs::try_exists(bundle_path).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    let mut bundle = tokio::fs::read_to_string(bundle_path)
+        .await
+        .with_context(|| format!("lecture de {bundle_path:?}"))?;
+    if !bundle.is_empty() && !bundle.ends_with('\n') {
+        bundle.push('\n');
+    }
+    bundle.push_str(extra_pem);
+    tokio::fs::write(bundle_path, bundle)
+        .await
+        .with_context(|| format!("ecriture de {bundle_path:?}"))?;
+    Ok(true)
+}
+
+/// Fait confiance a la CA d'entreprise (`ATELIER_CA_BUNDLE_PATH`, monte
+/// depuis la `ConfigMap` cablee par `crates/controller/src/reconcile.rs::
+/// ensure_image_build_job`, tache 11.2) pour CE PROCESS lui-meme — pas pour
+/// le rootfs en construction, voir `inject_enterprise_ca_bundle` plus bas.
+/// Necessaire pour que `ensure_workspace_clone` (`git clone` execute sur ce
+/// pod, pas dans la microVM) valide un miroir Git d'entreprise derriere
+/// cette CA. No-op si la variable est absente (fonctionnalite desactivee
+/// par defaut).
+async fn trust_enterprise_ca_bundle_for_this_process() -> Result<()> {
+    let Ok(ca_bundle_path) = std::env::var("ATELIER_CA_BUNDLE_PATH") else {
+        return Ok(());
+    };
+    let ca_pem = tokio::fs::read_to_string(&ca_bundle_path)
+        .await
+        .with_context(|| format!("lecture de ATELIER_CA_BUNDLE_PATH ({ca_bundle_path})"))?;
+    // Ce conteneur (voir Dockerfile) installe `ca-certificates` (Debian) :
+    // ce chemin existe donc toujours en pratique, contrairement au rootfs
+    // CIBLE (base arbitraire) traite par `append_pem_to_bundle_file` ailleurs.
+    let bundle_path = Path::new("/etc/ssl/certs/ca-certificates.crt");
+    if append_pem_to_bundle_file(bundle_path, &ca_pem).await? {
+        tracing::info!("CA d'entreprise ajoutee au magasin de confiance de ce process");
+    } else {
+        tracing::warn!(
+            ?bundle_path,
+            "magasin de confiance systeme absent, CA d'entreprise non appliquee a ce process"
+        );
+    }
+    Ok(())
+}
+
+/// Injecte la CA d'entreprise dans le rootfs PRODUIT, pour que l'outillage
+/// in-VM (`git`, `curl`, `pip`, l'interpreteur Python via son module `ssl`,
+/// et — via une variable dediee, mecanisme ADDITIF cote Node.js — `npm`)
+/// la reconnaisse au runtime du Workshop (tache 11.2, spec docs/specs/15-
+/// souverainete-airgap-inference-gpu.md §3.3). No-op si
+/// `ATELIER_CA_BUNDLE_PATH` est absente (fonctionnalite desactivee par
+/// defaut, voir `crates/controller/src/reconcile.rs::ensure_image_build_job`).
+///
+/// Seules les images de base Debian/Ubuntu (paquet `ca-certificates`,
+/// `/etc/ssl/certs/ca-certificates.crt`) beneficient de la couverture
+/// complete (git/curl/pip/openssl) : une image de base RHEL/Fedora
+/// (`/etc/pki/tls/certs/ca-bundle.crt`) ne recoit alors QUE `NODE_EXTRA_CA_
+/// CERTS`, jamais teste faute d'image de ce type dans ce workspace.
+async fn inject_enterprise_ca_bundle(rootfs_dir: &Path) -> Result<()> {
+    let Ok(ca_bundle_path) = std::env::var("ATELIER_CA_BUNDLE_PATH") else {
+        return Ok(());
+    };
+    let ca_pem = tokio::fs::read_to_string(&ca_bundle_path)
+        .await
+        .with_context(|| format!("lecture de ATELIER_CA_BUNDLE_PATH ({ca_bundle_path})"))?;
+
+    // Copie brute, TOUJOURS deposee : c'est elle que pointe
+    // `NODE_EXTRA_CA_CERTS` ci-dessous (mecanisme additif cote Node.js, donc
+    // sans risque a la restreindre a la seule CA d'entreprise).
+    let extra_ca_dir = rootfs_dir.join("usr/local/share/ca-certificates");
+    tokio::fs::create_dir_all(&extra_ca_dir).await?;
+    let extra_ca_path = extra_ca_dir.join("atelier-ca.crt");
+    tokio::fs::write(&extra_ca_path, &ca_pem)
+        .await
+        .with_context(|| format!("ecriture de {extra_ca_path:?}"))?;
+
+    let system_bundle_path = rootfs_dir.join("etc/ssl/certs/ca-certificates.crt");
+    let mut extra_env =
+        "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/atelier-ca.crt\n".to_string();
+
+    if append_pem_to_bundle_file(&system_bundle_path, &ca_pem).await? {
+        extra_env.push_str(
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n\
+             GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt\n\
+             CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\n\
+             REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\n\
+             PIP_CERT=/etc/ssl/certs/ca-certificates.crt\n",
+        );
+    } else {
+        tracing::warn!(
+            "aucun /etc/ssl/certs/ca-certificates.crt dans ce rootfs (image de base non Debian/Ubuntu ?) : \
+             la CA d'entreprise n'est disponible que via NODE_EXTRA_CA_CERTS (Node.js/npm), \
+             git/curl/pip/openssl in-VM ne la verront pas"
+        );
+    }
+
+    // Meme fichier, meme convention de completion (jamais un ecrasement),
+    // que `inject_net_proxy_config` — et meme obligation de repercuter la
+    // modification dans la copie `sshd` (`write_ssh_environment_file`),
+    // seul canal par lequel `exec_in_workshop` recoit un environnement.
+    let environment_path = rootfs_dir.join("etc/environment");
+    // Contrairement a `inject_net_proxy_config` (appele juste avant dans le
+    // pipeline, `etc/` existe donc toujours en pratique a ce stade) : garde
+    // explicitement ce `create_dir_all` pour que cette fonction reste
+    // correcte independamment de l'ordre d'appel (verifie par un test
+    // unitaire construisant un rootfs minimal sans `etc/` prealable).
+    if let Some(parent) = environment_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut environment = tokio::fs::read_to_string(&environment_path)
+        .await
+        .unwrap_or_default();
+    if !environment.is_empty() && !environment.ends_with('\n') {
+        environment.push('\n');
+    }
+    environment.push_str(&extra_env);
+    tokio::fs::write(&environment_path, &environment)
+        .await
+        .with_context(|| format!("ecriture de {environment_path:?}"))?;
+    write_ssh_environment_file(rootfs_dir, &environment).await?;
+
+    Ok(())
+}
+
 async fn inject_net_proxy_config(rootfs_dir: &Path) -> Result<()> {
     let net_proxy_port =
         std::env::var("ATELIER_NET_PROXY_PORT").unwrap_or_else(|_| "3128".to_string());
@@ -1640,7 +1789,130 @@ async fn publish_to_cache(cache_dir: &str, digest: &str, ext4_path: &Path) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::render_ssh_environment;
+    use super::{append_pem_to_bundle_file, inject_enterprise_ca_bundle, render_ssh_environment};
+    use tokio::sync::Mutex;
+
+    // `ATELIER_CA_BUNDLE_PATH` est un etat process-global (`std::env`) :
+    // sequentialise les tests qui la manipulent, meme raison que
+    // `crates/common/src/tls_client.rs` — `tokio::sync::Mutex` plutot que
+    // `std::sync::Mutex` : le garde traverse un point d'`await`
+    // (`inject_enterprise_ca_bundle(...).await`), ce que `clippy::await_
+    // holding_lock` refuse a raison pour un mutex bloquant.
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    const FAKE_CERT_PEM: &str =
+        "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0LWNvbnRlbnQ=\n-----END CERTIFICATE-----\n";
+
+    #[tokio::test]
+    async fn append_pem_to_bundle_file_is_a_no_op_when_the_file_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.crt");
+        let appended = append_pem_to_bundle_file(&missing, FAKE_CERT_PEM)
+            .await
+            .unwrap();
+        assert!(!appended);
+        assert!(!missing.exists());
+    }
+
+    #[tokio::test]
+    async fn append_pem_to_bundle_file_preserves_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("ca-certificates.crt");
+        std::fs::write(&bundle, "-----EXISTING PUBLIC CA-----\n").unwrap();
+
+        let appended = append_pem_to_bundle_file(&bundle, FAKE_CERT_PEM)
+            .await
+            .unwrap();
+        assert!(appended);
+
+        let contents = std::fs::read_to_string(&bundle).unwrap();
+        // La CA publique deja presente ne doit JAMAIS disparaitre : un
+        // remplacement casserait tout acces HTTPS public pour les
+        // mecanismes qui font confiance a ce seul fichier (voir la doc de
+        // `append_pem_to_bundle_file`).
+        assert!(contents.contains("EXISTING PUBLIC CA"));
+        assert!(contents.contains(FAKE_CERT_PEM.trim()));
+    }
+
+    #[tokio::test]
+    async fn inject_enterprise_ca_bundle_is_a_no_op_without_the_env_var() {
+        let _guard = ENV_LOCK.lock().await;
+        std::env::remove_var("ATELIER_CA_BUNDLE_PATH");
+
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_enterprise_ca_bundle(rootfs.path()).await.unwrap();
+
+        assert!(!rootfs
+            .path()
+            .join("usr/local/share/ca-certificates/atelier-ca.crt")
+            .exists());
+        assert!(!rootfs.path().join("etc/environment").exists());
+    }
+
+    #[tokio::test]
+    async fn inject_enterprise_ca_bundle_wires_node_and_openssl_based_tools() {
+        let _guard = ENV_LOCK.lock().await;
+        let ca_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(ca_file.path(), FAKE_CERT_PEM).unwrap();
+        std::env::set_var("ATELIER_CA_BUNDLE_PATH", ca_file.path());
+
+        let rootfs = tempfile::tempdir().unwrap();
+        // Simule une image de base Debian/Ubuntu : le paquet
+        // `ca-certificates` y a deja depose ce fichier.
+        let system_bundle = rootfs.path().join("etc/ssl/certs/ca-certificates.crt");
+        std::fs::create_dir_all(system_bundle.parent().unwrap()).unwrap();
+        std::fs::write(&system_bundle, "-----EXISTING PUBLIC CA-----\n").unwrap();
+
+        inject_enterprise_ca_bundle(rootfs.path()).await.unwrap();
+
+        // Copie brute pour Node.js (mecanisme additif, jamais un
+        // remplacement du magasin systeme).
+        let extra_ca = rootfs
+            .path()
+            .join("usr/local/share/ca-certificates/atelier-ca.crt");
+        assert_eq!(std::fs::read_to_string(&extra_ca).unwrap(), FAKE_CERT_PEM);
+
+        // Bundle systeme complete, pas remplace.
+        let bundle_contents = std::fs::read_to_string(&system_bundle).unwrap();
+        assert!(bundle_contents.contains("EXISTING PUBLIC CA"));
+        assert!(bundle_contents.contains(FAKE_CERT_PEM.trim()));
+
+        let environment = std::fs::read_to_string(rootfs.path().join("etc/environment")).unwrap();
+        assert!(environment
+            .contains("NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/atelier-ca.crt"));
+        assert!(environment.contains("SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"));
+        assert!(environment.contains("GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"));
+        assert!(environment.contains("REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"));
+
+        // Repercutee dans la copie `sshd`, seul canal de `exec_in_workshop`.
+        let ssh_environment =
+            std::fs::read_to_string(rootfs.path().join("home/vscode/.ssh/environment")).unwrap();
+        assert!(ssh_environment.contains("NODE_EXTRA_CA_CERTS="));
+
+        std::env::remove_var("ATELIER_CA_BUNDLE_PATH");
+    }
+
+    #[tokio::test]
+    async fn inject_enterprise_ca_bundle_skips_replacing_env_vars_without_a_system_bundle() {
+        // Image de base sans `ca-certificates` (ni Debian ni Ubuntu) :
+        // seul NODE_EXTRA_CA_CERTS (additif) doit etre positionne — jamais
+        // GIT_SSL_CAINFO/CURL_CA_BUNDLE/SSL_CERT_FILE pointant sur la seule
+        // CA d'entreprise, ce qui casserait tout acces HTTPS public.
+        let _guard = ENV_LOCK.lock().await;
+        let ca_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(ca_file.path(), FAKE_CERT_PEM).unwrap();
+        std::env::set_var("ATELIER_CA_BUNDLE_PATH", ca_file.path());
+
+        let rootfs = tempfile::tempdir().unwrap();
+        inject_enterprise_ca_bundle(rootfs.path()).await.unwrap();
+
+        let environment = std::fs::read_to_string(rootfs.path().join("etc/environment")).unwrap();
+        assert!(environment.contains("NODE_EXTRA_CA_CERTS="));
+        assert!(!environment.contains("GIT_SSL_CAINFO="));
+        assert!(!environment.contains("SSL_CERT_FILE="));
+
+        std::env::remove_var("ATELIER_CA_BUNDLE_PATH");
+    }
 
     #[test]
     fn les_guillemets_englobants_sautent_mais_pas_ceux_du_json() {

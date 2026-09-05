@@ -80,6 +80,18 @@ spec:
               value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "observability") }}:4317"
             {{- end }}
             {{- /*
+            CA d'entreprise (tache 11.2, spec docs/specs/15-souverainete-
+            airgap-inference-gpu.md §3.2/§3.3) : le controller ne s'en sert
+            pas lui-meme, il retransmet seulement le NOM de la ConfigMap
+            (deja creee par ce chart, tache 11.1) au Job image-builder qu'il
+            cree (ensure_image_build_job), meme structure que
+            ATELIER_REGISTRY_ADDR/S3_* ci-dessus.
+            */}}
+            {{- if .Values.tls.customCaBundle }}
+            - name: ATELIER_CA_BUNDLE_CONFIGMAP
+              value: {{ include "atelier.componentName" (dict "root" $ "component" "ca-bundle") | quote }}
+            {{- end }}
+            {{- /*
             Offload S3 du cache d'images (spec docs/specs/13-image-cache-
             offload.md, tache 8.3) : le controller ne s'en sert pas
             directement, il retransmet cette configuration au Job

@@ -48,6 +48,11 @@ const TEMPLATE_HASH_ANNOTATION: &str = "atelier.dev/template-hash";
 /// plugin) sans `securityContext.privileged: true` — voir
 /// `kvm_device_resources()` ci-dessous et `docs/PROGRESS.md`.
 const KVM_DEVICE_PLUGIN_RESOURCE: &str = "atelier.dev/kvm";
+/// Chemin de montage de la CA d'entreprise dans le Job `image-builder`
+/// (tache 11.2) — cle `ca.crt` de la `ConfigMap` `ctx.ca_bundle_configmap`
+/// (elle-meme creee par le chart, cle definie dans
+/// `charts/atelier/templates/infra/ca-bundle-configmap.yaml`, tache 11.1).
+const CA_BUNDLE_MOUNT_PATH: &str = "/etc/atelier/ca/ca.crt";
 
 /// `resources.limits` a poser sur tout conteneur ayant besoin de
 /// `/dev/kvm`/`/dev/net/tun` : remplace l'ancien `privileged: true` +
@@ -217,6 +222,15 @@ pub struct ReconcileCtx {
     /// defaut : aucun effet en production, ou le controller tourne dans le
     /// cluster (memes adresses des deux cotes).
     pub s3_pod_endpoint: Option<String>,
+    /// Nom de la `ConfigMap` (meme namespace que le Job) portant la CA
+    /// d'entreprise a faire confiance (spec docs/specs/15-souverainete-
+    /// airgap-inference-gpu.md §3.2/§3.3, tache 11.2) — cree par le chart
+    /// quand `tls.customCaBundle` est renseignee
+    /// (`charts/atelier/templates/infra/ca-bundle-configmap.yaml`, tache
+    /// 11.1). `None` : fonctionnalite desactivee, meme convention que
+    /// `openbao`/`litellm` — aucun volume/variable supplementaire sur le Job
+    /// `image-builder`.
+    pub ca_bundle_configmap: Option<String>,
 }
 
 impl ReconcileCtx {
@@ -303,6 +317,9 @@ pub async fn run() -> anyhow::Result<()> {
     let s3_pod_endpoint = std::env::var("ATELIER_S3_POD_ENDPOINT")
         .ok()
         .or_else(|| s3.as_ref().map(|c| c.endpoint.clone()));
+    let ca_bundle_configmap = std::env::var("ATELIER_CA_BUNDLE_CONFIGMAP")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -322,6 +339,7 @@ pub async fn run() -> anyhow::Result<()> {
                 component_image_registry,
                 s3,
                 s3_pod_endpoint,
+                ca_bundle_configmap,
             }),
         )
         .for_each(|res| async move {
@@ -1000,6 +1018,20 @@ async fn ensure_image_build_job(
                 .map(|bucket| env_var("S3_BUCKET_IMAGE_CACHE", bucket)),
         )
     }))
+    // CA d'entreprise (tache 11.2, spec docs/specs/15-souverainete-airgap-
+    // inference-gpu.md §3.2/§3.3) : `image-builder` en a besoin a deux
+    // endroits distincts, tous deux couverts par ce seul chemin monte —
+    // `GIT_SSL_CAINFO` pour SON PROPRE `git clone` (processus tournant sur
+    // ce pod, PAS le meme chemin que le trafic egress relaye par
+    // `net-proxy`, qui ne dechiffre jamais rien — voir le piege documente
+    // sur la tache 11.1) et l'injection dans le rootfs produit
+    // (`inject_enterprise_ca_bundle`, pour `git`/`npm`/`pip`/`cargo`/`curl`
+    // IN-VM au runtime du Workshop).
+    .chain(
+        ctx.ca_bundle_configmap
+            .as_ref()
+            .map(|_| env_var("ATELIER_CA_BUNDLE_PATH", CA_BUNDLE_MOUNT_PATH)),
+    )
     .collect::<Vec<_>>();
 
     let cache_volume = Volume {
@@ -1025,6 +1057,20 @@ async fn ensure_image_build_job(
         mount_path: "/tools".to_string(),
         ..Default::default()
     };
+    let ca_bundle_volume = ctx.ca_bundle_configmap.as_ref().map(|configmap| Volume {
+        name: "ca-bundle".to_string(),
+        config_map: Some(ConfigMapVolumeSource {
+            name: configmap.clone(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let ca_bundle_mount = ctx.ca_bundle_configmap.as_ref().map(|_| VolumeMount {
+        name: "ca-bundle".to_string(),
+        mount_path: "/etc/atelier/ca".to_string(),
+        read_only: Some(true),
+        ..Default::default()
+    });
     // Allowlist d'egress de la microVM builder (net-proxy sidecar) :
     // reutilise telle quelle `Workshop.spec.egress_allowlist`, pensee au
     // depart pour l'usage runtime de l'agent, pas pour les besoins de build
@@ -1084,7 +1130,12 @@ async fn ensure_image_build_job(
                 spec: Some(PodSpec {
                     restart_policy: Some("Never".into()),
                     service_account_name: Some(job_name.clone()),
-                    volumes: Some(vec![cache_volume, tools_volume]),
+                    volumes: Some(
+                        [Some(cache_volume), Some(tools_volume), ca_bundle_volume]
+                            .into_iter()
+                            .flatten()
+                            .collect(),
+                    ),
                     // `net-proxy` est un "sidecar natif" (initContainer avec
                     // `restartPolicy: Always`, K8s >= 1.28/1.29, KEP-753) et
                     // non un simple `containers[]` : il tourne indefiniment
@@ -1148,7 +1199,12 @@ async fn ensure_image_build_job(
                         name: "image-builder".into(),
                         image: Some(ctx.component_image("image-builder")),
                         env: Some(env),
-                        volume_mounts: Some(vec![cache_mount, tools_mount]),
+                        volume_mounts: Some(
+                            [Some(cache_mount), Some(tools_mount), ca_bundle_mount]
+                                .into_iter()
+                                .flatten()
+                                .collect(),
+                        ),
                         // /dev/kvm et /dev/net/tun alloues via le device
                         // plugin (`atelier.dev/kvm`, voir
                         // `kvm_device_resources`), CAP_NET_ADMIN pour la
