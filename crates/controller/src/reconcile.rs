@@ -8,10 +8,17 @@ use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
     HostAlias, PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec,
-    ResourceRequirements, SecurityContext, ServiceAccount, Volume, VolumeMount,
+    ResourceRequirements, SecurityContext, Service, ServiceAccount, ServicePort, ServiceSpec,
+    Volume, VolumeMount,
+};
+use k8s_openapi::api::networking::v1::{
+    NetworkPolicy, NetworkPolicyIngressRule, NetworkPolicyPeer, NetworkPolicyPort,
+    NetworkPolicySpec,
 };
 use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::finalizer::{self, Event};
@@ -1390,6 +1397,26 @@ async fn ensure_parent_pod(
     // microVM builder, ci-dessus dans `ensure_image_build_job`) : c'est ici
     // le sens original de `Workshop.spec.egress_allowlist`.
     let egress_allowlist = workshop.spec.egress_allowlist.join(",");
+    // Escouades multi-Workshops (tache 12.1, spec docs/specs/16-escouades-
+    // multi-agents-swarms-mesh.md §3.2) : services exportes par CE Workshop
+    // aux autres de la campagne (transmis tels quels a `net-proxy`, qui
+    // ouvre un relais TCP par entree, voir `crates/net-proxy/src/ingress.rs`).
+    let exported_services = workshop
+        .spec
+        .exported_services
+        .iter()
+        .map(|s| format!("{}={}", s.name, s.port))
+        .collect::<Vec<_>>()
+        .join(",");
+    // Cibles inter-Workshops explicitement autorisees, resolues en adresses
+    // reelles (ClusterIP du Service `<workshop-cible>-<service>`) — jamais
+    // l'alias `*.atelier.internal` lui-meme, que net-proxy ne saurait pas
+    // resoudre. Best-effort et non bloquant, meme convention que la
+    // resolution Git ci-dessous : une cible dont le Service n'existe pas
+    // encore (Workshop cible pas encore provisionne) est simplement omise
+    // pour ce cycle, jamais une erreur fatale pour CE Workshop.
+    let allowed_internal_targets =
+        resolve_allowed_internal_targets(ctx, ns, &workshop.spec.allowed_internal_targets).await;
     // Regle d'injection Git calculee cote controller (2.2.2, Jalon M2) :
     // jamais ecrite dans `workshop.spec` lui-meme (qui reste la source de
     // verite declarative de l'utilisateur), seulement ajoutee ici, a la
@@ -1597,11 +1624,27 @@ async fn ensure_parent_pod(
         metadata: ObjectMeta {
             name: Some(pod_name.clone()),
             namespace: Some(ns.to_string()),
-            owner_references: Some(vec![owner_ref]),
-            labels: Some(BTreeMap::from([(
-                "atelier.dev/workshop".to_string(),
-                name.to_string(),
-            )])),
+            owner_references: Some(vec![owner_ref.clone()]),
+            // `atelier.dev/campaign-id`/`atelier.dev/owner-group` (tache
+            // 12.1) : SEULEMENT si `campaign_id` est renseigne — c'est ce
+            // que selectionne la `NetworkPolicy` generee par
+            // `campaign_network_policy` pour autoriser le trafic INTER-pods
+            // d'une meme campagne. Un pod sans `campaign_id` ne porte jamais
+            // ces labels, meme vides : un `NetworkPolicyPeer` avec un
+            // `matchLabels` vide selectionnerait TOUS les pods du
+            // namespace, l'exact contraire du cloisonnement recherche.
+            labels: Some({
+                let mut labels =
+                    BTreeMap::from([("atelier.dev/workshop".to_string(), name.to_string())]);
+                if let Some(campaign_id) = &workshop.spec.campaign_id {
+                    labels.insert("atelier.dev/campaign-id".to_string(), campaign_id.clone());
+                    labels.insert(
+                        "atelier.dev/owner-group".to_string(),
+                        workshop.spec.owner_group.clone(),
+                    );
+                }
+                labels
+            }),
             ..Default::default()
         },
         spec: Some(PodSpec {
@@ -1870,8 +1913,32 @@ async fn ensure_parent_pod(
                                 .as_ref()
                                 .map(|c| env_var("OPENBAO_ADDR", &c.pod_addr)),
                         )
+                        // Tache 12.1 : voir la doc de `exported_services`/
+                        // `allowed_internal_targets` plus haut.
+                        .chain(
+                            (!workshop.spec.exported_services.is_empty())
+                                .then(|| env_var("ATELIER_EXPORTED_SERVICES", &exported_services)),
+                        )
+                        .chain((!allowed_internal_targets.is_empty()).then(|| {
+                            env_var(
+                                "ATELIER_ALLOWED_INTERNAL_TARGETS",
+                                &allowed_internal_targets,
+                            )
+                        }))
                         .collect::<Vec<_>>(),
                     ),
+                    ports: (!workshop.spec.exported_services.is_empty()).then(|| {
+                        workshop
+                            .spec
+                            .exported_services
+                            .iter()
+                            .map(|s| k8s_openapi::api::core::v1::ContainerPort {
+                                name: Some(s.name.clone()),
+                                container_port: s.port as i32,
+                                ..Default::default()
+                            })
+                            .collect()
+                    }),
                     ..Default::default()
                 },
                 Container {
@@ -1997,6 +2064,36 @@ async fn ensure_parent_pod(
             pods.get_opt(&pod_name).await?
         }
     };
+
+    // Tache 12.1 : un Service Kubernetes par port applicatif expose aux
+    // autres Workshops de la campagne (spec docs/specs/16-escouades-multi-
+    // agents-swarms-mesh.md §3.2). Contrairement au pod, un Service N'A PAS
+    // la contrainte d'immuabilite qui interdit un re-patch (voir le
+    // commentaire ci-dessus sur `spec.containers`) : reapplique a chaque
+    // reconcile, sans condition sur `current`/`pod_will_be_created`.
+    for exported in &workshop.spec.exported_services {
+        ensure_exported_service(ctx, ns, name, exported, &owner_ref).await?;
+    }
+
+    // Tache 12.1 : cloisonnement reseau K8s par campagne. `None` si
+    // `campaign_id` n'est pas renseigne (comportement inchange, Workshop
+    // solitaire) — voir `campaign_network_policy`.
+    if let Some(policy) = campaign_network_policy(workshop, ns, &owner_ref) {
+        let policies: Api<NetworkPolicy> = Api::namespaced(ctx.client.clone(), ns);
+        let policy_name = policy
+            .metadata
+            .name
+            .clone()
+            .expect("campaign_network_policy pose toujours un nom");
+        policies
+            .patch(
+                &policy_name,
+                &PatchParams::apply(FIELD_MANAGER).force(),
+                &Patch::Apply(&policy),
+            )
+            .await?;
+    }
+
     // Tache 6.4.2 (Jalon M6) : le pod deja en place (cree lors d'un cycle
     // anterieur, potentiellement par une version anterieure du controller)
     // porte le hash du template avec lequel il a ete provisionne. S'il
@@ -2313,6 +2410,192 @@ fn simulator_port(type_: atelier_common::SimulatorType) -> u16 {
     }
 }
 
+/// Cree/met a jour le Service Kubernetes d'un service exporte (tache 12.1,
+/// spec docs/specs/16-escouades-multi-agents-swarms-mesh.md §3.2) — nom
+/// `<workshop>-<service>`, resolu par les AUTRES Workshops via l'alias
+/// `<service>.<workshop>.atelier.internal` (voir
+/// `resolve_allowed_internal_targets`). Cible le `net-proxy` DE CE
+/// Workshop (selecteur `atelier.dev/workshop`), jamais la microVM
+/// directement — c'est `net-proxy` qui relaie vers le guest (voir
+/// `crates/net-proxy/src/ingress.rs`, aucun port applicatif n'est
+/// directement joignable sur l'IP du pod).
+async fn ensure_exported_service(
+    ctx: &ReconcileCtx,
+    ns: &str,
+    workshop_name: &str,
+    exported: &atelier_common::ExportedService,
+    owner_ref: &k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
+) -> anyhow::Result<()> {
+    let services: Api<Service> = Api::namespaced(ctx.client.clone(), ns);
+    let service_name = format!("{workshop_name}-{}", exported.name);
+    let service = Service {
+        metadata: ObjectMeta {
+            name: Some(service_name.clone()),
+            namespace: Some(ns.to_string()),
+            owner_references: Some(vec![owner_ref.clone()]),
+            labels: Some(BTreeMap::from([(
+                "atelier.dev/workshop".to_string(),
+                workshop_name.to_string(),
+            )])),
+            ..Default::default()
+        },
+        spec: Some(ServiceSpec {
+            selector: Some(BTreeMap::from([(
+                "atelier.dev/workshop".to_string(),
+                workshop_name.to_string(),
+            )])),
+            ports: Some(vec![ServicePort {
+                name: Some(exported.name.clone()),
+                port: exported.port as i32,
+                target_port: Some(IntOrString::Int(exported.port as i32)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    services
+        .patch(
+            &service_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&service),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Resout `targets` (`Workshop.spec.allowed_internal_targets`, format
+/// `<service>.<workshop-cible>.atelier.internal:<port>`, tache 12.1) en une
+/// chaine `alias=ip:port,...` consommable par `crates/net-proxy/src/
+/// internal.rs` (`ATELIER_ALLOWED_INTERNAL_TARGETS`) — meme raisonnement
+/// que `git_identity::resolve_cluster_ip` : le controller peut tourner HORS
+/// du cluster (dev local) et n'a alors pas acces au DNS interne, mais garde
+/// toujours l'acces a l'API Kubernetes, donc a `Api<Service>::get`.
+///
+/// Best-effort : une cible mal formee ou dont le Service
+/// `<workshop-cible>-<service>` n'existe pas encore est ignoree (log +
+/// skip), jamais une erreur fatale pour CE Workshop — le Workshop cible
+/// peut simplement ne pas encore etre provisionne, situation normale au
+/// demarrage d'une campagne (l'ordre de creation des Workshops d'une
+/// campagne n'est pas garanti).
+async fn resolve_allowed_internal_targets(
+    ctx: &ReconcileCtx,
+    ns: &str,
+    targets: &[String],
+) -> String {
+    let services: Api<Service> = Api::namespaced(ctx.client.clone(), ns);
+    let mut resolved = Vec::new();
+    for target in targets {
+        let Some((alias, port)) = target.rsplit_once(':') else {
+            tracing::warn!(target, "cible inter-Workshop invalide, attendu alias:port");
+            continue;
+        };
+        let Some(rest) = alias.strip_suffix(".atelier.internal") else {
+            tracing::warn!(
+                target,
+                "cible inter-Workshop invalide, suffixe .atelier.internal attendu"
+            );
+            continue;
+        };
+        let Some((service_name, target_workshop)) = rest.split_once('.') else {
+            tracing::warn!(
+                target,
+                "cible inter-Workshop invalide, attendu <service>.<workshop>.atelier.internal:<port>"
+            );
+            continue;
+        };
+        let k8s_service_name = format!("{target_workshop}-{service_name}");
+        match services.get(&k8s_service_name).await {
+            Ok(svc) => {
+                let cluster_ip = svc
+                    .spec
+                    .and_then(|s| s.cluster_ip)
+                    .filter(|ip| ip != "None");
+                match cluster_ip {
+                    Some(ip) => resolved.push(format!("{alias}={ip}:{port}")),
+                    None => tracing::warn!(
+                        target,
+                        k8s_service_name,
+                        "Service cible sans ClusterIP exploitable, cible ignoree pour ce cycle"
+                    ),
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target,
+                    k8s_service_name,
+                    %err,
+                    "Service cible introuvable (Workshop pas encore provisionne ?), cible ignoree pour ce cycle"
+                );
+            }
+        }
+    }
+    resolved.join(",")
+}
+
+/// Genere la `NetworkPolicy` de cloisonnement d'une campagne multi-
+/// Workshops (spec 16 §3.2, "Cloisonnement au Niveau Reseau Kubernetes") :
+/// seuls les pods portant le MEME `campaign_id` ET le MEME `owner_group`
+/// (labels `atelier.dev/campaign-id`/`atelier.dev/owner-group`, poses sur
+/// le pod parent par `ensure_parent_pod` UNIQUEMENT si `campaign_id` est
+/// renseigne) peuvent etablir une connexion entrante vers ce pod — tout
+/// trafic transversal inter-projets/inter-utilisateurs est detruit au
+/// niveau noyau (`DROP` implicite d'une `NetworkPolicy` de type `Ingress`
+/// sans regle correspondante), EN PLUS (jamais a la place) de la
+/// validation applicative "Zero Wildcard" de net-proxy (`Workshop.spec.
+/// allowed_internal_targets`). `None` si `Workshop.spec.campaign_id` n'est
+/// pas renseigne : Workshop solitaire, aucune `NetworkPolicy` generee par
+/// ce mecanisme.
+fn campaign_network_policy(
+    workshop: &Workshop,
+    ns: &str,
+    owner_ref: &k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
+) -> Option<NetworkPolicy> {
+    let campaign_id = workshop.spec.campaign_id.as_ref()?;
+    let workshop_name = workshop.name_any();
+    Some(NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(format!("{workshop_name}-campaign")),
+            namespace: Some(ns.to_string()),
+            owner_references: Some(vec![owner_ref.clone()]),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: LabelSelector {
+                match_labels: Some(BTreeMap::from([(
+                    "atelier.dev/workshop".to_string(),
+                    workshop_name,
+                )])),
+                ..Default::default()
+            },
+            policy_types: Some(vec!["Ingress".to_string()]),
+            ingress: Some(vec![NetworkPolicyIngressRule {
+                from: Some(vec![NetworkPolicyPeer {
+                    pod_selector: Some(LabelSelector {
+                        match_labels: Some(BTreeMap::from([
+                            ("atelier.dev/campaign-id".to_string(), campaign_id.clone()),
+                            (
+                                "atelier.dev/owner-group".to_string(),
+                                workshop.spec.owner_group.clone(),
+                            ),
+                        ])),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }]),
+                // Aucun filtre de port : le pod source doit deja avoir
+                // passe la validation applicative "Zero Wildcard" de
+                // net-proxy (`allowed_internal_targets`) pour connaitre ne
+                // serait-ce que l'adresse a joindre — cette `NetworkPolicy`
+                // est une DEFENSE EN PROFONDEUR contre un contournement par
+                // IP brute, pas le mecanisme d'autorisation primaire.
+                ports: None as Option<Vec<NetworkPolicyPort>>,
+            }]),
+            ..Default::default()
+        }),
+    })
+}
+
 /// Construit le conteneur sidecar pour un simulateur declare
 /// (`Workshop.spec.simulators`, tache 9.3). Le nom du conteneur est le nom
 /// logique declare par l'utilisateur : doit donc etre un nom de conteneur
@@ -2430,6 +2713,9 @@ mod template_hash_tests {
                 owner_subject: "test-user".into(),
                 desired_state: WorkshopDesiredState::Running,
                 simulators: vec![],
+                exported_services: vec![],
+                allowed_internal_targets: vec![],
+                campaign_id: None,
             },
             status: Some(WorkshopStatus {
                 phase: WorkshopPhase::Running,

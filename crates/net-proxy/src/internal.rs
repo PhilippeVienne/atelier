@@ -69,6 +69,18 @@ pub struct InternalRoutes {
     /// Alias de simulateurs sidecars, cle = alias complet en minuscules
     /// (ex: `postgres.atelier.internal`) — voir [`SIMULATOR_ALIAS_SUFFIX`].
     simulators: HashMap<String, (String, u16)>,
+    /// Cibles inter-Workshops explicitement autorisees (spec docs/specs/16-
+    /// escouades-multi-agents-swarms-mesh.md §3.2, tache 12.1) — cle = alias
+    /// complet en minuscules (ex: `api.ws-backend.atelier.internal`), meme
+    /// mecanisme que [`Self::simulators`] mais table SEPAREE : une regle
+    /// d'un Workshop client ne doit jamais accidentellement matcher un
+    /// simulateur portant le meme nom qu'un service exporte d'un AUTRE
+    /// Workshop (deux origines de configuration completement distinctes —
+    /// `Workshop.spec.simulators` du Workshop lui-meme contre
+    /// `Workshop.spec.allowed_internal_targets`, resolu par le controller).
+    /// "Zero Wildcard" par construction : une recherche de cle exacte dans
+    /// cette table, jamais un suffixe/motif.
+    squad: HashMap<String, (String, u16)>,
 }
 
 impl InternalRoutes {
@@ -83,7 +95,29 @@ impl InternalRoutes {
         if let Ok(raw) = std::env::var("ATELIER_SIMULATORS") {
             routes.add_simulators(&raw)?;
         }
+        if let Ok(raw) = std::env::var("ATELIER_ALLOWED_INTERNAL_TARGETS") {
+            routes.add_squad_targets(&raw)?;
+        }
         Ok(routes)
+    }
+
+    /// Ajoute les cibles inter-Workshops decrites par `raw` : liste separee
+    /// par des virgules d'entrees `alias=host:port` (posee par le
+    /// `controller` a partir de `Workshop.spec.allowed_internal_targets`
+    /// UNE FOIS resolues en adresses reelles — le ClusterIP du Service
+    /// `<workshop-cible>-<service>`, jamais l'alias `*.atelier.internal`
+    /// lui-meme, qui n'existe que du point de vue de net-proxy). Meme
+    /// format textuel que [`Self::add_simulators`], table separee (voir la
+    /// doc du champ [`Self::squad`]).
+    pub fn add_squad_targets(&mut self, raw: &str) -> anyhow::Result<()> {
+        for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (alias, addr) = entry.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("cible inter-Workshop invalide {entry:?}, attendu alias=host:port")
+            })?;
+            self.squad
+                .insert(alias.to_ascii_lowercase(), parse_addr(addr)?);
+        }
+        Ok(())
     }
 
     /// Ajoute les alias de simulateurs decrits par `raw` : liste separee par
@@ -128,6 +162,7 @@ impl InternalRoutes {
         Ok(Self {
             routes,
             simulators: HashMap::new(),
+            squad: HashMap::new(),
         })
     }
 
@@ -148,6 +183,7 @@ impl InternalRoutes {
             .find(|(alias, _)| alias.eq_ignore_ascii_case(&host))
             .map(|(_, addr)| addr.clone())
             .or_else(|| self.simulators.get(&host).cloned())
+            .or_else(|| self.squad.get(&host).cloned())
     }
 }
 
@@ -291,5 +327,67 @@ mod tests {
     fn malformed_simulator_entry_is_rejected() {
         let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
         assert!(routes.add_simulators("postgres-no-equals-sign").is_err());
+    }
+
+    /// Cibles inter-Workshops (tache 12.1) : meme mecanisme textuel que les
+    /// simulateurs, mais table separee pour eviter qu'un simulateur et un
+    /// service exporte d'un autre Workshop portant le meme nom ne se
+    /// confondent.
+    #[test]
+    fn squad_targets_resolve_by_alias_and_are_case_insensitive() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        routes
+            .add_squad_targets("api.ws-backend.atelier.internal=10.96.1.5:8080")
+            .unwrap();
+        assert_eq!(
+            routes.resolve("api.ws-backend.atelier.internal"),
+            Some(("10.96.1.5".to_string(), 8080))
+        );
+        assert_eq!(
+            routes.resolve("API.WS-BACKEND.ATELIER.INTERNAL"),
+            Some(("10.96.1.5".to_string(), 8080))
+        );
+    }
+
+    /// "Zero Wildcard" (spec 16 §3.2) : une cible NON explicitement listee
+    /// reste inaccessible, meme si elle ressemble a un alias inter-Workshop
+    /// valide.
+    #[test]
+    fn squad_target_not_listed_is_not_resolved() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        routes
+            .add_squad_targets("api.ws-backend.atelier.internal=10.96.1.5:8080")
+            .unwrap();
+        assert_eq!(routes.resolve("other.ws-backend.atelier.internal"), None);
+        assert_eq!(routes.resolve("api.ws-other.atelier.internal"), None);
+    }
+
+    #[test]
+    fn malformed_squad_entry_is_rejected() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        assert!(routes
+            .add_squad_targets("api.ws-backend.atelier.internal-no-equals-sign")
+            .is_err());
+    }
+
+    /// Table separee de `simulators` : un simulateur nomme "api" dans CE
+    /// Workshop et un service exporte nomme "api" dans un AUTRE Workshop
+    /// (meme nom, sources de configuration totalement distinctes) ne
+    /// doivent jamais s'ecraser l'un l'autre.
+    #[test]
+    fn simulator_and_squad_target_with_the_same_alias_coexist_independently() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        routes.add_simulators("api=127.0.0.1:9999").unwrap();
+        routes
+            .add_squad_targets("api.ws-backend.atelier.internal=10.96.1.5:8080")
+            .unwrap();
+        assert_eq!(
+            routes.resolve("api.atelier.internal"),
+            Some(("127.0.0.1".to_string(), 9999))
+        );
+        assert_eq!(
+            routes.resolve("api.ws-backend.atelier.internal"),
+            Some(("10.96.1.5".to_string(), 8080))
+        );
     }
 }

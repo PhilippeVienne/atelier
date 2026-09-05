@@ -6,8 +6,8 @@ pub mod telemetry;
 pub mod tls_client;
 
 pub use crd::{
-    DevcontainerSource, IdentityInjectionRule, SimulatorSpec, SimulatorType, Workshop,
-    WorkshopDesiredState, WorkshopPhase, WorkshopResources, WorkshopSpec, WorkshopStatus,
+    DevcontainerSource, ExportedService, IdentityInjectionRule, SimulatorSpec, SimulatorType,
+    Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources, WorkshopSpec, WorkshopStatus,
     WorkshopUpgradeState, GIT_ALIAS_HOST,
 };
 pub use openbao_client::OpenBaoClient;

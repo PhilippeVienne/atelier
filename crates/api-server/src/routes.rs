@@ -760,6 +760,14 @@ async fn create_workshop(
             owner_subject: user.subject,
             desired_state: WorkshopDesiredState::Running,
             simulators: req.simulators,
+            // Non exposes par cette route (tache 12.1, spec
+            // docs/specs/16-escouades-multi-agents-swarms-mesh.md §3.2) :
+            // reserves a une orchestration multi-Workshops (pm-engine,
+            // tache 12.3) qui les positionnera directement via le CRD,
+            // jamais via une requete de creation individuelle.
+            exported_services: vec![],
+            allowed_internal_targets: vec![],
+            campaign_id: None,
         },
     );
 

@@ -7,13 +7,14 @@
 //!   cargo test -p atelier-controller
 
 use atelier_common::{
-    DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,
-    WorkshopSpec,
+    DevcontainerSource, ExportedService, Workshop, WorkshopDesiredState, WorkshopPhase,
+    WorkshopResources, WorkshopSpec,
 };
 use atelier_controller::reconcile::ReconcileCtx;
 use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Pod, ServiceAccount};
+use k8s_openapi::api::core::v1::{Pod, Service, ServiceAccount};
+use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Config};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,6 +77,9 @@ fn sample_spec() -> WorkshopSpec {
         owner_subject: "test-user".into(),
         desired_state: WorkshopDesiredState::Running,
         simulators: vec![],
+        exported_services: vec![],
+        allowed_internal_targets: vec![],
+        campaign_id: None,
     }
 }
 
@@ -373,6 +377,234 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
         .await
         .ok();
     workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Amene un Workshop jusqu'a son pod parent, exactement comme
+/// `apply_creates_owned_parent_pod_once_image_ready` (meme sequence de
+/// patches de statut simulant `image-builder`) — factorise ici pour le
+/// reutiliser dans le test d'escouades multi-Workshops (tache 12.1)
+/// ci-dessous, qui a besoin de DEUX Workshops distincts amenes au meme
+/// etat.
+async fn create_workshop_up_to_parent_pod(
+    workshops: &Api<Workshop>,
+    ctx: &ReconcileCtx,
+    name: &str,
+    spec: WorkshopSpec,
+) -> atelier_common::WorkshopStatus {
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(name, spec))
+        .await
+        .expect("creation du Workshop");
+    let building_status = atelier_controller::reconcile::apply(ctx, &created)
+        .await
+        .expect("premier apply()");
+    workshops
+        .patch_status(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": building_status })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    workshops
+        .patch_status(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("patch du statut");
+    let with_digest = workshops.get(name).await.expect("get workshop");
+    atelier_controller::reconcile::apply(ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer")
+}
+
+/// Tache 12.1 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+/// §3.2) : un service exporte doit devenir un vrai Service Kubernetes
+/// (`<workshop>-<service>`), une cible autorisee vers un AUTRE Workshop
+/// doit etre resolue en son ClusterIP reel et transmise a `net-proxy`, et
+/// un `campaign_id` doit produire une `NetworkPolicy` de cloisonnement.
+/// Deux VRAIS Workshops crees contre le cluster de dev reel — pas de
+/// simulation du controller cote client.
+#[tokio::test]
+async fn apply_wires_exported_services_squad_targets_and_campaign_network_policy() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let backend_name = unique_name("test-workshop-squad-backend");
+    let frontend_name = unique_name("test-workshop-squad-frontend");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let services: Api<Service> = Api::namespaced(client.clone(), ns);
+    let policies: Api<NetworkPolicy> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_openbao(client.clone());
+    let campaign_id = unique_name("campaign");
+
+    // Workshop "backend" : expose "api" sur :8080, meme campagne.
+    let backend_spec = WorkshopSpec {
+        exported_services: vec![ExportedService {
+            name: "api".to_string(),
+            port: 8080,
+        }],
+        campaign_id: Some(campaign_id.clone()),
+        ..sample_spec()
+    };
+    create_workshop_up_to_parent_pod(&workshops, &ctx, &backend_name, backend_spec).await;
+
+    let backend_service_name = format!("{backend_name}-api");
+    let backend_service = services
+        .get(&backend_service_name)
+        .await
+        .expect("le Service du backend doit avoir ete cree");
+    assert_eq!(
+        backend_service
+            .spec
+            .as_ref()
+            .and_then(|s| s.selector.as_ref())
+            .and_then(|sel| sel.get("atelier.dev/workshop")),
+        Some(&backend_name)
+    );
+    assert_eq!(
+        backend_service
+            .spec
+            .as_ref()
+            .and_then(|s| s.ports.as_ref())
+            .map(|p| p[0].port),
+        Some(8080)
+    );
+
+    // Workshop "frontend" : meme campagne, autorise a joindre le backend.
+    let squad_alias = format!("api.{backend_name}.atelier.internal:8080");
+    let frontend_spec = WorkshopSpec {
+        allowed_internal_targets: vec![squad_alias.clone()],
+        campaign_id: Some(campaign_id.clone()),
+        ..sample_spec()
+    };
+    create_workshop_up_to_parent_pod(&workshops, &ctx, &frontend_name, frontend_spec).await;
+
+    let frontend_pod = pods
+        .get(&format!("{frontend_name}-parent"))
+        .await
+        .expect("le pod parent du frontend doit avoir ete cree");
+    let frontend_containers = &frontend_pod.spec.as_ref().expect("pod spec").containers;
+    let frontend_net_proxy = frontend_containers
+        .iter()
+        .find(|c| c.name == "net-proxy")
+        .expect("le pod frontend doit avoir un conteneur net-proxy");
+    let frontend_env = frontend_net_proxy.env.clone().unwrap_or_default();
+    let squad_target_env = frontend_env
+        .iter()
+        .find(|e| e.name == "ATELIER_ALLOWED_INTERNAL_TARGETS")
+        .expect("ATELIER_ALLOWED_INTERNAL_TARGETS doit etre transmise au net-proxy du frontend");
+    let backend_cluster_ip = backend_service
+        .spec
+        .as_ref()
+        .and_then(|s| s.cluster_ip.clone())
+        .expect("le Service backend doit avoir un ClusterIP");
+    assert_eq!(
+        squad_target_env.value.as_deref(),
+        Some(format!("api.{backend_name}.atelier.internal={backend_cluster_ip}:8080").as_str()),
+        "la cible doit etre resolue en ClusterIP REEL, jamais l'alias lui-meme"
+    );
+
+    // Le pod backend, lui, doit porter ATELIER_EXPORTED_SERVICES et les
+    // labels de campagne (selectionnes par la NetworkPolicy ci-dessous).
+    let backend_pod = pods
+        .get(&format!("{backend_name}-parent"))
+        .await
+        .expect("le pod parent du backend doit avoir ete cree");
+    let backend_net_proxy = backend_pod
+        .spec
+        .as_ref()
+        .expect("pod spec")
+        .containers
+        .iter()
+        .find(|c| c.name == "net-proxy")
+        .expect("le pod backend doit avoir un conteneur net-proxy");
+    let exported_env = backend_net_proxy
+        .env
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|e| e.name == "ATELIER_EXPORTED_SERVICES")
+        .expect("ATELIER_EXPORTED_SERVICES doit etre transmise au net-proxy du backend");
+    assert_eq!(exported_env.value.as_deref(), Some("api=8080"));
+    let backend_labels = backend_pod.metadata.labels.clone().unwrap_or_default();
+    assert_eq!(
+        backend_labels.get("atelier.dev/campaign-id"),
+        Some(&campaign_id)
+    );
+    assert_eq!(
+        backend_labels.get("atelier.dev/owner-group"),
+        Some(&"atelier-core".to_string())
+    );
+
+    // Une `NetworkPolicy` de cloisonnement doit exister pour CHAQUE
+    // Workshop de la campagne (une par pod parent, voir
+    // `campaign_network_policy`).
+    let backend_policy = policies
+        .get(&format!("{backend_name}-campaign"))
+        .await
+        .expect("la NetworkPolicy du backend doit avoir ete creee");
+    let ingress_peer_labels = backend_policy
+        .spec
+        .as_ref()
+        .and_then(|s| s.ingress.as_ref())
+        .and_then(|ingress| ingress.first())
+        .and_then(|rule| rule.from.as_ref())
+        .and_then(|from| from.first())
+        .and_then(|peer| peer.pod_selector.as_ref())
+        .and_then(|sel| sel.match_labels.clone())
+        .expect("la NetworkPolicy doit selectionner un peer par labels");
+    assert_eq!(
+        ingress_peer_labels.get("atelier.dev/campaign-id"),
+        Some(&campaign_id)
+    );
+    assert_eq!(
+        ingress_peer_labels.get("atelier.dev/owner-group"),
+        Some(&"atelier-core".to_string())
+    );
+
+    for pod_name in [
+        format!("{backend_name}-parent"),
+        format!("{frontend_name}-parent"),
+    ] {
+        let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+            Api::namespaced(client.clone(), ns);
+        service_accounts
+            .delete(&pod_name, &DeleteParams::default())
+            .await
+            .ok();
+        pods.delete(&pod_name, &DeleteParams::default()).await.ok();
+    }
+    for workshop_name in [&backend_name, &frontend_name] {
+        jobs.delete(
+            &format!("{workshop_name}-image-build"),
+            &foreground_delete(),
+        )
+        .await
+        .ok();
+        policies
+            .delete(
+                &format!("{workshop_name}-campaign"),
+                &DeleteParams::default(),
+            )
+            .await
+            .ok();
+        workshops
+            .delete(workshop_name, &DeleteParams::default())
+            .await
+            .ok();
+    }
+    services
+        .delete(&backend_service_name, &DeleteParams::default())
+        .await
+        .ok();
 }
 
 /// Tache 9.3 (spec `docs/specs/14-devex-cli-simulateurs-hitl.md` §4.3) :

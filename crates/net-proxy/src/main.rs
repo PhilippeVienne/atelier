@@ -41,6 +41,7 @@ mod anomaly;
 mod dns;
 mod forward;
 mod http;
+mod ingress;
 mod internal;
 mod metadata;
 mod portforward;
@@ -92,6 +93,11 @@ async fn main() -> anyhow::Result<()> {
 
     let admin_addr = std::env::var("ATELIER_NET_PROXY_ADMIN_ADDR")
         .unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_string());
+
+    // Services exportes vers les autres Workshops de la campagne (tache
+    // 12.1) : relais TCP independants, pas de dependance sur le reste de
+    // ce `main` (voir la doc de tete de `crate::ingress`).
+    ingress::spawn_from_env(Arc::clone(&vm_addr));
 
     let allowlist: Arc<RwLock<Vec<String>>> =
         Arc::new(RwLock::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST")));

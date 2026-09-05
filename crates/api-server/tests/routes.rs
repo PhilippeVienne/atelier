@@ -488,6 +488,9 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             owner_subject: "portforward-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
             simulators: vec![],
+            exported_services: vec![],
+            allowed_internal_targets: vec![],
+            campaign_id: None,
         },
     );
     workshop = workshops
@@ -739,6 +742,9 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             owner_subject: "vscode-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
             simulators: vec![],
+            exported_services: vec![],
+            allowed_internal_targets: vec![],
+            campaign_id: None,
         },
     );
     workshops
@@ -930,6 +936,9 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             owner_subject: "vscode-ws-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
             simulators: vec![],
+            exported_services: vec![],
+            allowed_internal_targets: vec![],
+            campaign_id: None,
         },
     );
     workshops
@@ -1383,6 +1392,9 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             owner_subject: "vscode-session-auth-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
             simulators: vec![],
+            exported_services: vec![],
+            allowed_internal_targets: vec![],
+            campaign_id: None,
         },
     );
     workshops

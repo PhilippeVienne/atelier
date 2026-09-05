@@ -83,7 +83,7 @@ Au lieu de faire communiquer les agents en Peer-to-Peer de manière asynchrone n
 2. **Garantie de Convergence** :
    - Aucun échange informel entre LLMs : chaque agent travaille sur un périmètre clairement délimité avec des entrées/sorties typées.
 
-### 3.2. Interconnexion Inter-Workshops Standard (Zero WireGuard)
+### 3.2. Interconnexion Inter-Workshops Standard (Zero WireGuard) — tâche 12.1, **implémentée**
 
 Pour que le Frontend puisse tester dynamiquement l'API du Backend pendant son développement :
 1. **Ports Exportés dans `WorkshopSpec`** :
@@ -94,17 +94,18 @@ Pour que le Frontend puisse tester dynamiquement l'API du Backend pendant son d�
          - name: api
            port: 8080
      ```
-2. **Routage K8s Natif via `net-proxy` & Validation Stricte des Cibles** :
-   - Le `controller` expose un `Service` Kubernetes standard pour chaque service exporté (`<workshop-name>-<service>`).
-   - Le résolveur DNS de `net-proxy` intercepte les requêtes vers `<service>.<workshop-name>.atelier.internal` et renvoie le ClusterIP du Service correspondant.
+2. **Routage K8s Natif via `net-proxy` & Validation Stricte des Cibles — correction par rapport à la première rédaction** :
+   - **Un port applicatif du guest n'existe QUE dans le netns de la microVM** — vérifié dans le code (`crates/controller/src/guest_probe.rs`, doc de tête : "pas de port exposé directement sur l'IP du pod", seul le relais WebSocket multiplexé `/portforward` de `net-proxy`, réservé au chemin externe `api-server`→Workshop, y accède). Un `Service` Kubernetes ne peut donc PAS cibler l'IP du guest (hors netns du pod, injoignable depuis un autre pod) : il cible `net-proxy` du Workshop exportateur, qui relaie lui-même vers son PROPRE guest. Nouveau `crates/net-proxy/src/ingress.rs` : un relais TCP simple (`tokio::io::copy_bidirectional`) par service exporté, PAS le protocole `portforward.k8s.io`-like (réservé au chemin externe, inutile entre deux composants du même pod).
+   - Le `controller` expose un `Service` Kubernetes standard pour chaque service exporté (`<workshop-name>-<service>`, `crates/controller/src/reconcile.rs::ensure_exported_service`), sélecteur = pod parent (`atelier.dev/workshop`).
+   - **Résolution — correction** : pas un résolveur DNS dans `net-proxy` (jamais besoin de résoudre `*.atelier.internal` lui-même, même raisonnement que `git.atelier.internal`) — le `controller` résout chaque cible en ClusterIP RÉEL du Service correspondant (`resolve_allowed_internal_targets`, même méthode que `git_identity::resolve_cluster_ip`) et transmet `alias=ip:port` à `net-proxy` du Workshop DEMANDEUR via `ATELIER_ALLOWED_INTERNAL_TARGETS`.
    - **Validation Nominative des Cibles (Zero Wildcard)** :
-     * Il est formellement interdit d'autoriser `*.atelier.internal` en wildcard.
+     * Il est formellement interdit d'autoriser `*.atelier.internal` en wildcard — table `squad` de `crates/net-proxy/src/internal.rs` (séparée de `simulators`, même mécanisme textuel), recherche de clé EXACTE, jamais un suffixe/motif.
      * Le `controller` n'injecte dans la configuration `net-proxy` du Workshop client QUE les cibles explicitement déclarées dans les dépendances du workflow (`allowed_internal_targets: ["api.ws-backend.atelier.internal:8080"]`).
-     * Toute requête vers un Workshop non autorisé ou hors de la campagne est immédiatement rejetée avec un code `403 Forbidden`.
+     * Toute requête vers une cible non listée est traitée comme n'importe quel hôte inconnu par `net-proxy` (correction : pas un `403 Forbidden` dédié, comportement standard déjà en place pour tout alias non résolu).
 3. **Cloisonnement au Niveau Réseau Kubernetes (`NetworkPolicy`)** :
    - Pour empêcher tout contournement par IP brute au niveau socket :
-   - Le `controller` génère une `NetworkPolicy` scopée à chaque campagne : seuls les pods portant le même label `atelier.dev/campaign-id: <uuid>` et le même `ownerGroup` sont autorisés à échanger des paquets. Tout trafic transversal inter-projets ou inter-utilisateurs est détruit au niveau noyau (`DROP`).
-4. **Authentification de Session Inter-Workshops (`identity-proxy`)** :
+   - Le `controller` génère une `NetworkPolicy` PAR WORKSHOP de la campagne (`campaign_network_policy`) : seuls les pods portant le même label `atelier.dev/campaign-id: <id>` ET le même `atelier.dev/owner-group` (posés sur le pod parent UNIQUEMENT si `campaign_id` est renseigné) sont autorisés à établir une connexion entrante. Tout trafic transversal inter-projets ou inter-utilisateurs est détruit au niveau noyau (`DROP` implicite d'une `NetworkPolicy` de type `Ingress` sans règle correspondante) — en plus, jamais à la place, de la validation applicative "Zero Wildcard" ci-dessus.
+4. **Authentification de Session Inter-Workshops (`identity-proxy`)** — tâche 12.2, non couverte ici :
    - `identity-proxy` injecte un jeton éphémère d'escouade (`X-Atelier-Squad-Token`) signé par le Controller avec un TTL court (15 min).
    - Le proxy du Workshop récepteur valide le jeton et le `campaign-id` avant de transférer la connexion à l'application in-VM.
    - Les règles d'allowlist egress vers Internet restent 100% actives et indépendantes.

@@ -250,6 +250,9 @@ impl WorkshopMcpServer {
                 owner_subject: user.subject,
                 desired_state: WorkshopDesiredState::Running,
                 simulators: vec![],
+                exported_services: vec![],
+                allowed_internal_targets: vec![],
+                campaign_id: None,
             },
         );
 

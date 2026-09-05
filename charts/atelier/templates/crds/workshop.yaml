@@ -22,6 +22,16 @@ spec:
           spec:
             description: 'Un `Workshop` decrit un environnement isole fourni a un agent de code : source devcontainer, ressources allouees, politique reseau et outillage active.'
             properties:
+              allowedInternalTargets:
+                default: []
+                description: 'Cibles internes explicitement autorisees vers D''AUTRES Workshops, format `<service>.<workshop-cible>.atelier.internal:<port>` — jamais de wildcard (spec 16 §3.2, "Validation Nominative des Cibles, Zero Wildcard") : une cible absente de cette liste reste inaccessible, quand bien meme elle appartiendrait a la meme campagne. Resolu par le `controller` en adresses reelles (ClusterIP du Service correspondant) et transmis au `net-proxy` de CE Workshop (`crates/net-proxy/src/internal.rs`, table `squad`).'
+                items:
+                  type: string
+                type: array
+              campaignId:
+                description: 'Identifiant de campagne multi-Workshops (spec 16 §3.2/§4) : les Workshops d''une meme campagne (meme valeur ici) ET du meme `owner_group` peuvent s''echanger des paquets au niveau reseau K8s (`NetworkPolicy` generee par le controller, voir `crates/controller/src/reconcile.rs::campaign_network_policy`) — tout le reste du trafic inter-pod est detruit au niveau noyau. `None` : Workshop solitaire, comportement inchange (aucune `NetworkPolicy` generee par ce mecanisme).'
+                nullable: true
+                type: string
               desiredState:
                 default: Running
                 description: 'Etat souhaite : `Running` (microVM active) ou `Suspended` (mise en veille via snapshot Firecracker, pod parent libere). Le controller fait converger `status.phase` vers cet etat.'
@@ -51,6 +61,25 @@ spec:
                 description: Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
                 items:
                   type: string
+                type: array
+              exportedServices:
+                default: []
+                description: 'Ports applicatifs exposes aux AUTRES Workshops d''une meme campagne (spec `docs/specs/16-escouades-multi-agents-swarms-mesh.md` §3.2, tache 12.1) — jamais a Internet ni au reste du cluster. Chaque entree devient un Service Kubernetes `<workshop>-<name>` (voir `crates/controller/src/reconcile.rs::ensure_exported_service`) et un relais TCP dans le `net-proxy` de CE Workshop (`crates/net-proxy/src/ ingress.rs`) : sans ce relais, rien n''ecoute sur l''IP du pod pour un port applicatif (celui-ci n''existe que dans le netns de la microVM, voir la doc de tete de `crate::guest_probe`).'
+                items:
+                  description: Un port applicatif expose aux autres Workshops de la meme campagne — voir la doc du champ `WorkshopSpec::exported_services`.
+                  properties:
+                    name:
+                      description: 'Nom logique, unique parmi les services exportes de ce Workshop : determine a la fois le nom du Service Kubernetes cree (`<workshop>-<name>`) et le sous-domaine de l''alias resolu par les AUTRES Workshops (`<name>.<workshop>.atelier.internal`).'
+                      type: string
+                    port:
+                      description: Port TCP, a la fois cote Service Kubernetes et cote microVM (le `net-proxy` de ce Workshop relaie tel quel, sans traduction de port).
+                      format: uint16
+                      minimum: 0.0
+                      type: integer
+                  required:
+                  - name
+                  - port
+                  type: object
                 type: array
               identityInjectionRules:
                 default: []
@@ -110,6 +139,33 @@ spec:
                 - cpu
                 - memory
                 type: object
+              simulators:
+                default: []
+                description: 'Simulateurs ephemeres deployes en sidecars dans le pod parent (spec `docs/specs/14-devex-cli-simulateurs-hitl.md` §4, tache 9.3) : dependances d''appoint (base de donnees, mock d''API) pour les tests de l''agent, sans acces Internet et sans alourdir la microVM elle-meme. Chaque entree devient joignable in-VM via `<name>.atelier.internal` (voir `crates/net-proxy/src/internal.rs`).'
+                items:
+                  description: Un simulateur sidecar declare pour un `Workshop` — voir la doc du champ `WorkshopSpec::simulators`.
+                  properties:
+                    env:
+                      additionalProperties:
+                        type: string
+                      default: {}
+                      description: 'Variables d''environnement transmises telles quelles au conteneur sidecar (ex: `POSTGRES_DB`, `POSTGRES_PASSWORD` pour `Postgres`).'
+                      type: object
+                    name:
+                      description: 'Nom logique, unique parmi les simulateurs de ce Workshop : devient le sous-domaine de l''alias `<name>.atelier.internal`. Independant de `type_` pour permettre plusieurs instances d''un meme type (ex: deux bases Postgres distinctes) sous des noms differents.'
+                      type: string
+                    type:
+                      description: 'Type d''un simulateur sidecar : determine l''image de conteneur et le port interne par defaut utilises par `crates/controller/src/reconcile.rs`.'
+                      enum:
+                      - postgres
+                      - localstack
+                      - wiremock
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
               tools:
                 default: []
                 description: 'Outils/simulateurs a exposer via le mcp-gateway (ex: "aws-sim", "identity").'

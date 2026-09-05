@@ -66,6 +66,52 @@ pub struct WorkshopSpec {
     /// (voir `crates/net-proxy/src/internal.rs`).
     #[serde(default)]
     pub simulators: Vec<SimulatorSpec>,
+    /// Ports applicatifs exposes aux AUTRES Workshops d'une meme campagne
+    /// (spec `docs/specs/16-escouades-multi-agents-swarms-mesh.md` §3.2,
+    /// tache 12.1) — jamais a Internet ni au reste du cluster. Chaque entree
+    /// devient un Service Kubernetes `<workshop>-<name>` (voir
+    /// `crates/controller/src/reconcile.rs::ensure_exported_service`) et un
+    /// relais TCP dans le `net-proxy` de CE Workshop (`crates/net-proxy/src/
+    /// ingress.rs`) : sans ce relais, rien n'ecoute sur l'IP du pod pour un
+    /// port applicatif (celui-ci n'existe que dans le netns de la microVM,
+    /// voir la doc de tete de `crate::guest_probe`).
+    #[serde(default)]
+    pub exported_services: Vec<ExportedService>,
+    /// Cibles internes explicitement autorisees vers D'AUTRES Workshops,
+    /// format `<service>.<workshop-cible>.atelier.internal:<port>` — jamais
+    /// de wildcard (spec 16 §3.2, "Validation Nominative des Cibles, Zero
+    /// Wildcard") : une cible absente de cette liste reste inaccessible,
+    /// quand bien meme elle appartiendrait a la meme campagne. Resolu par le
+    /// `controller` en adresses reelles (ClusterIP du Service correspondant)
+    /// et transmis au `net-proxy` de CE Workshop
+    /// (`crates/net-proxy/src/internal.rs`, table `squad`).
+    #[serde(default)]
+    pub allowed_internal_targets: Vec<String>,
+    /// Identifiant de campagne multi-Workshops (spec 16 §3.2/§4) : les
+    /// Workshops d'une meme campagne (meme valeur ici) ET du meme
+    /// `owner_group` peuvent s'echanger des paquets au niveau reseau K8s
+    /// (`NetworkPolicy` generee par le controller, voir
+    /// `crates/controller/src/reconcile.rs::campaign_network_policy`) — tout
+    /// le reste du trafic inter-pod est detruit au niveau noyau. `None` :
+    /// Workshop solitaire, comportement inchange (aucune `NetworkPolicy`
+    /// generee par ce mecanisme).
+    #[serde(default)]
+    pub campaign_id: Option<String>,
+}
+
+/// Un port applicatif expose aux autres Workshops de la meme campagne — voir
+/// la doc du champ `WorkshopSpec::exported_services`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedService {
+    /// Nom logique, unique parmi les services exportes de ce Workshop :
+    /// determine a la fois le nom du Service Kubernetes cree
+    /// (`<workshop>-<name>`) et le sous-domaine de l'alias resolu par les
+    /// AUTRES Workshops (`<name>.<workshop>.atelier.internal`).
+    pub name: String,
+    /// Port TCP, a la fois cote Service Kubernetes et cote microVM (le
+    /// `net-proxy` de ce Workshop relaie tel quel, sans traduction de port).
+    pub port: u16,
 }
 
 /// Un simulateur sidecar declare pour un `Workshop` — voir la doc du champ
@@ -304,6 +350,9 @@ mod tests {
                 owner_subject: "user@example.invalid".into(),
                 desired_state: WorkshopDesiredState::Running,
                 simulators: vec![],
+                exported_services: vec![],
+                allowed_internal_targets: vec![],
+                campaign_id: None,
             },
         );
 
