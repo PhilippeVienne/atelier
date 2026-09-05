@@ -25,6 +25,33 @@ class SubTask(TypedDict):
     workshop_name: str
     branch_name: str
 
+    # --- Escouades multi-Workshops (tache 12.3, spec docs/specs/16-
+    # escouades-multi-agents-swarms-mesh.md §3.1/§3.2) : les trois champs
+    # ci-dessous ne s'appliquent qu'a un decoupage backend/frontend LEGITIME
+    # (chaque cote s'execute et se teste seul — voir le prompt de
+    # `plan_parallel_tasks`), jamais a une dependance d'execution ordinaire.
+    #
+    # Declare par une sous-tache PRODUCTRICE (typiquement backend) : le port
+    # sur lequel son propre serveur ecoute, expose aux autres Workshops de
+    # la meme campagne (`Workshop.spec.exported_services`, tache 12.1).
+    service_port: NotRequired[int]
+    # Declare par une sous-tache PRODUCTRICE : chemin (dans son propre
+    # depot/branche) d'un artefact de contrat (ex: "openapi.yaml") a
+    # injecter comme contexte IMMUABLE dans le prompt de toute sous-tache
+    # CONSOMMATRICE (spec 16 §3.1, "Publication du Contrat").
+    contract_path: NotRequired[str]
+    # Declare par une sous-tache CONSOMMATRICE (typiquement frontend) :
+    # `id` de la sous-tache PRODUCTRICE dont elle a besoin — a la fois pour
+    # recevoir son contrat (`contract_path`) et pour joindre son service en
+    # HTTP au runtime (`Workshop.spec.allowed_internal_targets`, tache
+    # 12.1), a l'alias `api.<workshop_name du producteur>.atelier.internal`.
+    # DOIT apparaitre APRES la sous-tache productrice dans `plan` : les
+    # sous-taches sont traitees dans l'ordre par `DelegateToOpencode`
+    # (aucun fan-out parallele actuel, voir sa docstring), donc le contrat
+    # de la productrice a deja ete pousse sur sa branche au moment ou
+    # celle-ci est lue.
+    depends_on: NotRequired[str]
+
 
 class ReviewVerdict(TypedDict):
     """Sortie commune aux quatre roles consultatifs (Architecte, QA,

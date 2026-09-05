@@ -13,6 +13,7 @@ coherent avec Forgejo/GitHub.
 
 from __future__ import annotations
 
+import base64
 from urllib.parse import quote
 
 import httpx
@@ -132,6 +133,22 @@ class GitLabProvider(BaseGitProvider):
         return "\n".join(
             f"diff --git a/{d['old_path']} b/{d['new_path']}\n{d['diff']}" for d in diffs
         )
+
+    async def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
+        # API "Repository files" de GitLab (differente de Forgejo/GitHub) :
+        # le CHEMIN du fichier est encode dans l'URL elle-meme, pas en
+        # parametre de requete — meme fonction `_encode_project` que pour
+        # l'identifiant de projet.
+        project = _encode_project(repo)
+        file_path = _encode_project(path)
+        response = await self._client.get(
+            f"/projects/{project}/repository/files/{file_path}", params={"ref": ref}
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        return base64.b64decode(data["content"]).decode("utf-8")
 
     def git_push_credential(self) -> tuple[str, str] | None:
         if not self._token:

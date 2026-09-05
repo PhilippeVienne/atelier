@@ -11,6 +11,7 @@ l'instance de dev reelle).
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -211,6 +212,18 @@ class ForgejoProvider(BaseGitProvider):
             diff_response.raise_for_status()
             diffs.append(diff_response.text)
         return "\n".join(diffs)
+
+    async def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
+        # Meme endpoint "Contents" que `list_root_entries`, mais avec un
+        # chemin de FICHIER (pas la racine) : Gitea/Forgejo renvoie alors un
+        # objet unique (pas une liste), `content` en base64 (`encoding`
+        # toujours "base64" en pratique pour un fichier texte).
+        response = await self._client.get(f"/repos/{repo}/contents/{path}", params={"ref": ref})
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        return base64.b64decode(data["content"]).decode("utf-8")
 
     def git_push_credential(self) -> tuple[str, str] | None:
         # Convention Forgejo/Gitea (identique a GitHub) : un jeton d'acces

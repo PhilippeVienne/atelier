@@ -163,7 +163,25 @@ def _plan_is_credible(plan: list[dict]) -> str | None:
     if len(plan) < 2:
         return None
     seen: dict[str, str] = {}
+    seen_ids: set[str] = set()
     for task in plan:
+        # Tache 12.3 : `depends_on` (contrat backend/frontend) doit
+        # reference une sous-tache DEJA VUE plus haut dans le tableau —
+        # `DelegateToOpencode` traite les sous-taches dans l'ORDRE du plan
+        # (pas de fan-out parallele, voir sa docstring), le contrat d'une
+        # sous-tache qui n'a pas encore ete executee n'existe donc pas
+        # encore sur sa branche. Une reponse LLM qui inverse l'ordre est
+        # traitee comme n'importe quelle autre incoherence de decoupage :
+        # repli sur une seule tache, jamais une exception qui remonte.
+        depends_on = task.get("depends_on")
+        if depends_on is not None and depends_on not in seen_ids:
+            reason = (
+                "reference une sous-tache inconnue"
+                if depends_on not in {t["id"] for t in plan}
+                else "doit apparaitre APRES elle dans le plan"
+            )
+            return f"{task['id']} depend de {depends_on!r} qui {reason}"
+        seen_ids.add(task["id"])
         for entry in task.get("scope") or []:
             normalised = entry.strip().strip("/")
             # Un perimetre attrape-tout a cote d'autres sous-taches : elles se
@@ -216,9 +234,23 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     "Ne decoupe JAMAIS selon des couches qui dependent l'une de "
                     "l'autre a l'execution (une sous-tache 'API' et une sous-tache "
                     "'logique metier' du meme service, par exemple) : aucune des deux "
-                    "ne peut tourner sans l'autre. Un decoupage frontend/backend n'est "
-                    "legitime que si chaque cote s'execute et se teste seul, le "
-                    "frontend parlant au backend par HTTP.\n\n"
+                    "ne peut tourner sans l'autre.\n\n"
+                    "Un decoupage frontend/backend EST legitime si chaque cote "
+                    "s'execute et se teste seul, le frontend parlant au backend par "
+                    "HTTP au RUNTIME (pas seulement au moment de la fusion des "
+                    "branches) : dans ce cas precis, et UNIQUEMENT dans ce cas, declare "
+                    "sur la sous-tache backend `\"service_port\"` (le port sur lequel "
+                    "son serveur ecoute, ex: 8080) et `\"contract_path\"` (chemin, dans "
+                    "SON PROPRE depot, du fichier de contrat qu'elle va produire — ex: "
+                    "\"openapi.yaml\" — pour que le frontend sache exactement quelle "
+                    "structure consommer sans jamais avoir besoin de dialoguer avec "
+                    "l'agent qui l'a ecrite), et sur la sous-tache frontend "
+                    "`\"depends_on\"` (l'`id` de la sous-tache backend). La sous-tache "
+                    "backend DOIT alors apparaitre AVANT la sous-tache frontend dans le "
+                    "tableau. N'utilise ces trois champs QUE pour un decoupage "
+                    "frontend/backend reellement independant a l'execution — jamais "
+                    "pour exprimer un simple ordre de preference entre deux sous-taches "
+                    "par ailleurs independantes.\n\n"
                     "Il ne doit exister qu'UN SEUL point d'entree pour l'application, "
                     "et un seul manifeste (package.json, pyproject.toml...) : s'ils "
                     "n'existent pas encore, ils appartiennent a une seule sous-tache, "
@@ -229,7 +261,12 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
                     "coherente que plusieurs taches qui ne peuvent pas aboutir.\n\n"
                     "Reponds UNIQUEMENT avec un tableau JSON, un objet par "
                     'sous-tache : [{"id": "task-1", "title": "...", "scope": '
-                    '["chemin/vers/fichiers/**"]}, ...].'
+                    '["chemin/vers/fichiers/**"], "service_port": 8080, '
+                    '"contract_path": "openapi.yaml"}, {"id": "task-2", "title": "...", '
+                    '"scope": ["..."], "depends_on": "task-1"}, ...] — '
+                    "`service_port`/`contract_path`/`depends_on` sont TOUS optionnels, "
+                    "omets-les entierement en dehors du cas frontend/backend decrit "
+                    "ci-dessus."
                 ),
             },
             {
@@ -304,6 +341,14 @@ async def plan_parallel_tasks(state: PMWorkflowState, config: RunnableConfig) ->
             scope=task["scope"],
             workshop_name=f"pm-{state['issue_number']}-{task['id']}",
             branch_name=f"feature/{state['issue_number']}-{task['id']}",
+            # Tache 12.3 : optionnels, uniquement presents sur un decoupage
+            # backend/frontend legitime (voir le prompt ci-dessus) — jamais
+            # ajoutes s'ils sont absents de la reponse LLM, pour ne pas
+            # introduire de cle `None` qui laisserait croire a une
+            # dependance inexistante.
+            **({"service_port": task["service_port"]} if "service_port" in task else {}),
+            **({"contract_path": task["contract_path"]} if "contract_path" in task else {}),
+            **({"depends_on": task["depends_on"]} if "depends_on" in task else {}),
         )
         for task in raw_tasks
     ]
@@ -478,6 +523,46 @@ async def prepare_architecture_reconsideration(
     }
 
 
+def _squad_campaign_id(state: PMWorkflowState) -> str | None:
+    """Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+    §3.2) : identifiant de campagne partage par TOUTES les sous-taches d'un
+    meme plan des lors qu'AU MOINS une relation producteur/consommateur y
+    est declaree (`service_port`/`depends_on`) — sans lien declare, aucune
+    `NetworkPolicy` n'a de raison d'exister (voir
+    `crates/controller/src/reconcile.rs::campaign_network_policy`), donc
+    aucun `campaign_id` n'est pose."""
+    plan = state.get("plan", [])
+    if any("service_port" in task or "depends_on" in task for task in plan):
+        return f"pm-{state['issue_number']}"
+    return None
+
+
+def _squad_workshop_params(state: PMWorkflowState, task: SubTask) -> dict:
+    """Calcule `exportedServices`/`allowedInternalTargets`/`campaignId`
+    (tache 12.1) pour le `create_workshop` d'UNE sous-tache, a partir des
+    relations producteur (`service_port`)/consommateur (`depends_on`)
+    declarees sur l'ensemble du plan — jamais de wildcard, la cible est
+    calculee nominativement a partir du `workshop_name` REEL de la
+    productrice (voir `crates/net-proxy/src/internal.rs`, "Zero Wildcard")."""
+    campaign_id = _squad_campaign_id(state)
+    if campaign_id is None:
+        return {}
+
+    params: dict = {"campaignId": campaign_id}
+    if "service_port" in task:
+        params["exportedServices"] = [{"name": "api", "port": task["service_port"]}]
+    depends_on = task.get("depends_on")
+    if depends_on:
+        producer = next(
+            (t for t in state.get("plan", []) if t["id"] == depends_on), None
+        )
+        if producer is not None and "service_port" in producer:
+            params["allowedInternalTargets"] = [
+                f"api.{producer['workshop_name']}.atelier.internal:{producer['service_port']}"
+            ]
+    return params
+
+
 # --------------------------------------------------------------------------
 # 3. ProvisionWorkshop
 # --------------------------------------------------------------------------
@@ -542,6 +627,7 @@ async def provision_workshop(state: PMWorkflowState, config: RunnableConfig) -> 
                             if deps.workshop_owner_group
                             else {}
                         ),
+                        **_squad_workshop_params(state, task),
                     },
                 )
             # Hors du `if`/`else` ci-dessus, y compris sur reprise d'un
@@ -711,8 +797,53 @@ async def delegate_to_opencode(state: PMWorkflowState, config: RunnableConfig) -
             if greenfield_spec
             else ""
         )
+        # Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-
+        # mesh.md §3.1, "Publication du Contrat") : injecte le contrat de la
+        # sous-tache PRODUCTRICE comme contexte IMMUABLE, si cette sous-
+        # tache en depend explicitement (`depends_on`). La productrice est
+        # forcement DEJA traitee (validee par `_plan_is_credible` a
+        # `PlanParallelTasks`) : son contrat, s'il existe, a deja ete
+        # pousse sur sa branche. Best-effort : un contrat absent/illisible
+        # degrade l'injection (l'agent travaille sans, comme avant cette
+        # tache), il ne fait jamais echouer tout le run.
+        contract_section = ""
+        depends_on = task.get("depends_on")
+        if depends_on:
+            producer = next(
+                (t for t in state.get("plan", []) if t["id"] == depends_on), None
+            )
+            if producer is not None and "contract_path" in producer:
+                try:
+                    contract = await deps.git_provider.get_file_content(
+                        state["repo"], producer["contract_path"], producer["branch_name"]
+                    )
+                except Exception as exc:  # noqa: BLE001 - best-effort, voir ci-dessus
+                    logger.warning(
+                        "DelegateToOpencode: lecture du contrat de %s echouee (%s)",
+                        producer["workshop_name"],
+                        exc,
+                    )
+                    contract = None
+                if contract:
+                    contract_section = (
+                        f"\n\nContrat A RESPECTER, produit par la sous-tache "
+                        f"'{producer['title']}' ({producer['contract_path']}) — ne le "
+                        f"redefinis pas, consomme-le tel quel :\n{contract}\n\n"
+                        f"Cette sous-tache est reellement joignable en HTTP a "
+                        f"l'adresse api.{producer['workshop_name']}.atelier.internal:"
+                        f"{producer.get('service_port', '')} depuis ton propre "
+                        "Workshop : tu peux l'appeler pour de vrai pendant tes "
+                        "propres tests, ce n'est pas qu'une reference documentaire."
+                    )
+                else:
+                    logger.info(
+                        "DelegateToOpencode: contrat de %s introuvable (%s), "
+                        "poursuite sans injection",
+                        producer["workshop_name"],
+                        producer["contract_path"],
+                    )
         prompt = (
-            f"{task['title']}\n\n{state.get('analysis', '')}{spec_section}\n\n"
+            f"{task['title']}\n\n{state.get('analysis', '')}{spec_section}{contract_section}\n\n"
             f"IMPORTANT: ne modifie QUE les fichiers sous {scope} — un autre agent "
             "travaille en parallele sur le reste de ce depot.\n\n"
             "Quand ton travail est termine, commite-le puis pousse-le sur la "

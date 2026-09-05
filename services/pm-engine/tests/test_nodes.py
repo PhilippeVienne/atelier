@@ -246,6 +246,103 @@ def test_qa_workshop_name_is_disjoint_from_task_workshops() -> None:
     assert nodes._qa_workshop_name(27) == "pm-27-qa"
 
 
+class TestSquadWorkshopParams:
+    """Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+    §3.2) : calcul pur, sans appel reseau — le cablage reel de
+    `exportedServices`/`allowedInternalTargets`/`campaignId` jusqu'au CRD
+    `Workshop` est verifie cote Rust
+    (`crates/api-server/tests/routes.rs::create_workshop_wires_squad_fields_into_the_crd`,
+    meme tache)."""
+
+    def test_no_campaign_id_without_any_declared_dependency(self) -> None:
+        state: PMWorkflowState = {
+            "repo": "o/r",
+            "issue_number": 42,
+            "devcontainer_repo": "https://example.invalid/repo.git",
+            "plan": [
+                {
+                    "id": "task-1",
+                    "title": "t",
+                    "scope": ["**"],
+                    "workshop_name": "pm-42-task-1",
+                    "branch_name": "feature/42-task-1",
+                }
+            ],
+        }
+        assert nodes._squad_campaign_id(state) is None
+        assert nodes._squad_workshop_params(state, state["plan"][0]) == {}
+
+    def test_producer_gets_exported_services_and_campaign_id(self) -> None:
+        producer: SubTask = {
+            "id": "backend",
+            "title": "Backend",
+            "scope": ["api/**"],
+            "workshop_name": "pm-42-backend",
+            "branch_name": "feature/42-backend",
+            "service_port": 8080,
+            "contract_path": "openapi.yaml",
+        }
+        consumer: SubTask = {
+            "id": "frontend",
+            "title": "Frontend",
+            "scope": ["public/**"],
+            "workshop_name": "pm-42-frontend",
+            "branch_name": "feature/42-frontend",
+            "depends_on": "backend",
+        }
+        state: PMWorkflowState = {
+            "repo": "o/r",
+            "issue_number": 42,
+            "devcontainer_repo": "https://example.invalid/repo.git",
+            "plan": [producer, consumer],
+        }
+
+        producer_params = nodes._squad_workshop_params(state, producer)
+        assert producer_params["campaignId"] == "pm-42"
+        assert producer_params["exportedServices"] == [{"name": "api", "port": 8080}]
+        assert "allowedInternalTargets" not in producer_params
+
+        consumer_params = nodes._squad_workshop_params(state, consumer)
+        assert consumer_params["campaignId"] == "pm-42"
+        assert consumer_params["allowedInternalTargets"] == [
+            "api.pm-42-backend.atelier.internal:8080"
+        ]
+        assert "exportedServices" not in consumer_params
+
+    def test_consumer_without_a_service_port_on_the_producer_gets_no_target(
+        self,
+    ) -> None:
+        # Le producteur declare `depends_on` d'un point de vue du
+        # consommateur, mais AUCUN `service_port` (rien a joindre en HTTP —
+        # cas degrade, jamais une erreur).
+        producer: SubTask = {
+            "id": "backend",
+            "title": "Backend",
+            "scope": ["api/**"],
+            "workshop_name": "pm-42-backend",
+            "branch_name": "feature/42-backend",
+        }
+        consumer: SubTask = {
+            "id": "frontend",
+            "title": "Frontend",
+            "scope": ["public/**"],
+            "workshop_name": "pm-42-frontend",
+            "branch_name": "feature/42-frontend",
+            "depends_on": "backend",
+        }
+        state: PMWorkflowState = {
+            "repo": "o/r",
+            "issue_number": 42,
+            "devcontainer_repo": "https://example.invalid/repo.git",
+            "plan": [producer, consumer],
+        }
+        consumer_params = nodes._squad_workshop_params(state, consumer)
+        assert "allowedInternalTargets" not in consumer_params
+        # Le `campaign_id` est quand meme pose : `depends_on` seul suffit a
+        # declencher une campagne, meme sans cible HTTP resolue.
+        assert consumer_params["campaignId"] == "pm-42"
+
+
 def test_parse_qa_verdict_extracts_the_last_json_block_from_an_agent_transcript() -> None:
     """`opencode run` produit une transcription complete (raisonnement,
     appels d'outils) avant le verdict final — contrairement a un appel de

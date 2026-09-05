@@ -725,6 +725,20 @@ struct CreateWorkshopRequest {
     /// `atelier_common::SimulatorSpec`).
     #[serde(default)]
     simulators: Vec<atelier_common::SimulatorSpec>,
+    /// Ports applicatifs exportes aux autres Workshops d'une meme campagne
+    /// (tache 12.1/12.3, spec docs/specs/16-escouades-multi-agents-swarms-
+    /// mesh.md §3.2).
+    #[serde(default)]
+    exported_services: Vec<atelier_common::ExportedService>,
+    /// Cibles inter-Workshops explicitement autorisees, format
+    /// `<service>.<workshop-cible>.atelier.internal:<port>` — "Zero
+    /// Wildcard", voir la doc du meme champ sur `WorkshopSpec`.
+    #[serde(default)]
+    allowed_internal_targets: Vec<String>,
+    /// Identifiant de campagne multi-Workshops (voir la doc du meme champ
+    /// sur `WorkshopSpec`).
+    #[serde(default)]
+    campaign_id: Option<String>,
 }
 
 async fn create_workshop(
@@ -760,14 +774,9 @@ async fn create_workshop(
             owner_subject: user.subject,
             desired_state: WorkshopDesiredState::Running,
             simulators: req.simulators,
-            // Non exposes par cette route (tache 12.1, spec
-            // docs/specs/16-escouades-multi-agents-swarms-mesh.md §3.2) :
-            // reserves a une orchestration multi-Workshops (pm-engine,
-            // tache 12.3) qui les positionnera directement via le CRD,
-            // jamais via une requete de creation individuelle.
-            exported_services: vec![],
-            allowed_internal_targets: vec![],
-            campaign_id: None,
+            exported_services: req.exported_services,
+            allowed_internal_targets: req.allowed_internal_targets,
+            campaign_id: req.campaign_id,
         },
     );
 

@@ -216,6 +216,42 @@ async def test_get_diff_reads_content_added_on_a_branch(test_repo: str) -> None:
         await provider.aclose()
 
 
+@pytest.mark.asyncio
+async def test_get_file_content_reads_a_real_file_and_none_for_absent_ones(
+    test_repo: str,
+) -> None:
+    """Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+    §3.1) : `delegate_to_opencode` s'appuie sur cette methode pour extraire
+    un artefact de contrat (ex: `openapi.yaml`) produit par une sous-tache
+    et l'injecter dans le prompt d'une autre — verifie contre une vraie
+    instance Forgejo, un vrai fichier commite."""
+    _skip_if_unavailable()
+    provider = ForgejoProvider(FORGEJO_URL, FORGEJO_TOKEN or "")
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"{FORGEJO_URL.rstrip('/')}/api/v1",
+            headers={"Authorization": f"token {FORGEJO_TOKEN}"},
+            timeout=30.0,
+        ) as admin_client:
+            commit = await admin_client.post(
+                f"/repos/{test_repo}/contents/openapi.yaml",
+                json={
+                    "content": "b3BlbmFwaTogMy4wLjA=",  # "openapi: 3.0.0" en base64
+                    "message": "ajoute openapi.yaml",
+                    "branch": "main",
+                },
+            )
+            commit.raise_for_status()
+
+        content = await provider.get_file_content(test_repo, "openapi.yaml", "main")
+        assert content == "openapi: 3.0.0"
+
+        absent = await provider.get_file_content(test_repo, "n-existe-pas.yaml", "main")
+        assert absent is None
+    finally:
+        await provider.aclose()
+
+
 def test_git_push_credential_reuses_the_same_token_as_a_basic_auth_password() -> None:
     """Pas d'appel reseau : `git_push_credential` ne fait que reexposer le
     jeton deja fourni a la construction — c'est CE MEME jeton, deja utilise

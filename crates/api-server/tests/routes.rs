@@ -382,6 +382,102 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
 }
 
+/// Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+/// §3.2) : `exported_services`/`allowed_internal_targets`/`campaign_id`
+/// etaient explicitement NON exposes par cette route depuis la tache 12.1
+/// ("reserves a une orchestration multi-Workshops... tache 12.3") — ce
+/// test verifie qu'ils atteignent bien le CRD une fois exposes, condition
+/// necessaire pour que `pm-engine` (nodes.provision_workshop) puisse
+/// orchestrer des Workshops specialises relies en HTTP.
+#[tokio::test]
+async fn create_workshop_wires_squad_fields_into_the_crd() {
+    let Some(client) = try_client().await else {
+        eprintln!("pas de kubeconfig accessible, test ignore");
+        return;
+    };
+
+    let key = generate_test_key();
+    let mut jwk =
+        Jwk::from_encoding_key(&key.encoding_key, Algorithm::RS256).expect("derivation JWK");
+    jwk.common.key_id = Some(key.kid.clone());
+    let auth = AuthState::from_static_jwks(
+        ISSUER.to_string(),
+        AUDIENCE.to_string(),
+        JwkSet { keys: vec![jwk] },
+    );
+
+    let namespace = "default".to_string();
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
+
+    let app = routes::router(
+        AppState {
+            client: client.clone(),
+            namespace,
+            db_pool: test_db_pool().await,
+            openbao_addr: None,
+            litellm_addr: None,
+            llm_budget: None,
+            llm_salt_key_configured: false,
+            session_auth: None,
+            storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
+        },
+        auth,
+    );
+
+    let owner_token = sign_jwt(&key, "owner@test.atelier", "equipe-proprietaire");
+    let name = format!("api-test-squad-{}", std::process::id());
+    let campaign_id = format!("campaign-{}", std::process::id());
+
+    let create_body = json!({
+        "name": name,
+        "devcontainer": { "repo": "https://github.com/microsoft/vscode-remote-try-python" },
+        "resources": { "cpu": "1", "memory": "512Mi" },
+        "exportedServices": [{"name": "api", "port": 8080}],
+        "allowedInternalTargets": ["api.some-backend.atelier.internal:8080"],
+        "campaignId": campaign_id,
+    });
+
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/workshops")
+                .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let fetched = workshops
+        .get(&name)
+        .await
+        .expect("le Workshop doit exister");
+    assert_eq!(fetched.spec.exported_services.len(), 1);
+    assert_eq!(fetched.spec.exported_services[0].name, "api");
+    assert_eq!(fetched.spec.exported_services[0].port, 8080);
+    assert_eq!(
+        fetched.spec.allowed_internal_targets,
+        vec!["api.some-backend.atelier.internal:8080".to_string()]
+    );
+    assert_eq!(fetched.spec.campaign_id, Some(campaign_id));
+
+    let _ = workshops
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&json!({ "metadata": { "finalizers": [] } })),
+        )
+        .await;
+    let _ = workshops.delete(&name, &DeleteParams::default()).await;
+}
+
 fn get_request(uri: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method("GET")

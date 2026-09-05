@@ -33,6 +33,28 @@ async def test_get_issue_reads_a_real_public_github_issue() -> None:
         await provider.aclose()
 
 
+@pytest.mark.asyncio
+async def test_get_file_content_reads_a_real_public_file_and_none_for_absent_ones() -> None:
+    """Tache 12.3 : meme methode que `ForgejoProvider.get_file_content`,
+    verifiee ici contre l'API publique reelle (aucun jeton necessaire pour
+    un depot public)."""
+    provider = GitHubProvider(token="")
+    try:
+        content = await provider.get_file_content("octocat/Hello-World", "README", "master")
+    except httpx.HTTPError as exc:
+        pytest.skip(f"api.github.com injoignable pour ce test: {exc}")
+    else:
+        assert content is not None
+        assert "Hello World" in content
+
+        absent = await provider.get_file_content(
+            "octocat/Hello-World", "n-existe-pas.yaml", "master"
+        )
+        assert absent is None
+    finally:
+        await provider.aclose()
+
+
 def test_git_push_credential_reuses_the_same_token_as_a_basic_auth_password() -> None:
     """Meme raisonnement que pour Forgejo : reexpose sans appel reseau le
     jeton deja fourni a la construction."""

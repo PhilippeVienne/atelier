@@ -72,16 +72,15 @@ flowchart TD
 
 ## 3. Spécification Détaillée
 
-### 3.1. Orchestration Dirigée par Contrats (Élimination du "Chatter Loop")
+### 3.1. Orchestration Dirigée par Contrats (Élimination du "Chatter Loop") — tâche 12.3, **implémentée**
 
-Au lieu de faire communiquer les agents en Peer-to-Peer de manière asynchrone non structurée :
-1. **Séquencement par Graphe (LangGraph dans `pm-engine`)** :
-   - Le travail est ordonnancé selon un graphe dirigé acyclique (DAG) strict.
-   - **Étape 1 (Backend)** : L'agent Backend implémente l'endpoint, valide ses tests unitaires et produit le fichier de contrat (`openapi.yaml` ou `schema.graphql`).
-   - **Étape 2 (Publication du Contrat)** : `pm-engine` extrait le contrat validé et l'injecte sous forme de contexte immuable dans le prompt de l'agent Frontend.
-   - **Étape 3 (Frontend)** : L'agent Frontend sait exactement quelle structure consommer sans jamais avoir besoin de dialoguer avec l'agent Backend.
-2. **Garantie de Convergence** :
-   - Aucun échange informel entre LLMs : chaque agent travaille sur un périmètre clairement délimité avec des entrées/sorties typées.
+**Correction par rapport à la première rédaction** : il n'existe PAS de nouveau graphe LangGraph dédié aux escouades — `pm-engine` orchestrait DÉJÀ des sous-tâches multi-Workshops en parallèle depuis le Jalon M5 (`PlanParallelTasks`/`SubTask`/`ProvisionWorkshop`/`DelegateToOpencode`/`IntegrateSubTasks`, voir `pm_engine/graph.py`) — un mécanisme de fusion Git après coup, pas d'exécution réseau connectée. Cette tâche RÉUTILISE ce graphe existant et y ajoute le handoff de contrat + la connexion réseau réelle (tâches 12.1/12.2) plutôt que de réinventer un second pipeline :
+1. **Séquencement (déjà existant)** : `plan_parallel_tasks` découpe déjà le ticket en sous-tâches (`SubTask`), `delegate_to_opencode` les traite déjà DANS L'ORDRE du plan (une boucle séquentielle, pas un DAG explicite ni un fan-out `Send` — voir sa docstring). Le prompt du planificateur reconnaît maintenant explicitement un découpage backend/frontend légitime et lui fait déclarer trois champs optionnels sur `SubTask` : `service_port`/`contract_path` (sous-tâche PRODUCTRICE) et `depends_on` (sous-tâche CONSOMMATRICE, référençant l'`id` de la productrice — qui DOIT apparaître avant elle dans le plan, validé déterministiquement par `_plan_is_credible`).
+   - **Étape 1 (Backend)** : traité normalement par `delegate_to_opencode`, produit son fichier de contrat (`contract_path`, ex: `openapi.yaml`) et le pousse sur sa branche (mécanisme de commit/push déjà existant).
+   - **Étape 2 (Publication du Contrat)** : avant de déléguer la sous-tâche consommatrice, `delegate_to_opencode` lit ce contrat via `BaseGitProvider.get_file_content` (nouvelle méthode, implémentée pour Forgejo/GitHub/GitLab) sur la branche de la productrice, et l'injecte comme contexte IMMUABLE dans le prompt.
+   - **Étape 3 (Frontend)** : reçoit aussi l'adresse `api.<workshop-productrice>.atelier.internal:<port>` (tâches 12.1/12.2) — un endpoint RÉELLEMENT joignable en HTTP depuis son propre Workshop, pas seulement une référence documentaire.
+2. **Câblage réseau (tâches 12.1/12.2)** : `provision_workshop` calcule `exportedServices`/`allowedInternalTargets`/`campaignId` à partir des relations `service_port`/`depends_on` du plan entier et les transmet à `create_workshop` (MCP `atelier-api-server`, dont les trois champs — explicitement NON exposés depuis la tâche 12.1 — sont désormais exposés par cette tâche).
+3. **Garantie de Convergence** : inchangée — aucun échange informel entre LLMs, chaque agent travaille sur un périmètre clairement délimité.
 
 ### 3.2. Interconnexion Inter-Workshops Standard (Zero WireGuard) — tâche 12.1, **implémentée**
 

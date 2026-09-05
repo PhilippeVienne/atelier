@@ -11,6 +11,8 @@ SHA de la branche de base, puis creer la reference) — voir
 
 from __future__ import annotations
 
+import base64
+
 import httpx
 
 from .base import BaseGitProvider, Issue, PullRequest
@@ -127,6 +129,18 @@ class GitHubProvider(BaseGitProvider):
             return None
         response.raise_for_status()
         return response.text
+
+    async def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
+        # Meme API "Contents" que `list_root_entries`, avec un chemin de
+        # FICHIER : `content` en base64 (verifie contre l'API publique
+        # reelle, depot public `octocat/Hello-World`, meme methode que
+        # `get_diff` ci-dessus).
+        response = await self._client.get(f"/repos/{repo}/contents/{path}", params={"ref": ref})
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        return base64.b64decode(data["content"]).decode("utf-8")
 
     def git_push_credential(self) -> tuple[str, str] | None:
         if not self._token:

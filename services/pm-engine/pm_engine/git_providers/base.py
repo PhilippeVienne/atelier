@@ -122,6 +122,24 @@ class BaseGitProvider(ABC):
         numero de PR."""
         return None
 
+    async def get_file_content(self, repo: str, path: str, ref: str) -> str | None:
+        """Contenu textuel decode d'un fichier a `path` sur `ref`, ou `None`
+        s'il n'existe pas ou si le provider ne sait pas repondre.
+
+        Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+        §3.1, "Publication du Contrat") : `delegate_to_opencode` s'en sert
+        pour extraire un artefact de contrat (ex: `openapi.yaml`) produit
+        par une sous-tache "productrice" (typiquement backend) et l'injecter
+        comme contexte IMMUABLE dans le prompt d'une sous-tache
+        "consommatrice" (typiquement frontend) qui en depend — celle-ci sait
+        alors exactement quelle structure consommer sans jamais avoir eu
+        besoin de dialoguer avec l'agent qui l'a produite. Meme convention
+        que [`get_diff`]/[`list_root_entries`] : non abstraite, `None` par
+        defaut plutot qu'une exception — un contrat introuvable degrade
+        l'injection de contexte (l'agent consommateur travaille sans, comme
+        avant cette tache), il ne doit jamais faire echouer tout le run."""
+        return None
+
     def git_push_credential(self) -> tuple[str, str] | None:
         """`(username, password)` a deposer dans le Workshop pour que
         l'agent delegue puisse authentifier son propre `git push` vers ce

@@ -73,6 +73,53 @@ class TestPlanCredibility:
         assert _plan_is_credible(plan) is not None
 
 
+class TestContractDependencies:
+    """Tache 12.3 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+    §3.1/§3.2) : `depends_on` doit toujours reference une sous-tache DEJA
+    VUE plus haut dans le plan — `DelegateToOpencode` traite les sous-taches
+    dans l'ordre, le contrat d'une sous-tache pas encore executee n'existe
+    pas encore sur sa branche."""
+
+    def test_a_backend_frontend_split_in_the_right_order_is_credible(self):
+        plan = [
+            {
+                "id": "backend",
+                "scope": ["api/**"],
+                "service_port": 8080,
+                "contract_path": "openapi.yaml",
+            },
+            {"id": "frontend", "scope": ["public/**"], "depends_on": "backend"},
+        ]
+        assert _plan_is_credible(plan) is None
+
+    def test_depends_on_pointing_forward_is_rejected(self):
+        # L'ordre est inverse : "backend" n'a pas encore ete traite quand
+        # "frontend" en aurait besoin.
+        plan = [
+            {"id": "frontend", "scope": ["public/**"], "depends_on": "backend"},
+            {"id": "backend", "scope": ["api/**"], "service_port": 8080},
+        ]
+        reason = _plan_is_credible(plan)
+        assert reason is not None and "frontend" in reason
+
+    def test_depends_on_an_unknown_task_is_rejected(self):
+        plan = [
+            {"id": "task-1", "scope": ["api/**"]},
+            {"id": "task-2", "scope": ["public/**"], "depends_on": "task-inexistant"},
+        ]
+        reason = _plan_is_credible(plan)
+        assert reason is not None and "inconnue" in reason
+
+    def test_plans_without_any_dependency_are_unaffected(self):
+        # Non-regression : la grande majorite des plans n'utilisent jamais
+        # `depends_on`, le nouveau garde-fou ne doit rien y changer.
+        plan = [
+            {"id": "task-1", "scope": ["api/**"]},
+            {"id": "task-2", "scope": ["public/**"]},
+        ]
+        assert _plan_is_credible(plan) is None
+
+
 class TestDescribeRoot:
     """« Je ne sais pas » et « c'est vide » ne se disent pas pareil : les
     confondre ferait tout reecrire sur un depot parfaitement fourni."""

@@ -175,6 +175,46 @@ struct CreateWorkshopParams {
     /// Outils/simulateurs a exposer via mcp-gateway (ex: "identity", "egress").
     #[serde(default)]
     tools: Vec<String>,
+    /// Ports applicatifs exportes aux autres Workshops d'une meme campagne
+    /// (tache 12.1/12.3, spec docs/specs/16-escouades-multi-agents-swarms-
+    /// mesh.md §3.2) — ex: `[{"name": "api", "port": 8080}]`. Utilise par
+    /// `pm-engine` pour orchestrer des Workshops specialises (backend/
+    /// frontend/QA) qui se joignent reellement en HTTP.
+    #[serde(default)]
+    exported_services: Vec<ExportedServiceParam>,
+    /// Cibles inter-Workshops explicitement autorisees, format
+    /// `<service>.<workshop-cible>.atelier.internal:<port>` — "Zero
+    /// Wildcard", voir la doc du meme champ sur `WorkshopSpec`.
+    #[serde(default)]
+    allowed_internal_targets: Vec<String>,
+    /// Identifiant de campagne multi-Workshops : les Workshops partageant
+    /// la meme valeur ET le meme `owner_group` peuvent s'echanger des
+    /// paquets (`NetworkPolicy` generee par le controller).
+    #[serde(default)]
+    campaign_id: Option<String>,
+}
+
+/// Miroir local d'`atelier_common::ExportedService` : ce module derive
+/// `schemars::JsonSchema` pour la version 1.x (exigee par `#[tool_router]`/
+/// `rmcp`), quand `atelier_common` (CRD Kubernetes) derive la 0.8 — deux
+/// versions coexistent dans l'arbre de dependances (`cargo tree` le
+/// confirme), et un meme type ne peut implementer les deux a la fois. Meme
+/// raison pour laquelle `atelier_common::SimulatorSpec` n'apparaissait deja
+/// pas directement dans les params de cet outil.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ExportedServiceParam {
+    name: String,
+    port: u16,
+}
+
+impl From<ExportedServiceParam> for atelier_common::ExportedService {
+    fn from(param: ExportedServiceParam) -> Self {
+        atelier_common::ExportedService {
+            name: param.name,
+            port: param.port,
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -250,9 +290,13 @@ impl WorkshopMcpServer {
                 owner_subject: user.subject,
                 desired_state: WorkshopDesiredState::Running,
                 simulators: vec![],
-                exported_services: vec![],
-                allowed_internal_targets: vec![],
-                campaign_id: None,
+                exported_services: params
+                    .exported_services
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                allowed_internal_targets: params.allowed_internal_targets,
+                campaign_id: params.campaign_id,
             },
         );
 

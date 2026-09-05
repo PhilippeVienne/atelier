@@ -33,6 +33,30 @@ async def test_get_issue_reads_a_real_public_gitlab_issue() -> None:
         await provider.aclose()
 
 
+@pytest.mark.asyncio
+async def test_get_file_content_reads_a_real_public_file_and_none_for_absent_ones() -> None:
+    """Tache 12.3 : API "Repository files" de GitLab, distincte de l'API
+    "Contents" de Forgejo/GitHub — verifiee ici contre un vrai projet
+    public."""
+    provider = GitLabProvider(token="")
+    try:
+        content = await provider.get_file_content(
+            "gitlab-org/gitlab-runner", "README.md", "main"
+        )
+    except httpx.HTTPError as exc:
+        pytest.skip(f"gitlab.com injoignable pour ce test: {exc}")
+    else:
+        assert content is not None
+        assert "GitLab Runner" in content
+
+        absent = await provider.get_file_content(
+            "gitlab-org/gitlab-runner", "n-existe-pas.yaml", "main"
+        )
+        assert absent is None
+    finally:
+        await provider.aclose()
+
+
 def test_git_push_credential_uses_the_oauth2_username_convention() -> None:
     """GitLab, contrairement a Forgejo/GitHub, exige `oauth2` exactement
     comme nom d'utilisateur HTTP Basic pour un jeton de projet/personnel."""
