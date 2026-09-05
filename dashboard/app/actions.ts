@@ -10,6 +10,10 @@ import {
   suspendWorkshop,
   putCredential,
   deleteCredential,
+  createLlmModel,
+  updateLlmModel,
+  deleteLlmModel,
+  type LlmModelInput,
 } from "@/lib/api-server";
 import { decideReview } from "@/lib/pm-engine";
 import { destroySession } from "@/lib/session";
@@ -157,5 +161,70 @@ export async function deleteCredentialAction(name: string, host: string) {
     throw err;
   }
   revalidatePath(`/workshops/${name}`);
+  return {};
+}
+
+function llmModelInputFrom(formData: FormData): LlmModelInput {
+  const modelName = String(formData.get("modelName") ?? "").trim();
+  const target = String(formData.get("target") ?? "").trim();
+  const apiBase = String(formData.get("apiBase") ?? "").trim();
+  const apiKey = String(formData.get("apiKey") ?? "");
+  return {
+    modelName,
+    target,
+    apiBase: apiBase || undefined,
+    // Champ vide = absent, jamais une chaine vide envoyee a l'api-server :
+    // c'est cette absence qui signale "conserver la cle actuelle" a l'edition
+    // (voir `LlmBudgetClient::update_model`).
+    apiKey: apiKey || undefined,
+  };
+}
+
+/** Ajoute un modèle LiteLLM (spec docs/specs/11-admin-litellm-model-config.md).
+ *  Réservé au rôle `admin`, vérifié par l'api-server (403 sinon). */
+export async function createLlmModelAction(formData: FormData) {
+  const input = llmModelInputFrom(formData);
+  if (!input.modelName || !input.target || !input.apiKey) {
+    return { error: "Alias, modèle réel et clé API sont requis." };
+  }
+  try {
+    const { id } = await createLlmModel(input);
+    revalidatePath("/admin/llm");
+    return { id, error: undefined };
+  } catch (err) {
+    if (err instanceof ApiServerError) {
+      return { error: `Création refusée (${err.status}).`, id: undefined };
+    }
+    throw err;
+  }
+}
+
+export async function updateLlmModelAction(id: string, formData: FormData) {
+  const input = llmModelInputFrom(formData);
+  if (!input.modelName || !input.target) {
+    return { error: "Alias et modèle réel sont requis." };
+  }
+  try {
+    await updateLlmModel(id, input);
+  } catch (err) {
+    if (err instanceof ApiServerError) {
+      return { error: `Modification refusée (${err.status}).` };
+    }
+    throw err;
+  }
+  revalidatePath("/admin/llm");
+  return {};
+}
+
+export async function deleteLlmModelAction(id: string) {
+  try {
+    await deleteLlmModel(id);
+  } catch (err) {
+    if (err instanceof ApiServerError) {
+      return { error: `Suppression refusée (${err.status}).` };
+    }
+    throw err;
+  }
+  revalidatePath("/admin/llm");
   return {};
 }

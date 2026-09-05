@@ -488,7 +488,11 @@ async fn admin_llm_overview(
     Ok(Json(client.overview().await))
 }
 
+/// `camelCase` : meme convention JSON que le reste de l'API
+/// (`LlmModel`/`LlmKey`...), consommee telle quelle par
+/// `dashboard/lib/api-server.ts::LlmModelInput`.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateLlmModelRequest {
     model_name: String,
     target: String,
@@ -497,6 +501,7 @@ struct CreateLlmModelRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpdateLlmModelRequest {
     model_name: String,
     target: String,

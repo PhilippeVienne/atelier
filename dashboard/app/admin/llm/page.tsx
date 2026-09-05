@@ -11,6 +11,7 @@ import {
   type SpendReport,
 } from "@/lib/api-server";
 import { getCurrentUser } from "@/lib/session";
+import { Models } from "./models";
 
 // Console d'administration de la passerelle LiteLLM.
 //
@@ -275,31 +276,7 @@ export default async function AdminLlmPage() {
 
         {spend && <SpendPanel report={spend} />}
 
-        <section className="rounded-xl border border-border bg-surface/70 p-4">
-          <h2 className="text-sm font-semibold">Modèles</h2>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-muted">
-                  <th className="pb-2 pr-4 font-normal">Alias</th>
-                  <th className="pb-2 pr-4 font-normal">Modèle réel</th>
-                  <th className="pb-2 font-normal">Endpoint</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {overview.models.map((m) => (
-                  <tr key={m.name}>
-                    <td className="py-2 pr-4 font-mono text-xs">{m.name}</td>
-                    <td className="py-2 pr-4 font-mono text-xs">{m.target ?? "—"}</td>
-                    <td className="py-2 font-mono text-xs text-muted break-all">
-                      {m.apiBase ?? "défaut du fournisseur"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <Models initial={overview.models} />
 
         <section className="rounded-xl border border-border bg-surface/70 p-4">
           <h2 className="text-sm font-semibold">Virtual Keys</h2>

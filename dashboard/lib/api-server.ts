@@ -163,9 +163,48 @@ export async function getLlmBudget(name: string): Promise<LlmBudget | null> {
 }
 
 export interface LlmModel {
+  /** `null` pour une entrée statique du `config.yaml` (cas du cluster de
+   *  dev) : sans identifiant, `updateLlmModel`/`deleteLlmModel` n'ont rien à
+   *  cibler — seuls les modèles ajoutés dynamiquement en ont un. */
+  id: string | null;
   name: string;
   target: string | null;
   apiBase: string | null;
+}
+
+export interface LlmModelInput {
+  modelName: string;
+  target: string;
+  apiBase?: string;
+  /** Absente sur une modification : LiteLLM fusionne `litellm_params` champ
+   *  par champ et préserve alors la clé déjà enregistrée (vérifié
+   *  empiriquement, voir `docs/specs/11-admin-litellm-model-config.md` §5)
+   *  — obligatoire à la création. */
+  apiKey?: string;
+}
+
+/** Ajoute un modèle/provider à la passerelle LiteLLM. Réservé au rôle
+ *  `admin`, vérifié côté api-server. */
+export async function createLlmModel(input: LlmModelInput): Promise<{ id: string }> {
+  const res = await call("/v1/admin/llm/models", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return (await res.json()) as { id: string };
+}
+
+/** Modifie un modèle existant. `input.apiKey` omis = clé conservée. */
+export async function updateLlmModel(id: string, input: LlmModelInput): Promise<void> {
+  await call(`/v1/admin/llm/models/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteLlmModel(id: string): Promise<void> {
+  await call(`/v1/admin/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export interface LlmKey {

@@ -271,8 +271,24 @@ impl LlmBudgetClient {
                     .filter_map(|entry| {
                         let params = entry.litellm_params.unwrap_or(serde_json::Value::Null);
                         let info = entry.model_info.unwrap_or(serde_json::Value::Null);
+                        // `model_info.db_model` distingue une entree ajoutee
+                        // dynamiquement (`true`, verifie empiriquement) d'une
+                        // entree statique du `config.yaml` (`false`) — CETTE
+                        // DERNIERE a elle aussi un `id` non-nul dans la
+                        // reponse LiteLLM, mais update/delete n'ont aucun
+                        // sens dessus (elle revient telle quelle au prochain
+                        // redemarrage du pod, un `/model/delete` dessus
+                        // laisserait croire a une suppression durable qui ne
+                        // l'est pas). N'exposer `id` que si `db_model` est
+                        // vrai.
+                        let is_db_model =
+                            info.get("db_model").and_then(|v| v.as_bool()) == Some(true);
                         Some(LlmModel {
-                            id: info.get("id").and_then(|v| v.as_str()).map(str::to_string),
+                            id: is_db_model
+                                .then(|| {
+                                    info.get("id").and_then(|v| v.as_str()).map(str::to_string)
+                                })
+                                .flatten(),
                             name: entry.model_name?,
                             target: params
                                 .get("model")
