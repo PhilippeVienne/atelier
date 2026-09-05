@@ -170,6 +170,22 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/health/readiness", get(health_readiness))
         .with_state(health_state)
         .merge(protected)
+        // Un span par requete HTTP (methode/chemin/statut en attributs) :
+        // sans lui, `tracing-opentelemetry` n'exporte rien du tout, meme
+        // avec OTEL_EXPORTER_OTLP_ENDPOINT positionnee — verifie
+        // empiriquement (spec docs/specs/12-observabilite.md §1/§4.1).
+        //
+        // `.level(Level::INFO)` explicite : par defaut `TraceLayer` cree son
+        // span a `DEBUG`, filtre par le `EnvFilter` par defaut de
+        // `telemetry::init` ("info") — sans ce reglage, le span existe mais
+        // n'est jamais active, donc jamais exporte. Egalement verifie
+        // empiriquement (le premier essai, sans `.level()`, n'exportait
+        // rien malgre `TraceLayer` en place).
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(
+                tower_http::trace::DefaultMakeSpan::new().level(tracing::Level::INFO),
+            ),
+        )
 }
 
 /// Toujours 200 tant que le process web tourne : ne verifie aucune
