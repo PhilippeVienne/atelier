@@ -419,16 +419,15 @@ impl LlmBudgetClient {
     /// Modifie un modele existant (`POST /model/update`, cible par
     /// `model_info.id` dans le corps — verifie empiriquement, spec 11 §3.1).
     ///
-    /// `api_key: None` omet le champ du payload envoye a LiteLLM.
-    ///
-    /// ATTENTION, verifie empiriquement contre le cluster de dev (spec 11
-    /// §3.1) : `/model/update` REMPLACE integralement `litellm_params`, donc
-    /// omettre `api_key` ici EFFACE la cle existante cote LiteLLM (ne la
-    /// preserve PAS) — et `GET /model/info` ne la rend jamais, donc cet
-    /// appelant n'a aucun moyen de la relire pour la renvoyer. Un appel avec
-    /// `api_key: None` sur un modele qui EN a deja une le rend inutilisable.
-    /// Le formulaire d'edition (`6.7.4`) doit soit toujours exiger la cle,
-    /// soit garder sa propre copie a renvoyer — voir spec 11 §5.
+    /// `api_key: None` omet le champ du payload envoye a LiteLLM, qui
+    /// PRESERVE alors la cle existante — verifie par un test FONCTIONNEL
+    /// (`GET /model/info` ne renvoie jamais ce champ, succes ou echec, donc
+    /// inutilisable pour verifier quoi que ce soit ici) : creer un modele
+    /// avec une vraie cle, appel reel reussi, `update` sans `api_key`,
+    /// meme appel toujours reussi ; a l'inverse, `update` avec une cle
+    /// FAUSSE fait bien echouer l'appel suivant en 401. `litellm_params`
+    /// est donc fusionne champ par champ par LiteLLM, pas remplace
+    /// integralement (spec 11 §5).
     pub async fn update_model(
         &self,
         id: &str,

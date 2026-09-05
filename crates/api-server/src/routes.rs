@@ -501,9 +501,9 @@ struct UpdateLlmModelRequest {
     model_name: String,
     target: String,
     api_base: Option<String>,
-    /// `None` : EFFACE l'identifiant enregistre plutot que de le preserver
-    /// — verifie empiriquement, voir `LlmBudgetClient::update_model`. Le
-    /// client (formulaire `6.7.4`) doit en tenir compte.
+    /// `None` : conserve l'identifiant deja enregistre — LiteLLM fusionne
+    /// `litellm_params` champ par champ plutot que de le remplacer, verifie
+    /// par un test fonctionnel (voir `LlmBudgetClient::update_model`).
     api_key: Option<String>,
 }
 
@@ -542,9 +542,8 @@ async fn admin_llm_create_model(
 }
 
 /// Modifie un modele existant. `api_key` absent du corps = identifiant
-/// EFFACE cote LiteLLM (verifie empiriquement, voir
-/// `LlmBudgetClient::update_model`) — PAS "inchange". A l'appelant de
-/// toujours fournir une valeur s'il veut la conserver.
+/// CONSERVE (LiteLLM fusionne, ne remplace pas — voir
+/// `LlmBudgetClient::update_model`).
 async fn admin_llm_update_model(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
