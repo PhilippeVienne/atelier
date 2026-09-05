@@ -82,6 +82,8 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
    - *Lire [`docs/specs/06-dashboard-architecture-cadrage.md`](docs/specs/06-dashboard-architecture-cadrage.md) avant de modifier les pages, Server Components, Server Actions ou le chat PM dans `dashboard/`.*
 8. **Sur la télémétrie (traces/métriques/logs)** :
    - *Lire [`docs/specs/12-observabilite.md`](docs/specs/12-observabilite.md) avant d'éditer `crates/common/src/telemetry.rs` ou d'ajouter un span/une métrique dans un binaire Rust.*
+9. **Sur le cache d'images/snapshots (PVC partagé, offload S3)** :
+   - *Lire [`docs/specs/13-image-cache-offload.md`](docs/specs/13-image-cache-offload.md) avant d'éditer `crates/controller/src/storage.rs`, `crates/image-builder/src/main.rs::publish_to_cache`, ou `crates/api-server/src/storage.rs`.*
 
 ---
 

@@ -26,6 +26,7 @@
 3. [Cartographie des Dépendances & Matrice d'Impact Globale](#3-cartographie-des-dépendances--matrice-dimpact-globale)
 4. [Jalons Clos (M1 à M6) — Matrice Récapitulative](#4-jalons-clos-m1-à-m6--matrice-récapitulative)
 5. [Jalon 7 (M7) : Stack d'Observabilité (Traces, Métriques, Logs)](#5-jalon-7-m7--stack-dobservabilité-traces-métriques-logs)
+6. [Jalon 8 (M8) : Offload S3 du Cache d'Images et des Snapshots](#6-jalon-8-m8--offload-s3-du-cache-dimages-et-des-snapshots)
 
 ---
 
@@ -158,3 +159,16 @@ Détail tâche par tâche (fichiers exacts, garde-fous, sous-tâches) dans
   - [x] **7.3** : `tower_http::TraceLayer` sur `routes::router` (`api-server`) — un span par requête HTTP, méthode/chemin/statut en attributs. Piège trouvé en vérifiant : `TraceLayer` crée son span par défaut à `DEBUG`, filtré par l'`EnvFilter` par défaut de `telemetry::init` ("info") — sans `.level(Level::INFO)` explicite, aucune trace n'était exportée malgré `TraceLayer` en place. Vérifié bout en bout via le chemin réel (Service Kubernetes + port-forward 4317, cluster de dev, `RUST_LOG` non défini) : les requêtes HTTP produisent bien des traces `service.name=atelier-api-server` dans Tempo. `cargo test`/`clippy`/`fmt` propres.
   - [x] **7.4** : Déjà fait — `crates/controller/src/reconcile.rs` porte `#[tracing::instrument(skip_all, ...)]` sur 5 fonctions depuis le commit `a51b1c9` (2026-08-18), dont deux avec `fields(workshop = %workshop.name_any())`. Découvert en cours de rédaction de la spec (une recherche trop stricte l'avait manqué) puis reverifié bout en bout : `atelier-controller` local + `OTEL_EXPORTER_OTLP_ENDPOINT` vers un `grafana/otel-lgtm` réel + réconciliation réelle contre le cluster de dev → 5 traces `service.name=atelier-controller` retrouvées dans Tempo. Aucune implémentation nécessaire, seul le câblage de 7.2 manquait.
   - [x] **7.5** : `telemetry.rs` gagne un `MeterProvider` (`opentelemetry_otlp::MetricExporter` + `with_periodic_exporter` ; feature `metrics` déjà en défaut chez `opentelemetry_sdk`/`-otlp`, aucune dépendance nouvelle). Nouveau `crates/api-server/src/http_metrics.rs` : compteur de requêtes + histogramme de latence, posés via `.route_layer()` pour que `MatchedPath` soit résolu (évite la cardinalité non bornée du chemin brut). Vérifié contre une instance réelle de `grafana/otel-lgtm` : `http_server_request_count_total`/`http_server_duration_milliseconds_count` visibles dans Prometheus avec les bons labels. `cargo test`/`clippy`/`fmt` propres. **M7 (Observabilité) entièrement clos.**
+
+---
+
+## 6. Jalon 8 (M8) : Offload S3 du Cache d'Images et des Snapshots
+
+* **Spécification** : [`13-image-cache-offload.md`](13-image-cache-offload.md)
+* **Constat** : le `TODO` de `image-builder::publish_to_cache` n'était pas qu'une optimisation théorique — **découvert en creusant ce chantier** : le disque de la machine de dev était à 96 % d'utilisation, `local-path-provisioner` ne fait respecter AUCUN quota (400 Go réels contre un PVC nominal `20Gi`), et surtout `crates/controller/src/reconcile.rs::cleanup()` ne supprime JAMAIS le snapshot d'un `Workshop` supprimé (103 Go de snapshots orphelins mesurés). Pansement déjà appliqué cette session (contenu du PVC vidé manuellement, disque revenu à 50 %) — pas une solution durable.
+* **Fichiers** : `crates/controller/src/reconcile.rs` (`cleanup`), `crates/controller/src/storage.rs`, `crates/image-builder/src/main.rs` (`publish_to_cache`), `crates/vm-supervisor/src/main.rs`, `crates/api-server/src/storage.rs` → à déplacer vers `crates/common/src/storage.rs` (spec §3.3), `charts/atelier/values.yaml` (`S3_BUCKET_IMAGE_CACHE`).
+  - [ ] **8.1** : **Correctif prioritaire (bug, pas une optimisation)** — `cleanup()` supprime le sous-répertoire `snapshots/<ns>_<name>` du Workshop supprimé sur le PVC de cache, avant de traiter l'offload S3 (8.2+). Corrige la fuite constatée (103 Go orphelins) indépendamment du reste de cette spec.
+  - [ ] **8.2** : Déplacer `StorageBackend`/`S3StorageBackend` de `crates/api-server/src/storage.rs` vers `crates/common/src/storage.rs` (spec §3.3) ; `api-server` importe désormais ce type depuis `atelier_common`. Aucun changement de comportement, seul le point de vérité change.
+  - [ ] **8.3** : Nouvelle variable `S3_BUCKET_IMAGE_CACHE` (spec §3.2) ; `image-builder` téléverse vers S3 après `publish_to_cache` local, et vérifie une présence S3 avant tout rebuild `envbuilder` complet (pull local si trouvé, évite un rebuild couteux).
+  - [ ] **8.4** : `vm-supervisor` retélécharge un snapshot depuis `S3_BUCKET_SNAPSHOTS` si absent localement (évincé) avant de tenter `Vm::restore_persisted`, avec repli sur un boot a froid si absent des deux (jamais bloquant).
+  - [ ] **8.5** : Passe d'éviction LRU du PVC local côté `controller` (spec §3.1), plafond configurable (`.Values.imageCache.evictionThresholdGb`), n'évince jamais une entrée dont la présence S3 n'est pas confirmée au prealable.
