@@ -39,6 +39,14 @@ dirs = "5"
 keyring = { version = "3", features = ["linux-native"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
+# `atelier server doctor` (tache 9.8) : verification REELLE de l'acces KVM
+# (ioctl KVM_GET_API_VERSION), pas seulement l'existence du fichier
+# `/dev/kvm` — wrapper sur, aucun `unsafe` cote atelier (regle du projet,
+# voir CLAUDE.md) : c'est `kvm-ioctls` (rust-vmm, la meme famille de crates
+# que Firecracker lui-meme) qui porte l'`unsafe` necessaire a l'ioctl brut.
+kvm-ioctls = "0.19"
+indicatif = "0.17"
+rand = "0.8"
 # Pont tunnels (`atelier port-forward`/`ssh`/`code`, tache 9.2) : meme
 # sous-protocole websocket que `crates/api-server/src/portforward.rs`
 # (calque sur `portforward.k8s.io`), donc meme client websocket que ce

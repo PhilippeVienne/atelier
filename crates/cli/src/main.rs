@@ -65,6 +65,32 @@ enum Command {
         #[command(subcommand)]
         command: ApprovalsCommand,
     },
+    /// Gestion du cycle de vie du serveur (hote single-node, spec §3.5).
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerCommand {
+    /// Diagnostic pre-vol (KVM, memoire, ports, systemd) — lecture seule.
+    Doctor,
+    /// Installation complete (k3s, ingress-nginx, cert-manager, chart Atelier).
+    Install {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        openbao_production: bool,
+    },
+    /// Etat des pods du namespace Atelier.
+    Status,
+    /// Met a jour le depot et reapplique le chart.
+    Upgrade,
+    /// Desinstalle le chart Atelier puis k3s (destructif).
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -230,6 +256,17 @@ async fn main() -> anyhow::Result<()> {
             ApprovalsCommand::Reject { id, reason } => {
                 commands::approvals::reject(id, reason).await
             }
+        },
+        Command::Server { command } => match command {
+            ServerCommand::Doctor => commands::server::doctor().await,
+            ServerCommand::Install {
+                domain,
+                email,
+                openbao_production,
+            } => commands::server::install(domain, email, openbao_production).await,
+            ServerCommand::Status => commands::server::status().await,
+            ServerCommand::Upgrade => commands::server::upgrade().await,
+            ServerCommand::Uninstall => commands::server::uninstall().await,
         },
     }
 }
