@@ -4,7 +4,30 @@
 
 use anyhow::{Context, Result};
 use atelier_common::{DevcontainerSource, Workshop, WorkshopResources};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Meme forme que `crates/api-server/src/approvals.rs::HitlRequest`
+/// (serde `rename_all = "camelCase"` cote serveur) : tous les champs ne
+/// sont pas consommes par chaque commande (`atelier approvals list` n'en
+/// affiche qu'une partie), mais la structure reste complete pour rester le
+/// reflet exact de la reponse serveur.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HitlRequest {
+    pub id: uuid::Uuid,
+    pub tenant: String,
+    pub workshop_name: String,
+    pub category: String,
+    pub requested_by: String,
+    pub payload: serde_json::Value,
+    pub status: String,
+    pub decided_by: Option<String>,
+    pub decision_reason: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+}
 
 pub struct ApiClient {
     base_url: String,
@@ -143,5 +166,50 @@ impl ApiClient {
             .json()
             .await
             .with_context(|| format!("reponse /v1/workshops/{name}/{action} invalide"))
+    }
+
+    /// `GET /v1/workshops/{name}/approvals` : demandes HITL de ce Workshop
+    /// (tache 9.6, `crate::commands::approvals`).
+    pub async fn list_approvals(&self, workshop_name: &str) -> Result<Vec<HitlRequest>> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/v1/workshops/{workshop_name}/approvals")))
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .with_context(|| format!("requete GET /v1/workshops/{workshop_name}/approvals"))?;
+        Self::check(resp)
+            .await?
+            .json()
+            .await
+            .context("reponse /v1/workshops/{name}/approvals invalide")
+    }
+
+    /// `POST /v1/approvals/{id}/decision`.
+    pub async fn decide_approval(
+        &self,
+        id: &str,
+        decision: &str,
+        reason: Option<&str>,
+    ) -> Result<HitlRequest> {
+        #[derive(Serialize)]
+        struct DecisionRequest<'a> {
+            decision: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reason: Option<&'a str>,
+        }
+        let resp = self
+            .http
+            .post(self.url(&format!("/v1/approvals/{id}/decision")))
+            .bearer_auth(&self.access_token)
+            .json(&DecisionRequest { decision, reason })
+            .send()
+            .await
+            .with_context(|| format!("requete POST /v1/approvals/{id}/decision"))?;
+        Self::check(resp)
+            .await?
+            .json()
+            .await
+            .with_context(|| format!("reponse /v1/approvals/{id}/decision invalide"))
     }
 }

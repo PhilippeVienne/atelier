@@ -4,6 +4,7 @@ import {
   ApiServerError,
   getLlmBudget,
   getWorkshop,
+  listApprovals,
   listCredentials,
   listWorkshopEvents,
 } from "@/lib/api-server";
@@ -14,6 +15,7 @@ import { EventsLog } from "./events-log";
 import { LiveRefresh } from "./live-refresh";
 import { ConnectLink, TerminalFrame } from "./connect";
 import { Credentials } from "./credentials";
+import { Approvals } from "./approvals";
 
 const BUSY_PHASES = ["BuildingImage", "Provisioning", "Suspending", "Resuming", "Terminating"];
 
@@ -148,6 +150,17 @@ export default async function WorkshopDetailPage({
     budget = null;
   }
 
+  // Approbations HITL (tache 9.6) : meme raisonnement que credentials/budget
+  // ci-dessus — non bloquant, une absence de reponse ne doit pas masquer le
+  // reste de la page.
+  let approvals: Awaited<ReturnType<typeof listApprovals>> = [];
+  try {
+    approvals = await listApprovals(name);
+  } catch {
+    approvals = [];
+  }
+  const pendingApprovals = approvals.filter((a) => a.status === "PENDING");
+
   return (
     <>
       <LiveRefresh active={busy} />
@@ -174,6 +187,23 @@ export default async function WorkshopDetailPage({
           <Field label="Snapshot" value={status?.snapshotDigest ?? "—"} />
         </div>
 
+        {/* Bandeau d'alerte HITL (tache 9.6, spec §5.4) : place avant le
+            confinement de securite, dont la priorite visuelle reste la plus
+            haute — les deux ne s'affichent presque jamais ensemble en
+            pratique. */}
+        {pendingApprovals.length > 0 && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
+            <p className="text-sm font-semibold text-amber-600 dark:text-amber-400">
+              {pendingApprovals.length} demande{pendingApprovals.length > 1 ? "s" : ""}{" "}
+              d&apos;approbation en attente
+            </p>
+            <p className="mt-1 text-xs text-amber-600/90 dark:text-amber-400/90">
+              L&apos;agent attend une décision humaine avant de continuer — voir
+              la section « Approbations » plus bas.
+            </p>
+          </div>
+        )}
+
         {/* Confinement de securite (tache 4.2.4) : la PHASE reste `Running`
             — la microVM est deliberement conservee pour rester analysable —
             donc rien d'autre ne signalerait qu'un Workshop est coupe du
@@ -194,6 +224,8 @@ export default async function WorkshopDetailPage({
         )}
 
         {budget && <LlmBudgetCard budget={budget} />}
+
+        <Approvals workshopName={name} initial={approvals} />
 
         <Credentials workshopName={name} initial={credentials} />
 

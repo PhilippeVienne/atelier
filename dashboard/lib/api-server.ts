@@ -291,3 +291,40 @@ export async function deleteCredential(name: string, host: string): Promise<void
     { method: "DELETE" },
   );
 }
+
+/** Demande d'approbation Human-in-the-Loop (spec
+ *  `docs/specs/14-devex-cli-simulateurs-hitl.md` §5, tache 9.5/9.6) — memes
+ *  champs que `crates/api-server/src/approvals.rs::HitlRequest`, en
+ *  camelCase (serde `rename_all`). */
+export interface HitlRequest {
+  id: string;
+  tenant: string;
+  workshopName: string;
+  category: "ALLOWLIST_EXPANSION" | "SECRET_REQUEST" | "PR_GATEWAY" | "SHELL_COMMAND";
+  requestedBy: string;
+  payload: unknown;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+  decidedBy: string | null;
+  decisionReason: string | null;
+  createdAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+}
+
+export async function listApprovals(workshopName: string): Promise<HitlRequest[]> {
+  const res = await call(`/v1/workshops/${encodeURIComponent(workshopName)}/approvals`);
+  return (await res.json()) as HitlRequest[];
+}
+
+export async function decideApproval(
+  id: string,
+  decision: "APPROVED" | "REJECTED",
+  reason?: string,
+): Promise<HitlRequest> {
+  const res = await call(`/v1/approvals/${encodeURIComponent(id)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision, reason }),
+  });
+  return (await res.json()) as HitlRequest;
+}

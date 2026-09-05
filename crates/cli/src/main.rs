@@ -60,6 +60,29 @@ enum Command {
         #[arg(long, default_value = "code")]
         editor: String,
     },
+    /// Demandes d'approbation Human-in-the-Loop (HITL, spec §5).
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ApprovalsCommand {
+    /// Liste les demandes d'approbation d'un Workshop.
+    List { workshop: String },
+    /// Approuve une demande en attente.
+    Approve {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Rejette une demande en attente.
+    Reject {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -199,5 +222,14 @@ async fn main() -> anyhow::Result<()> {
         } => commands::tunnels::port_forward(name, mapping, stdio).await,
         Command::Ssh { name, user } => commands::tunnels::ssh(name, user).await,
         Command::Code { name, user, editor } => commands::tunnels::code(name, user, editor).await,
+        Command::Approvals { command } => match command {
+            ApprovalsCommand::List { workshop } => commands::approvals::list(workshop).await,
+            ApprovalsCommand::Approve { id, reason } => {
+                commands::approvals::approve(id, reason).await
+            }
+            ApprovalsCommand::Reject { id, reason } => {
+                commands::approvals::reject(id, reason).await
+            }
+        },
     }
 }

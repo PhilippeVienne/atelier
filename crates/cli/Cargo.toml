@@ -37,7 +37,7 @@ dirs = "5"
 # reboot selon la portee du trousseau kernel choisi — a trancher avant de
 # considerer 9.1 termine (voir verrou PLAN-ACTION-GLOBAL.md).
 keyring = { version = "3", features = ["linux-native"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 # Pont tunnels (`atelier port-forward`/`ssh`/`code`, tache 9.2) : meme
 # sous-protocole websocket que `crates/api-server/src/portforward.rs`

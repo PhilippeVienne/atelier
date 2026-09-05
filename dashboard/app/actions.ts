@@ -13,6 +13,7 @@ import {
   createLlmModel,
   updateLlmModel,
   deleteLlmModel,
+  decideApproval,
   type LlmModelInput,
 } from "@/lib/api-server";
 import { decideReview } from "@/lib/pm-engine";
@@ -42,6 +43,27 @@ export async function remove(name: string) {
 export async function decideReviewAction(threadId: string, decision: "approved" | "rejected") {
   await decideReview(threadId, decision);
   revalidatePath("/pm");
+}
+
+/** Distinct de `decideReviewAction` ci-dessus : celle-ci decide une revue
+ *  PM Engine (`lib/pm-engine`), pas une demande HITL (`hitl_requests`,
+ *  tache 9.5/9.6) — deux mecanismes d'approbation independants. */
+export async function decideApprovalAction(
+  workshopName: string,
+  id: string,
+  decision: "APPROVED" | "REJECTED",
+  reason?: string,
+) {
+  try {
+    const updated = await decideApproval(id, decision, reason);
+    revalidatePath(`/workshops/${workshopName}`);
+    return { request: updated };
+  } catch (err) {
+    if (err instanceof ApiServerError) {
+      return { error: `Décision refusée (${err.status}).` };
+    }
+    throw err;
+  }
 }
 
 export interface CreateWorkshopState {
