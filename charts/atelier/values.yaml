@@ -257,6 +257,30 @@ litellm:
       memory: 1536Mi
 
 # ------------------------------------------------------------------------
+# Observabilite : traces/metriques/logs (spec docs/specs/12-observabilite.md)
+# ------------------------------------------------------------------------
+observability:
+  enabled: true
+  image:
+    # Image tout-en-un (collecteur OTLP + Tempo + Prometheus + Loki +
+    # Grafana, datasources pre-provisionnees) : un seul pod plutot que
+    # cinq services distincts, meme logique que le chart monolithique et
+    # `litellm` ci-dessus. Verifie empiriquement (docker run, spec §3) :
+    # demarre `healthy` en ~40s, ~480Mi de RAM au repos.
+    repository: grafana/otel-lgtm
+    tag: "0.32.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    # ~480Mi mesures au repos (docker run, sans trafic) : marge similaire a
+    # celle deja retenue pour `litellm` ci-dessus plutot que deduite en
+    # theorie — a re-mesurer sous charge reelle avant de la resserrer.
+    limits:
+      memory: 1024Mi
+
+# ------------------------------------------------------------------------
 # Services d'Infrastructure Déployés ou BYO (Bring Your Own)
 # ------------------------------------------------------------------------
 postgresql:
