@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod credentials;
 pub mod exec;
+pub mod http_metrics;
 pub mod llm_budget;
 pub mod mcp_server;
 pub mod portforward;

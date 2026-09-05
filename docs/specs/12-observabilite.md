@@ -90,7 +90,7 @@ Reverifié bout en bout dans le cadre de cette session (pas seulement relu dans 
 
 ### 4.3. Métriques : compteur + histogramme sur `api-server`
 
-`telemetry.rs` n'initialise aujourd'hui qu'un `TracerProvider` (traces), jamais de `MeterProvider` (métriques) — à ajouter, même garde `OTEL_EXPORTER_OTLP_ENDPOINT` absent/présent que pour les traces. Une seule paire de métriques pour ce premier lot : nombre de requêtes et latence, par route et code de statut — ce que `tower_http::metrics` ou une couche `axum` équivalente expose déjà, pas une métrique métier par endpoint à concevoir une par une.
+**Implémenté et vérifié empiriquement.** `telemetry.rs` initialise désormais un `SdkMeterProvider` (`opentelemetry_otlp::MetricExporter` + `with_periodic_exporter`), même garde `OTEL_EXPORTER_OTLP_ENDPOINT` absente/présente que pour les traces — `opentelemetry_sdk`/`opentelemetry-otlp` ont la feature `metrics` en défaut, aucune dépendance nouvelle. `crates/api-server/src/http_metrics.rs` : un compteur (`http.server.request_count`) et un histogramme de latence (`http.server.duration`, ms), posés via `.route_layer()` (pas `.layer()`, pour que `MatchedPath` soit déjà résolu — sinon seul le chemin brut serait exploitable, à cardinalité non bornée pour `/v1/workshops/{name}/...`). Vérifié contre une instance réelle de `grafana/otel-lgtm` : les deux métriques apparaissent dans Prometheus (`http_server_request_count_total`, `http_server_duration_milliseconds_count`) avec les labels `http_method`/`http_route`/`http_status_code`/`service_name` corrects.
 
 ---
 

@@ -170,6 +170,15 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/health/readiness", get(health_readiness))
         .with_state(health_state)
         .merge(protected)
+        // `route_layer` (pas `layer`) : place ce middleware APRES la
+        // resolution du chemin matche, pour que `MatchedPath` soit deja
+        // disponible dans `crate::http_metrics::record_http_metrics` (spec
+        // §4.3) — sans quoi seul le chemin brut serait exploitable, a
+        // cardinalite non bornee pour les routes du type
+        // `/v1/workshops/{name}/...`.
+        .route_layer(axum::middleware::from_fn(
+            crate::http_metrics::record_http_metrics,
+        ))
         // Un span par requete HTTP (methode/chemin/statut en attributs) :
         // sans lui, `tracing-opentelemetry` n'exporte rien du tout, meme
         // avec OTEL_EXPORTER_OTLP_ENDPOINT positionnee — verifie

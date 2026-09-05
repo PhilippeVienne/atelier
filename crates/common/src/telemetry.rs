@@ -9,16 +9,18 @@
 //! logging `tracing_subscriber::fmt`, sans exporter de traces.
 
 use opentelemetry::global;
-use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-#[must_use = "conserver ce guard jusqu'a la fin de main pour flush les traces"]
+#[must_use = "conserver ce guard jusqu'a la fin de main pour flush les traces/metriques"]
 pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
 }
 
 impl Drop for TelemetryGuard {
@@ -26,6 +28,11 @@ impl Drop for TelemetryGuard {
         if let Some(provider) = self.provider.take() {
             if let Err(err) = provider.shutdown() {
                 eprintln!("erreur a l'arret du tracer provider OpenTelemetry: {err}");
+            }
+        }
+        if let Some(provider) = self.meter_provider.take() {
+            if let Err(err) = provider.shutdown() {
+                eprintln!("erreur a l'arret du meter provider OpenTelemetry: {err}");
             }
         }
     }
@@ -54,22 +61,25 @@ pub fn init(service_name: &str) -> TelemetryGuard {
             .with(env_filter)
             .with(fmt_layer)
             .init();
-        return TelemetryGuard { provider: None };
+        return TelemetryGuard {
+            provider: None,
+            meter_provider: None,
+        };
     };
+
+    let resource = Resource::builder()
+        .with_service_name(service_name.to_string())
+        .build();
 
     let exporter = SpanExporter::builder()
         .with_tonic()
-        .with_endpoint(endpoint)
+        .with_endpoint(endpoint.clone())
         .build()
-        .expect("construction de l'exporteur OTLP");
+        .expect("construction de l'exporteur OTLP (traces)");
 
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        .with_resource(
-            Resource::builder()
-                .with_service_name(service_name.to_string())
-                .build(),
-        )
+        .with_resource(resource.clone())
         .build();
 
     global::set_tracer_provider(provider.clone());
@@ -82,7 +92,23 @@ pub fn init(service_name: &str) -> TelemetryGuard {
         .with(otel_layer)
         .init();
 
+    // Metriques (spec docs/specs/12-observabilite.md §4.3) : compteur de
+    // requetes + histogramme de latence sur `api-server`, voir
+    // `crate::metrics_layer` cote api-server. Meme garde
+    // `OTEL_EXPORTER_OTLP_ENDPOINT` absente/presente que pour les traces.
+    let metric_exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .expect("construction de l'exporteur OTLP (metriques)");
+    let meter_provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(metric_exporter)
+        .with_resource(resource)
+        .build();
+    global::set_meter_provider(meter_provider.clone());
+
     TelemetryGuard {
         provider: Some(provider),
+        meter_provider: Some(meter_provider),
     }
 }

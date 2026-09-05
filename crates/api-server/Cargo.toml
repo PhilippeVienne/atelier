@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 atelier-common = { path = "../common" }
+opentelemetry.workspace = true
 tokio.workspace = true
 axum = { workspace = true, features = ["ws"] }
 # Un span par requete HTTP (spec docs/specs/12-observabilite.md §4.1) :

@@ -40,7 +40,7 @@ attendus et font partie du processus, ils sont consignes dans
 | `pm-engine` — graphe LangGraph (PM autonome) | Valide de bout en bout | Ticket Forgejo reel → decoupage → microVMs → PR — `docs/specs/05-devfactory-pm-engine.md` |
 | `pm-engine` — equipe consultative (Architecte/QA/Securite/Ops) | Valide de bout en bout | `docs/specs/08-equipe-it-consultative.md` |
 | `pm-engine` — validateur QA post-merge (`QAValidation`) | Valide de bout en bout | Workshop dedie post-merge, preuves S3 — `docs/specs/09-qa-validation-post-merge.md` |
-| Observabilite — Grafana/dashboard de supervision | Backlog | Explicitement reporte |
+| Observabilite — traces/metriques/logs (`grafana/otel-lgtm`) | Fonctionnel (base) | Traces (`api-server`, `controller`) et metriques HTTP (`api-server`) exportees et verifiees dans Tempo/Prometheus reels — `docs/specs/12-observabilite.md`. Logs de conteneurs et dashboards Grafana dedies restent hors perimetre (spec §2). |
 | Repo GitHub `atelier` / `atelier-workspace` | Publie (public) | CI GitHub Actions, images GHCR, site MkDocs, AGPLv3 |
 
 ## Prochaines etapes
