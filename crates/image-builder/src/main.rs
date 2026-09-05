@@ -117,6 +117,28 @@ async fn main() -> Result<()> {
     tracing::info!(%digest, "publishing to content-addressed cache");
     let published_path = publish_to_cache(&cache_dir, &digest, &ext4_path).await?;
 
+    // Offload S3 best-effort (spec docs/specs/13-image-cache-offload.md,
+    // tache 8.3) : ne bloque jamais le build ni la publication locale
+    // ci-dessus, seule strictement necessaire pour que ce Workshop demarre.
+    // `S3StorageBackend::from_env` renvoie `None` si `S3_ENDPOINT` est
+    // absent, et `upload_image_cache_file` elle-meme ne fait rien si
+    // `S3_BUCKET_IMAGE_CACHE` n'est pas configure (fonctionnalite
+    // independamment optionnelle, voir `S3Config::bucket_image_cache`).
+    match atelier_common::storage::S3StorageBackend::from_env() {
+        Ok(Some(storage)) => {
+            if let Err(err) = storage
+                .upload_image_cache_file(&digest, &published_path)
+                .await
+            {
+                tracing::warn!(%err, %digest, "televersement du cache d'images vers S3 echoue, ignore");
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!(%err, "configuration S3 invalide, offload du cache d'images ignore");
+        }
+    }
+
     tokio::fs::remove_dir_all(&rootfs_dir).await.ok();
     tokio::fs::remove_file(&ext4_path).await.ok();
 

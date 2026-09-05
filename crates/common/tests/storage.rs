@@ -8,6 +8,7 @@
 //!   export AWS_SECRET_ACCESS_KEY="atelier-rustfs-secret-key"
 //!   export S3_BUCKET_SESSIONS="atelier-sessions"
 //!   export S3_BUCKET_SNAPSHOTS="atelier-snapshots"
+//!   export S3_BUCKET_IMAGE_CACHE="atelier-image-cache" # requis pour le test d'offload d'images (8.3)
 //!   export S3_FORCE_PATH_STYLE="true"
 //!   cargo test -p atelier-common --test storage
 
@@ -16,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 
 /// Genere un contenu deterministe (pas aleatoire) d'environ 5 Mo : un
 /// generateur congruentiel lineaire a graine fixe. Deterministe => le
@@ -92,6 +94,70 @@ async fn upload_and_replay_session_archive_preserves_integrity() {
     let bucket_sessions =
         std::env::var("S3_BUCKET_SESSIONS").expect("S3_BUCKET_SESSIONS (verifie plus haut)");
     if let Err(err) = backend.delete_object(&bucket_sessions, &key).await {
+        eprintln!("nettoyage de l'objet de test echoue (sans impact sur le test) : {err:#}");
+    }
+}
+
+/// Tache 8.3 (spec `docs/specs/13-image-cache-offload.md`) : `image-builder`
+/// televerse le `rootfs.ext4` publie localement vers S3. Verifie le contenu
+/// reellement retrouve, pas seulement que l'appel ne renvoie pas d'erreur.
+#[tokio::test]
+async fn upload_image_cache_file_is_retrievable_with_the_conventional_key() {
+    let Ok(backend) = S3StorageBackend::from_env() else {
+        eprintln!("configuration S3 partielle/invalide, test ignore");
+        return;
+    };
+    let Some(backend) = backend else {
+        eprintln!("S3_ENDPOINT absent, test ignore (voir l'en-tete de ce fichier)");
+        return;
+    };
+    let Ok(bucket_image_cache) = std::env::var("S3_BUCKET_IMAGE_CACHE") else {
+        eprintln!("S3_BUCKET_IMAGE_CACHE absent, test ignore (voir l'en-tete de ce fichier)");
+        return;
+    };
+
+    let payload = deterministic_session_payload(1024 * 1024);
+    let expected_sha256 = sha256_hex(&payload);
+    let digest = format!("sha256:{expected_sha256}");
+
+    let tmp_path = std::env::temp_dir().join(format!(
+        "atelier-storage-test-{}.ext4",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("horloge systeme")
+            .as_nanos()
+    ));
+    tokio::fs::File::create(&tmp_path)
+        .await
+        .expect("creation du fichier temporaire")
+        .write_all(&payload)
+        .await
+        .expect("ecriture du fichier temporaire");
+
+    backend
+        .upload_image_cache_file(&digest, &tmp_path)
+        .await
+        .expect("televersement du cache d'images");
+    tokio::fs::remove_file(&tmp_path).await.ok();
+
+    let key = S3StorageBackend::image_cache_key(&digest);
+    assert_eq!(
+        key,
+        "images/sha256_".to_string() + &expected_sha256 + "/rootfs.ext4"
+    );
+
+    let mut downloaded = backend
+        .download_stream(&bucket_image_cache, &key)
+        .await
+        .expect("recuperation de l'objet televerse");
+    let mut content = Vec::new();
+    downloaded
+        .read_to_end(&mut content)
+        .await
+        .expect("lecture complete du contenu televerse");
+    assert_eq!(sha256_hex(&content), expected_sha256);
+
+    if let Err(err) = backend.delete_object(&bucket_image_cache, &key).await {
         eprintln!("nettoyage de l'objet de test echoue (sans impact sur le test) : {err:#}");
     }
 }

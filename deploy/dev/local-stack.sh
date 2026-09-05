@@ -381,11 +381,18 @@ export ATELIER_REGISTRY_INSECURE=true
 
 # S3 (RustFS) — port-forward 9000 cote hote.
 export S3_ENDPOINT="http://127.0.0.1:9000"
+# Vue POD de ce meme endpoint (spec docs/specs/13-image-cache-offload.md,
+# tache 8.3) : le controller tourne hors cluster en dev, mais retransmet
+# cette configuration au Job image-builder, qui lui tourne DANS le cluster
+# — "127.0.0.1:9000" n'y designe rien. Meme convention que
+# ATELIER_LLM_PROXY_POD_ADDR/ATELIER_OPENBAO_POD_ADDR ci-dessus/ci-dessous.
+export ATELIER_S3_POD_ENDPOINT="http://atelier-s3-dev.default.svc.cluster.local:9000"
 export S3_REGION="us-east-1"
 export AWS_ACCESS_KEY_ID="atelier-rustfs-access-key"
 export AWS_SECRET_ACCESS_KEY="atelier-rustfs-secret-key"
 export S3_BUCKET_SESSIONS="atelier-sessions"
 export S3_BUCKET_SNAPSHOTS="atelier-snapshots"
+export S3_BUCKET_IMAGE_CACHE="atelier-image-cache"
 export S3_FORCE_PATH_STYLE="true"
 
 # Forgejo — via l'ingress Traefik (necessite /etc/hosts a jour).

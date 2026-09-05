@@ -31,6 +31,8 @@ fn ctx_without_openbao(client: Client) -> ReconcileCtx {
         git_identity: None,
         litellm: None,
         component_image_registry: None,
+        s3: None,
+        s3_pod_endpoint: None,
     }
 }
 
@@ -763,6 +765,8 @@ async fn apply_provisions_openbao_role_when_configured() {
         git_identity: None,
         litellm: None,
         component_image_registry: None,
+        s3: None,
+        s3_pod_endpoint: None,
     };
 
     workshops
@@ -910,6 +914,8 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         git_identity: None,
         litellm: Some(litellm_config),
         component_image_registry: None,
+        s3: None,
+        s3_pod_endpoint: None,
     };
 
     workshops
@@ -1067,6 +1073,8 @@ async fn cleanup_tolerates_an_unreachable_litellm() {
             master_key: "unused".to_string(),
         }),
         component_image_registry: None,
+        s3: None,
+        s3_pod_endpoint: None,
     };
 
     workshops

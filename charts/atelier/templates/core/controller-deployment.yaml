@@ -79,6 +79,61 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "observability") }}:4317"
             {{- end }}
+            {{- /*
+            Offload S3 du cache d'images (spec docs/specs/13-image-cache-
+            offload.md, tache 8.3) : le controller ne s'en sert pas
+            directement, il retransmet cette configuration au Job
+            image-builder qu'il cree (ensure_image_build_job). Meme
+            structure if/else que s3-init-job.yaml (RustFS embarque vs S3
+            externe/Cloud).
+            */}}
+            {{- if .Values.s3Storage.external.enabled }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.s3Storage.external.endpoint | quote }}
+            - name: S3_REGION
+              value: {{ .Values.s3Storage.external.region | quote }}
+            - name: S3_FORCE_PATH_STYLE
+              value: {{ .Values.s3Storage.external.forcePathStyle | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cloudIdentity.fallbackSecretName }}
+                  key: accessKeyId
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cloudIdentity.fallbackSecretName }}
+                  key: secretAccessKey
+            - name: S3_BUCKET_SESSIONS
+              value: {{ .Values.s3Storage.buckets.sessions | quote }}
+            - name: S3_BUCKET_SNAPSHOTS
+              value: {{ .Values.s3Storage.buckets.snapshots | quote }}
+            - name: S3_BUCKET_IMAGE_CACHE
+              value: {{ .Values.s3Storage.buckets.imageCache | quote }}
+            {{- else if .Values.s3Storage.rustfs.enabled }}
+            - name: S3_ENDPOINT
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "rustfs") }}:{{ .Values.s3Storage.rustfs.service.port }}"
+            - name: S3_REGION
+              value: "us-east-1"
+            - name: S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs-auth") }}
+                  key: RUSTFS_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "rustfs-auth") }}
+                  key: RUSTFS_SECRET_KEY
+            - name: S3_BUCKET_SESSIONS
+              value: {{ .Values.s3Storage.buckets.sessions | quote }}
+            - name: S3_BUCKET_SNAPSHOTS
+              value: {{ .Values.s3Storage.buckets.snapshots | quote }}
+            - name: S3_BUCKET_IMAGE_CACHE
+              value: {{ .Values.s3Storage.buckets.imageCache | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.controller.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

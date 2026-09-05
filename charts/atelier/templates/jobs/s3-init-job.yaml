@@ -32,7 +32,7 @@ spec:
                 echo "en attente du endpoint S3...";
                 sleep 3;
               done
-              for bucket in "{{ .Values.s3Storage.buckets.sessions }}" "{{ .Values.s3Storage.buckets.snapshots }}" "{{ .Values.s3Storage.buckets.forgejo }}"; do
+              for bucket in "{{ .Values.s3Storage.buckets.sessions }}" "{{ .Values.s3Storage.buckets.snapshots }}" "{{ .Values.s3Storage.buckets.forgejo }}" "{{ .Values.s3Storage.buckets.imageCache }}"; do
                 if mc ls "atelier/$bucket" >/dev/null 2>&1; then
                   echo "bucket $bucket deja present (idempotent)";
                 else

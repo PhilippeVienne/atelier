@@ -198,6 +198,25 @@ pub struct ReconcileCtx {
     /// cluster reel (EKS...), doit pointer vers un registre ayant recu ces
     /// images au prealable (voir `deploy/terraform/aws/mirror-images.sh`).
     pub component_image_registry: Option<String>,
+    /// Configuration S3 (spec `docs/specs/13-image-cache-offload.md`, tache
+    /// 8.3) : le controller lui-meme ne s'en sert pas, il ne fait que la
+    /// retransmettre en variables d'environnement au Job `image-builder`
+    /// (`ensure_image_build_job`), qui televerse son `rootfs.ext4` publie
+    /// vers `S3_BUCKET_IMAGE_CACHE`. `None` : fonctionnalite desactivee,
+    /// meme convention que `openbao`/`litellm` ci-dessus — l'offload est
+    /// alors simplement saute (best effort, jamais bloquant pour le build).
+    pub s3: Option<atelier_common::storage::S3Config>,
+    /// Endpoint S3 tel qu'un POD doit le voir, distinct de `s3.endpoint` —
+    /// meme raison et meme convention que `OpenBaoConfig::pod_addr`/
+    /// `llm_proxy_pod_addr` : en developpement le controller tourne HORS
+    /// cluster et joint S3/RustFS par un port-forward (`127.0.0.1:9000`),
+    /// adresse qui ne veut rien dire depuis l'interieur du Job
+    /// `image-builder` — constate empiriquement en verifiant cette meme
+    /// tache (8.3) : sans ce dedoublement, le Job recevait
+    /// `S3_ENDPOINT=http://127.0.0.1:9000`. Egal a `s3.endpoint` par
+    /// defaut : aucun effet en production, ou le controller tourne dans le
+    /// cluster (memes adresses des deux cotes).
+    pub s3_pod_endpoint: Option<String>,
 }
 
 impl ReconcileCtx {
@@ -280,6 +299,10 @@ pub async fn run() -> anyhow::Result<()> {
     let litellm_config =
         litellm::config_from_env(llm_proxy_addr.clone(), llm_proxy_auth_token.clone());
     let component_image_registry = std::env::var("ATELIER_COMPONENT_IMAGE_REGISTRY").ok();
+    let s3 = atelier_common::storage::config_from_env()?;
+    let s3_pod_endpoint = std::env::var("ATELIER_S3_POD_ENDPOINT")
+        .ok()
+        .or_else(|| s3.as_ref().map(|c| c.endpoint.clone()));
     let workshops: Api<Workshop> = Api::all(client.clone());
 
     Controller::new(workshops, watcher::Config::default())
@@ -297,6 +320,8 @@ pub async fn run() -> anyhow::Result<()> {
                 git_identity,
                 litellm: litellm_config,
                 component_image_registry,
+                s3,
+                s3_pod_endpoint,
             }),
         )
         .for_each(|res| async move {
@@ -873,6 +898,36 @@ async fn ensure_image_build_job(
             .as_ref()
             .map(|token| env_var("ATELIER_LLM_PROXY_AUTH_TOKEN", token)),
     )
+    // Offload S3 du cache d'images (spec docs/specs/13-image-cache-
+    // offload.md, tache 8.3) : le controller ne fait ici que retransmettre
+    // sa PROPRE configuration S3 (chargee une seule fois dans `run()`) au
+    // Job, qui televerse son `rootfs.ext4` publie vers
+    // `S3_BUCKET_IMAGE_CACHE` une fois le build termine
+    // (`image-builder::main`). `S3_BUCKET_SESSIONS`/`S3_BUCKET_SNAPSHOTS`
+    // sont transmises alors qu'`image-builder` ne les utilise jamais : sa
+    // propre lecture de la configuration (`atelier_common::storage::
+    // config_from_env`) les exige des que `S3_ENDPOINT` est present, meme
+    // discipline de validation que partout ailleurs dans ce module.
+    .chain(ctx.s3.iter().flat_map(|s3| {
+        vec![
+            env_var(
+                "S3_ENDPOINT",
+                ctx.s3_pod_endpoint.as_deref().unwrap_or(&s3.endpoint),
+            ),
+            env_var("S3_REGION", &s3.region),
+            env_var("S3_BUCKET_SESSIONS", &s3.bucket_sessions),
+            env_var("S3_BUCKET_SNAPSHOTS", &s3.bucket_snapshots),
+            env_var("S3_FORCE_PATH_STYLE", &s3.force_path_style.to_string()),
+            env_var("AWS_ACCESS_KEY_ID", &s3.access_key_id),
+            env_var("AWS_SECRET_ACCESS_KEY", &s3.secret_access_key),
+        ]
+        .into_iter()
+        .chain(
+            s3.bucket_image_cache
+                .as_ref()
+                .map(|bucket| env_var("S3_BUCKET_IMAGE_CACHE", bucket)),
+        )
+    }))
     .collect::<Vec<_>>();
 
     let cache_volume = Volume {

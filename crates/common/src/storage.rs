@@ -76,6 +76,15 @@ pub struct S3Config {
     pub region: String,
     pub bucket_sessions: String,
     pub bucket_snapshots: String,
+    /// Cache d'images/snapshots Firecracker offload (spec
+    /// `docs/specs/13-image-cache-offload.md`), tache 8.3 — contrairement
+    /// aux deux buckets ci-dessus, PAS obligatoire des que `S3_ENDPOINT` est
+    /// present : seul `image-builder` en a besoin, `api-server` (qui lit
+    /// cette meme configuration pour les sessions) n'a aucun usage pour ce
+    /// bucket. `None` = fonctionnalite desactivee (l'offload est alors
+    /// simplement saute, best effort), meme convention que le reste des
+    /// fonctionnalites optionnelles du projet.
+    pub bucket_image_cache: Option<String>,
     pub force_path_style: bool,
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -105,6 +114,7 @@ pub fn config_from_env() -> Result<Option<S3Config>> {
         .context("S3_ENDPOINT est defini mais S3_BUCKET_SESSIONS est absent")?;
     let bucket_snapshots = std::env::var("S3_BUCKET_SNAPSHOTS")
         .context("S3_ENDPOINT est defini mais S3_BUCKET_SNAPSHOTS est absent")?;
+    let bucket_image_cache = std::env::var("S3_BUCKET_IMAGE_CACHE").ok();
     let access_key_id = std::env::var("AWS_ACCESS_KEY_ID")
         .context("S3_ENDPOINT est defini mais AWS_ACCESS_KEY_ID est absent")?;
     let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY")
@@ -120,6 +130,7 @@ pub fn config_from_env() -> Result<Option<S3Config>> {
         region,
         bucket_sessions,
         bucket_snapshots,
+        bucket_image_cache,
         force_path_style,
         access_key_id,
         secret_access_key,
@@ -136,6 +147,7 @@ pub struct S3StorageBackend {
     #[allow(dead_code)]
     // branche par la tache 8.4 (docs/specs/13-image-cache-offload.md), pas encore
     bucket_snapshots: String,
+    bucket_image_cache: Option<String>,
 }
 
 impl S3StorageBackend {
@@ -163,7 +175,38 @@ impl S3StorageBackend {
             client: S3Client::from_conf(s3_config),
             bucket_sessions: config.bucket_sessions.clone(),
             bucket_snapshots: config.bucket_snapshots.clone(),
+            bucket_image_cache: config.bucket_image_cache.clone(),
         }
+    }
+
+    /// Cle S3 conventionnelle d'une entree du cache d'images (rootfs ext4
+    /// content-addresse) : meme convention de nommage que
+    /// `crates/controller/src/storage.rs::digest_cache_subdir` (duplique
+    /// plutot que partage — `atelier-common` n'a pas de dependance vers
+    /// `atelier-controller`, uniquement l'inverse).
+    pub fn image_cache_key(digest: &str) -> String {
+        format!("images/{}/rootfs.ext4", digest.replace(':', "_"))
+    }
+
+    /// Televerse un fichier local (le `rootfs.ext4` publie localement par
+    /// `image-builder::publish_to_cache`) vers le bucket
+    /// `S3_BUCKET_IMAGE_CACHE`. Ne fait RIEN (retourne `Ok(())`) si ce
+    /// bucket n'est pas configure : cette fonctionnalite reste optionnelle
+    /// meme quand le reste du stockage S3 (sessions) est actif, voir
+    /// [`S3Config::bucket_image_cache`].
+    pub async fn upload_image_cache_file(
+        &self,
+        digest: &str,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let Some(bucket) = self.bucket_image_cache.as_ref() else {
+            return Ok(());
+        };
+        let key = Self::image_cache_key(digest);
+        let file = tokio::fs::File::open(path).await.with_context(|| {
+            format!("ouverture de {path:?} pour televersement vers le cache d'images S3")
+        })?;
+        self.upload_stream(bucket, &key, Box::pin(file)).await
     }
 
     /// Charge la configuration depuis l'environnement et construit le

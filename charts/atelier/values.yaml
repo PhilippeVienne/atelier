@@ -499,6 +499,10 @@ s3Storage:
     sessions: "atelier-sessions"
     snapshots: "atelier-snapshots"
     forgejo: "forgejo-lfs-attachments"
+    # Cache d'images/snapshots Firecracker offload (spec
+    # docs/specs/13-image-cache-offload.md), tache 8.3 — cree par le meme
+    # Job d'initialisation que les buckets ci-dessus.
+    imageCache: "atelier-image-cache"
 
 # ------------------------------------------------------------------------
 # Jobs d'initialisation Helm (hooks) — images utilitaires, activables
