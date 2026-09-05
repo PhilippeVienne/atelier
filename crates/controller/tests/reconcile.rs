@@ -11,10 +11,11 @@ use atelier_common::{
     WorkshopSpec,
 };
 use atelier_controller::reconcile::ReconcileCtx;
+use k8s_openapi::api::authentication::v1::{TokenRequest, TokenRequestSpec};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, ServiceAccount};
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams, PropagationPolicy};
-use kube::Client;
+use kube::{Client, Config};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Contexte de test sans OpenBao configure (comportement par defaut,
@@ -1548,4 +1549,152 @@ async fn ensure_ssh_key_generates_a_valid_openssh_keypair_and_preserves_it() {
     .send()
     .await
     .ok();
+}
+
+/// Tache 9.4 (spec `docs/specs/14-devex-cli-simulateurs-hitl.md` §4.4) :
+/// verifie la frontiere de securite exacte dont depend le tool MCP
+/// `request_simulator` (`crates/mcp-gateway/src/gateway.rs`) — le
+/// ServiceAccount du pod parent d'UN Workshop peut lire et patcher CE
+/// Workshop (RBAC pose par `ensure_parent_pod_workshop_rbac`, exercee ici
+/// via le meme chemin que la production : `apply()` normal, pas un appel
+/// direct a une fonction privee), mais ne peut RIEN faire sur un autre
+/// Workshop du meme namespace — pas seulement au niveau du code appelant
+/// (`mcp-gateway`), mais impose par le serveur API Kubernetes lui-meme.
+/// Un vrai jeton est emis via `TokenRequest` (pas un jeton fabrique) et
+/// un second `kube::Client` reellement authentifie avec est utilise pour
+/// les appels : ceci est un test contre le vrai RBAC du cluster, pas une
+/// relecture de l'objet `Role` cree.
+#[tokio::test]
+async fn parent_pod_service_account_can_only_patch_its_own_workshop() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let name_a = unique_name("test-workshop-rbac-a");
+    let name_b = unique_name("test-workshop-rbac-b");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_openbao(client.clone());
+
+    // Fait avancer A et B jusqu'a la creation du pod parent (donc du
+    // ServiceAccount + RBAC dedies) exactement comme le test
+    // `apply_creates_owned_parent_pod_once_image_ready` ci-dessus : seul le
+    // chemin qui nous interesse ici (RBAC), pas le pipeline complet
+    // image-builder/Firecracker (hors de portee de ce test).
+    for name in [&name_a, &name_b] {
+        let created = workshops
+            .create(&PostParams::default(), &Workshop::new(name, sample_spec()))
+            .await
+            .expect("creation du Workshop");
+        let building_status = atelier_controller::reconcile::apply(&ctx, &created)
+            .await
+            .expect("premier apply()");
+        workshops
+            .patch_status(
+                name,
+                &PatchParams::default(),
+                &Patch::Merge(&serde_json::json!({ "status": building_status })),
+            )
+            .await
+            .expect("ecriture du statut initial");
+        workshops
+            .patch_status(
+                name,
+                &PatchParams::default(),
+                &Patch::Merge(
+                    &serde_json::json!({ "status": { "imageDigest": "sha256:deadbeef" } }),
+                ),
+            )
+            .await
+            .expect("patch du statut");
+        let with_digest = workshops.get(name).await.expect("get workshop");
+        atelier_controller::reconcile::apply(&ctx, &with_digest)
+            .await
+            .expect("apply() ne doit pas echouer");
+    }
+
+    let sa_name_a = format!("{name_a}-parent");
+    let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), ns);
+    let token_request = TokenRequest {
+        spec: TokenRequestSpec {
+            expiration_seconds: Some(600),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let token_response: TokenRequest = service_accounts
+        .create_subresource(
+            "token",
+            &sa_name_a,
+            &PostParams::default(),
+            serde_json::to_vec(&token_request).expect("serialisation TokenRequest"),
+        )
+        .await
+        .expect("emission d'un jeton pour le ServiceAccount du pod parent de A");
+    let scoped_token = token_response
+        .status
+        .expect("TokenRequest doit porter un statut")
+        .token;
+
+    // Meme cluster/CA que le client admin, mais authentifie UNIQUEMENT avec
+    // le jeton scope au ServiceAccount du pod parent de A.
+    let mut scoped_config = Config::infer()
+        .await
+        .expect("inference de la config Kubernetes de base");
+    scoped_config.auth_info = kube::config::AuthInfo {
+        token: Some(scoped_token.into()),
+        ..Default::default()
+    };
+    let scoped_client = Client::try_from(scoped_config)
+        .expect("construction du client Kubernetes scope au ServiceAccount de A");
+    let scoped_workshops: Api<Workshop> = Api::namespaced(scoped_client, ns);
+
+    // Autorise : lire et patcher SON PROPRE Workshop (A).
+    scoped_workshops
+        .get(&name_a)
+        .await
+        .expect("le ServiceAccount du pod parent de A doit pouvoir lire le Workshop A");
+    scoped_workshops
+        .patch(
+            &name_a,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({
+                "spec": { "simulators": [{ "name": "postgres", "type": "postgres", "env": {} }] }
+            })),
+        )
+        .await
+        .expect("le ServiceAccount du pod parent de A doit pouvoir patcher le Workshop A");
+    let patched_a = workshops.get(&name_a).await.expect("get workshop A");
+    assert_eq!(patched_a.spec.simulators.len(), 1);
+    assert_eq!(patched_a.spec.simulators[0].name, "postgres");
+
+    // Refuse : le meme ServiceAccount ne doit RIEN pouvoir faire sur le
+    // Workshop B, ni meme le lire (`resourceNames` du Role, verifie contre
+    // le vrai serveur API, pas seulement relu cote client).
+    let get_b_err = scoped_workshops
+        .get(&name_b)
+        .await
+        .expect_err("le ServiceAccount du pod parent de A ne doit PAS pouvoir lire le Workshop B");
+    assert!(
+        matches!(&get_b_err, kube::Error::Api(e) if e.code == 403),
+        "attendu 403 Forbidden, obtenu {get_b_err:?}"
+    );
+
+    for name in [&name_a, &name_b] {
+        let sa_name = format!("{name}-parent");
+        let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+            Api::namespaced(client.clone(), ns);
+        service_accounts
+            .delete(&sa_name, &DeleteParams::default())
+            .await
+            .ok();
+        pods.delete(&sa_name, &DeleteParams::default()).await.ok();
+        jobs.delete(&format!("{name}-image-build"), &foreground_delete())
+            .await
+            .ok();
+        workshops.delete(name, &DeleteParams::default()).await.ok();
+    }
 }

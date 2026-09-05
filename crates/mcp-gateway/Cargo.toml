@@ -17,4 +17,11 @@ tracing.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 reqwest.workspace = true
+# `request_simulator` (tache 9.4) : patch `Workshop.spec.simulators` via le
+# jeton de service account monte dans le pod (config Kubernetes
+# "in-cluster" automatique de kube-rs), jamais un autre acces que celui
+# accorde par le Role scope a ce Workshop (voir
+# `crates/controller/src/reconcile.rs::ensure_parent_pod_workshop_rbac`).
+kube.workspace = true
+k8s-openapi.workspace = true
 rmcp = { version = "3.1.4", features = ["server", "macros", "transport-streamable-http-server", "server-side-http", "tower"] }

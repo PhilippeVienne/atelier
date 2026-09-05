@@ -61,6 +61,23 @@ async fn main() -> anyhow::Result<()> {
             "OPENBAO_ADDR absent : le tool request_credential echouera systematiquement"
         );
     }
+
+    // `request_simulator` (tache 9.4) : config Kubernetes "in-cluster"
+    // (jeton de service account monte automatiquement), RBAC scope a ce
+    // seul Workshop (voir `crates/controller/src/reconcile.rs::
+    // ensure_parent_pod_workshop_rbac`). Absent en dehors d'un pod (dev
+    // local, tests) : `request_simulator` echoue alors proprement.
+    let workshops = match kube::Client::try_default().await {
+        Ok(client) => Some(kube::api::Api::default_namespaced(client)),
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                "config Kubernetes in-cluster indisponible : le tool request_simulator echouera systematiquement"
+            );
+            None
+        }
+    };
+
     tracing::info!(
         count = enabled_tools.len(),
         tools = ?enabled_tools,
@@ -72,6 +89,8 @@ async fn main() -> anyhow::Result<()> {
         openbao,
         net_proxy_admin_addr,
         http: reqwest::Client::new(),
+        workshop_name,
+        workshops,
     });
 
     if let Some(uds_path) = std::env::var("ATELIER_MCP_GATEWAY_VSOCK_UDS_PATH")

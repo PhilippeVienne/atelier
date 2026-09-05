@@ -733,6 +733,78 @@ async fn ensure_image_build_rbac(
     Ok(())
 }
 
+/// Role + RoleBinding pour le ServiceAccount du POD PARENT lui-meme (pas
+/// celui, distinct, du Job image-builder ci-dessus) : `get`+`patch` sur
+/// `workshops` (le CRD complet, pas seulement `/status`), scope a ce seul
+/// Workshop via `resourceNames`. Necessaire a `mcp-gateway` (tache 9.4,
+/// tool `request_simulator`) pour ajouter une entree a
+/// `Workshop.spec.simulators` depuis l'interieur du pod, avec le jeton de
+/// service account monte automatiquement (config Kubernetes "in-cluster" de
+/// `kube-rs`) — jamais un acces plus large qu'a sa propre ressource.
+async fn ensure_parent_pod_workshop_rbac(
+    ctx: &ReconcileCtx,
+    ns: &str,
+    sa_name: &str,
+    workshop_name: &str,
+    owner_ref: &k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
+) -> anyhow::Result<()> {
+    let roles: Api<Role> = Api::namespaced(ctx.client.clone(), ns);
+    let role_bindings: Api<RoleBinding> = Api::namespaced(ctx.client.clone(), ns);
+
+    let metadata = ObjectMeta {
+        name: Some(sa_name.to_string()),
+        namespace: Some(ns.to_string()),
+        owner_references: Some(vec![owner_ref.clone()]),
+        labels: Some(BTreeMap::from([(
+            "atelier.dev/workshop".to_string(),
+            workshop_name.to_string(),
+        )])),
+        ..Default::default()
+    };
+
+    let role = Role {
+        metadata: metadata.clone(),
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec!["atelier.dev".to_string()]),
+            resources: Some(vec!["workshops".to_string()]),
+            resource_names: Some(vec![workshop_name.to_string()]),
+            verbs: vec!["get".to_string(), "patch".to_string()],
+            ..Default::default()
+        }]),
+    };
+    roles
+        .patch(
+            sa_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&role),
+        )
+        .await?;
+
+    let role_binding = RoleBinding {
+        metadata,
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "Role".to_string(),
+            name: sa_name.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: sa_name.to_string(),
+            namespace: Some(ns.to_string()),
+            ..Default::default()
+        }]),
+    };
+    role_bindings
+        .patch(
+            sa_name,
+            &PatchParams::apply(FIELD_MANAGER).force(),
+            &Patch::Apply(&role_binding),
+        )
+        .await?;
+
+    Ok(())
+}
+
 #[tracing::instrument(skip_all)]
 async fn ensure_image_build_job(
     ctx: &ReconcileCtx,
@@ -1204,6 +1276,7 @@ async fn ensure_parent_pod(
             &Patch::Apply(&service_account),
         )
         .await?;
+    ensure_parent_pod_workshop_rbac(ctx, ns, &sa_name, name, &owner_ref).await?;
 
     if let Some(openbao_config) = &ctx.openbao {
         if let Err(err) = openbao::ensure_workshop_role(
