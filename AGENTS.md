@@ -80,6 +80,8 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
    - *Lire [`docs/specs/05-devfactory-pm-engine.md`](docs/specs/05-devfactory-pm-engine.md) avant d'écrire du code dans `services/pm-engine`.*
 7. **Sur le Dashboard & l'Interface Utilisateur** :
    - *Lire [`docs/specs/06-dashboard-architecture-cadrage.md`](docs/specs/06-dashboard-architecture-cadrage.md) avant de modifier les pages, Server Components, Server Actions ou le chat PM dans `dashboard/`.*
+8. **Sur la télémétrie (traces/métriques/logs)** :
+   - *Lire [`docs/specs/12-observabilite.md`](docs/specs/12-observabilite.md) avant d'éditer `crates/common/src/telemetry.rs` ou d'ajouter un span/une métrique dans un binaire Rust.*
 
 ---
 

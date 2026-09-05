@@ -25,6 +25,7 @@
 2. [Principes Directeurs & Definition of Done (DoD) Transversale](#2-principes-directeurs--definition-of-done-dod-transversale)
 3. [Cartographie des Dépendances & Matrice d'Impact Globale](#3-cartographie-des-dépendances--matrice-dimpact-globale)
 4. [Jalons Clos (M1 à M6) — Matrice Récapitulative](#4-jalons-clos-m1-à-m6--matrice-récapitulative)
+5. [Jalon 7 (M7) : Stack d'Observabilité (Traces, Métriques, Logs)](#5-jalon-7-m7--stack-dobservabilité-traces-métriques-logs)
 
 ---
 
@@ -144,3 +145,16 @@ Détail tâche par tâche (fichiers exacts, garde-fous, sous-tâches) dans
 | **M4** | **Serveur MCP Externe** | `crates/api-server/src/mcp_*.rs` | Client Claude Desktop connecté sur `/v1/mcp`, streaming `exec_in_workshop` bufferisé dans Postgres. |
 | **M5** | **DevFactory PM Engine** | `services/pm-engine`, `dashboard/`, `deploy/dev/redis` | Workflow LangGraph complet (issue ➔ sous-branches ➔ auto-correction ➔ git-sync ➔ snapshot S3 ➔ merge). |
 | **M6** | **Helm & Admin Doc** | `charts/atelier/`, `deploy/dev/*-stack.sh`, `docs/admin-guide.md` | `helm install` 100% opérationnel sur Kind avec 4 Ingress, identités Cloud, scripts dev et hooks validés — inclut la configuration des modèles LiteLLM par un admin (`docs/specs/11-admin-litellm-model-config.md`). |
+
+---
+
+## 5. Jalon 7 (M7) : Stack d'Observabilité (Traces, Métriques, Logs)
+
+* **Spécification** : [`12-observabilite.md`](12-observabilite.md)
+* **Constat** : `crates/common/src/telemetry.rs` exporte déjà des traces OTLP si `OTEL_EXPORTER_OTLP_ENDPOINT` est positionnée — elle ne l'est nulle part (chart, dev). Pire, vérifié empiriquement : même en la positionnant vers un vrai collecteur, **zéro trace n'est produite**, aucune route/boucle n'étant instrumentée par un span (`TraceLayer`/`#[instrument]` absents partout).
+* **Fichiers** : `crates/common/src/telemetry.rs`, `crates/api-server/src/routes.rs`, `crates/controller/src/reconcile.rs`, `charts/atelier/templates/infra/observability-deployment.yaml` (nouveau), `charts/atelier/values.yaml`, `deploy/dev/local-stack.sh`.
+  - [-/claude-code/session_01K3Mt8hzVs9Ybw8G28ihbeP] **7.1** : Nouveau composant chart `observability` (`grafana/otel-lgtm`, un seul pod — voir spec §3 pour la justification et les mesures empiriques de démarrage/mémoire), `.Values.observability.enabled`/`.resources`.
+  - [ ] **7.2** : `OTEL_EXPORTER_OTLP_ENDPOINT` câblée sur tous les Deployments du chart (`api-server`, `controller`) quand `observability.enabled`, même câblage conditionnel dans `deploy/dev/local-stack.sh` (port-forward local, même convention que `ATELIER_LLM_PROXY_ADDR`).
+  - [ ] **7.3** : `tower_http::TraceLayer` sur `routes::router` (`api-server`) — un span par requête HTTP, méthode/chemin/statut en attributs.
+  - [ ] **7.4** : `#[tracing::instrument]` sur la fonction de réconciliation unitaire du `controller` — un span par `Workshop` traité, nom en attribut.
+  - [ ] **7.5** : `telemetry.rs` gagne un `MeterProvider` (métriques, absent aujourd'hui — seules les traces sont initialisées) ; compteur de requêtes + histogramme de latence sur `api-server`, par route et code de statut.
