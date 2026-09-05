@@ -62,38 +62,18 @@ flowchart TD
 
 ## 3. Spécification Détaillée
 
-### 3.1. Backend vLLM Local dans LiteLLM
+### 3.1. Backend vLLM Local dans LiteLLM (tâche 11.3, **implémentée**)
 
-Pour les déploiements mono-machine (`atelier server install --enable-gpu`) ou les clusters Kubernetes disposant de ressources GPU :
+Pour les déploiements mono-machine (`atelier server install --enable-gpu`, tâche 11.4) ou les clusters Kubernetes disposant de ressources GPU :
 
-1. **Composant Helm Dédié (`infra.vllm`)** :
-   - Déclaré dans `charts/atelier/values.yaml` sous la section `gpu` :
-     ```yaml
-     gpu:
-       enabled: false # Activable via flag CLI ou values
-       resources:
-         nvidia.com/gpu: 1
-       model: "Qwen/Qwen2.5-Coder-7B-Instruct"
-       maxModelLen: 16384
-       tensorParallelSize: 1
-       storage:
-         pvcSize: "50Gi"
-     ```
-2. **Câblage Automatique dans LiteLLM** :
-   - Lorsque `gpu.enabled: true`, le template de configuration de LiteLLM (`charts/atelier/templates/litellm-configmap.yaml`) injecte automatiquement le endpoint vLLM local comme modèle principal :
-     ```yaml
-     model_list:
-       - model_name: "default"
-         litellm_params:
-           model: "openai/qwen2.5-coder"
-           api_base: "http://atelier-vllm.{{ .Release.Namespace }}.svc:8000/v1"
-           api_key: "local-bypass"
-     ```
-   - L'agent de code in-VM (`Claude Code`, `OpenCode`, etc.) consomme le proxy LiteLLM sur `http://169.254.0.1:4000` sans changer sa configuration standard.
-   - Les budgets et virtual keys continuent de s'appliquer normalement.
-
-3. **Intégration CLI Single-Node (`atelier server install`)** :
-   - La commande `atelier server install --enable-gpu` inspecte la présence de `/dev/nvidia*` ou de GPU disponibles et positionne automatiquement les valeurs correspondantes dans le chart local.
+1. **Composant Helm Dédié** — `charts/atelier/templates/infra/vllm-statefulset.yaml` (image officielle `vllm/vllm-openai`, un seul réplica, `volumeClaimTemplates` pour le cache HuggingFace afin de ne pas retélécharger les poids à chaque redémarrage) et `vllm-service.yaml`, déclarés dans `charts/atelier/values.yaml` section `gpu` (`enabled`, `model`, `maxModelLen`, `tensorParallelSize`, `resources.limits."nvidia.com/gpu"`, `persistence.size`).
+2. **Câblage Automatique dans LiteLLM** — **correction par rapport à la première rédaction** : il n'existe PAS de `charts/atelier/templates/litellm-configmap.yaml` dans ce chart, ni nulle part ailleurs — `litellm-deployment.yaml` positionne `STORE_MODEL_IN_DB=True` et TOUS les modèles LiteLLM de ce chart sont gérés dynamiquement via l'API d'administration (`POST /model/new`, spec [`11-admin-litellm-model-config.md`](11-admin-litellm-model-config.md)), jamais via un fichier statique. Nouveau `charts/atelier/templates/jobs/litellm-vllm-model-init-job.yaml` (hook Helm `post-install,post-upgrade`, image `curlimages/curl`) enregistre donc le backend vLLM local en appelant cette même API, gardé derrière `gpu.enabled && litellm.enabled && initJobs.litellmVllmModelInit.enabled` :
+   - `model_name: "*"` (wildcard), pas `"default"` — même convention que `deploy/dev/llm-proxy/config.yaml` (le nom de modèle envoyé par l'agent change selon sa version/son CLI ; un wildcard capte tout ce qui n'est pas explicitement routé ailleurs, exactement le comportement recherché pour "modèle par défaut GPU local").
+   - `litellm_params.model: "hosted_vllm/<gpu.model>"` (préfixe de provider LiteLLM dédié aux backends vLLM auto-hébergés compatibles OpenAI, pas `openai/...`), `api_base` vers le Service `vllm` interne, `api_key: "not-needed"` (vLLM n'exige aucune authentification en local).
+   - **Idempotence sans `jq`** (absent de l'image `curlimages/curl`) : `GET /model/info` avant toute création, détection par simple présence de la chaîne `api_base` (stable et propre à ce backend) dans la réponse — nécessaire car LiteLLM ne garantit pas l'unicité de `model_name` (spec 11 §3.2), un `/model/new` rejoué à chaque `helm upgrade` dupliquerait sinon l'entrée wildcard indéfiniment. **Piège vérifié et écarté empiriquement** contre l'instance LiteLLM réelle du cluster de dev (`atelier-llm-proxy`, `STORE_MODEL_IN_DB=True`) : la RÉPONSE de `POST /model/new` chiffre `litellm_params.api_base` (chaîne illisible, cohérent avec la note non expliquée de la spec 11 §3.1) — mais `GET /model/info`, LUI, le renvoie bien EN CLAIR, confirmé par un Job jetable réel (création réussie `200`, `api_base` retrouvé en clair via `/model/info`, second passage détecté comme "déjà présent", entrée de test supprimée après coup).
+   - L'agent de code in-VM (`Claude Code`, `opencode`) consomme le proxy LiteLLM sur `http://169.254.0.1:4000` (alias `llm-proxy` de `net-proxy`) sans changer sa configuration standard ; budgets et Virtual Keys par Workshop continuent de s'appliquer normalement (mécanisme LiteLLM inchangé, orthogonal au choix du backend).
+3. **Intégration CLI Single-Node (`atelier server install --enable-gpu`)** : tâche 11.4, non couverte ici.
+4. **Non vérifié en conditions réelles d'inférence** : cette machine de développement possède un GPU physique (NVIDIA RTX 3060) mais ni `nvidia-container-toolkit` ni un device plugin Kubernetes `nvidia.com/gpu` n'y sont installés (`docker run --gpus all` échoue explicitement : `could not select device driver`) — les installer serait un changement système invasif (modification du runtime Docker par défaut) hors du périmètre raisonnable de cette tâche sur une machine de dev partagée. Le `StatefulSet` vLLM lui-même n'a donc jamais été réellement déployé/testé (resterait `Pending`, aucun nœud n'exposant la ressource `nvidia.com/gpu`) : seuls `helm lint`/`helm template` (rendu vérifié avec `gpu.enabled: true`) et `shellcheck` (script du Job d'enregistrement) le couvrent côté template ; la logique métier du Job (idempotence, forme du payload) est, elle, vérifiée en réel comme décrit ci-dessus.
 
 ### 3.2. Prise en Charge des CAs Privées d'Entreprise
 

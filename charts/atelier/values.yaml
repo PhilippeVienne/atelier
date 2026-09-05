@@ -270,6 +270,46 @@ litellm:
       memory: 1536Mi
 
 # ------------------------------------------------------------------------
+# Inference GPU locale (spec docs/specs/15-souverainete-airgap-inference-
+# gpu.md §3.1, jalon M11, tache 11.3) : backend vLLM optionnel, route par
+# defaut de LiteLLM quand active (voir jobs/litellm-vllm-model-init-job.yaml)
+# — pour les deploiements souverains/air-gap qui ne peuvent envoyer aucune
+# donnee vers un fournisseur d'API cloud.
+# ------------------------------------------------------------------------
+gpu:
+  enabled: false
+  image:
+    repository: vllm/vllm-openai
+    tag: "v0.6.6"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  # Modele servi par vLLM (identifiant HuggingFace, telecharge au premier
+  # demarrage puis mis en cache sur le volume persistant ci-dessous).
+  # Qwen2.5-Coder-7B-Instruct : plus petit modele "Coder" de la famille
+  # Qwen2.5 avec des poids publics, dimensionne pour un unique GPU grand
+  # public (8-24 Go de VRAM) — a ajuster selon le materiel reellement
+  # disponible, `maxModelLen`/`tensorParallelSize` y compris.
+  model: "Qwen/Qwen2.5-Coder-7B-Instruct"
+  maxModelLen: 16384
+  tensorParallelSize: 1
+  # Requis pour la moindre inference : AUCUNE valeur par defaut fonctionnelle
+  # n'existe ("0" schedulerait sur un noeud sans jamais utiliser le GPU) —
+  # l'operateur doit positionner le nombre de GPU physiquement disponibles
+  # sur le noeud cible (voir aussi le device plugin NVIDIA standard,
+  # `k8s-device-plugin`, prealable non couvert par ce chart).
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+  persistence:
+    enabled: true
+    # Poids d'un modele "7B" en float16/bfloat16 (~14 Go) plus marge pour le
+    # cache HuggingFace (tokenizer, config) et un eventuel second modele
+    # teste manuellement.
+    size: "50Gi"
+    storageClassName: ""
+
+# ------------------------------------------------------------------------
 # Cache d'images (PVC partage) : eviction LRU (spec
 # docs/specs/13-image-cache-offload.md §3.1/8.5)
 # ------------------------------------------------------------------------
@@ -592,6 +632,15 @@ initJobs:
     image:
       repository: minio/mc
       tag: "latest"
+  litellmVllmModelInit:
+    # Sans effet si `gpu.enabled: false` (voir templates/jobs/litellm-vllm-
+    # model-init-job.yaml) : desactivable independamment pour un operateur
+    # qui prefererait enregistrer ce modele lui-meme via la console d'admin
+    # LiteLLM (spec docs/specs/11-admin-litellm-model-config.md).
+    enabled: true
+    image:
+      repository: curlimages/curl
+      tag: "8.11.0"
   # Delai de tentative pour chaque hook (backoffLimit) et TTL de nettoyage
   # automatique des Jobs completes.
   backoffLimit: 3

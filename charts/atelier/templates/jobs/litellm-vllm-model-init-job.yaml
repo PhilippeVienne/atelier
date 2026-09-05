@@ -1,0 +1,85 @@
+{{- if and .Values.gpu.enabled .Values.litellm.enabled .Values.initJobs.litellmVllmModelInit.enabled }}
+# Enregistre le backend vLLM local comme modele PAR DEFAUT de LiteLLM
+# (tache 11.3, spec docs/specs/15-souverainete-airgap-inference-gpu.md
+# §3.1) via l'API d'administration dynamique (`/model/new`,
+# `STORE_MODEL_IN_DB=True` deja positionnee sur ce Deployment, voir
+# `litellm-deployment.yaml` et spec docs/specs/11-admin-litellm-model-
+# config.md) — PAS un fichier `config.yaml` statique : ce chart ne fournit
+# jamais un tel fichier a LiteLLM, tous les modeles sont ici geres
+# dynamiquement (console d'admin ou ce Job).
+#
+# `model_name: "*"` (wildcard) plutot qu'un nom explicite : c'est la meme
+# convention que `deploy/dev/llm-proxy/config.yaml` (le nom de modele choisi
+# par l'agent en cours change selon sa version/son CLI — Claude Code comme
+# `opencode` — un wildcard capte n'importe quelle requete non explicitement
+# routee ailleurs, LE comportement recherche par "modele par defaut GPU
+# local").
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm-vllm-model-init") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.initJobs.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.initJobs.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "litellm-vllm-model-init") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: litellm-vllm-model-init
+          image: "{{ .Values.initJobs.litellmVllmModelInit.image.repository }}:{{ .Values.initJobs.litellmVllmModelInit.image.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              LITELLM="http://{{ include "atelier.componentName" (dict "root" $ "component" "litellm") }}:{{ .Values.litellm.service.port }}"
+              API_BASE="http://{{ include "atelier.componentName" (dict "root" $ "component" "vllm") }}:{{ .Values.gpu.service.port }}/v1"
+
+              until curl -sf -o /dev/null -H "Authorization: Bearer $LITELLM_MASTER_KEY" "$LITELLM/health/liveliness"; do
+                echo "en attente de LiteLLM...";
+                sleep 3;
+              done
+
+              # Idempotent SANS jq (absent de cette image minimale) : LiteLLM
+              # ne garantit pas l'unicite de `model_name` (spec 11 §3.2), un
+              # `/model/new` rejoue a chaque `helm upgrade` dupliquerait donc
+              # l'entree wildcard a l'infini. `api_base` est en revanche une
+              # chaine stable et propre a CE backend : sa simple presence dans
+              # la reponse suffit a detecter une entree deja creee par CE Job.
+              EXISTING=$(curl -sf -H "Authorization: Bearer $LITELLM_MASTER_KEY" "$LITELLM/model/info")
+              case "$EXISTING" in
+                *"$API_BASE"*)
+                  echo "modele vLLM local deja enregistre (api_base=$API_BASE), rien a faire (idempotent)"
+                  ;;
+                *)
+                  curl -sf -X POST "$LITELLM/model/new" \
+                    -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                    -H "Content-Type: application/json" \
+                    -d '{
+                      "model_name": "*",
+                      "litellm_params": {
+                        "model": "hosted_vllm/{{ .Values.gpu.model }}",
+                        "api_base": "'"$API_BASE"'",
+                        "api_key": "not-needed"
+                      }
+                    }'
+                  echo "modele vLLM local enregistre comme route par defaut (wildcard) de LiteLLM"
+                  ;;
+              esac
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atelier.componentName" (dict "root" $ "component" "litellm-auth") }}
+                  key: LITELLM_MASTER_KEY
+{{- end }}

@@ -1,0 +1,88 @@
+{{- if .Values.gpu.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "vllm") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+    {{- include "atelier.selectorLabels" (dict "root" $ "component" "vllm") | nindent 4 }}
+spec:
+  serviceName: {{ include "atelier.componentName" (dict "root" $ "component" "vllm") }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atelier.selectorLabels" (dict "root" $ "component" "vllm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atelier.selectorLabels" (dict "root" $ "component" "vllm") | nindent 8 }}
+    spec:
+      containers:
+        - name: vllm
+          image: "{{ .Values.gpu.image.repository }}:{{ .Values.gpu.image.tag }}"
+          imagePullPolicy: {{ .Values.gpu.image.pullPolicy }}
+          # Image officielle `vllm/vllm-openai` : entrypoint deja
+          # `python3 -m vllm.entrypoints.openai.api_server`, ces arguments
+          # lui sont directement transmis (pas de commande a reecrire).
+          args:
+            - "--model"
+            - {{ .Values.gpu.model | quote }}
+            - "--served-model-name"
+            - {{ .Values.gpu.model | quote }}
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .Values.gpu.service.port | quote }}
+            - "--max-model-len"
+            - {{ .Values.gpu.maxModelLen | quote }}
+            - "--tensor-parallel-size"
+            - {{ .Values.gpu.tensorParallelSize | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gpu.service.port }}
+          # Poids telecharges au premier demarrage (plusieurs Go) : un
+          # readiness/liveness trop impatient tuerait la premiere instance
+          # avant la fin du telechargement.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 10
+          volumeMounts:
+            - name: model-cache
+              # Repertoire de cache par defaut de la bibliotheque
+              # `huggingface_hub` (utilisee par vLLM pour televerser les
+              # poids) : y monter un volume persistant evite de retelecharger
+              # le modele complet a chaque redemarrage du pod.
+              mountPath: /root/.cache/huggingface
+          resources:
+            {{- toYaml .Values.gpu.resources | nindent 12 }}
+      {{- if not .Values.gpu.persistence.enabled }}
+      volumes:
+        - name: model-cache
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.gpu.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: model-cache
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with (.Values.gpu.persistence.storageClassName | default .Values.global.storageClassName) }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.gpu.persistence.size }}
+  {{- end }}
+{{- end }}
