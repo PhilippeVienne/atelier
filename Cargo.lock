@@ -283,6 +283,8 @@ dependencies = [
  "kvm-ioctls",
  "rand 0.8.7",
  "reqwest 0.12.28",
+ "reqwest 0.13.4",
+ "rmcp",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3942,6 +3944,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-wrap"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e842efad9119158434d193c6682e2ebee4b44d6ad801d7b349623b3f57cdf55"
+dependencies = [
+ "futures",
+ "indexmap",
+ "nix",
+ "tokio",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4394,6 +4410,7 @@ dependencies = [
  "indexmap",
  "pastey",
  "pin-project-lite",
+ "process-wrap",
  "rand 0.10.2",
  "reqwest 0.13.4",
  "rmcp-macros",

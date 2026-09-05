@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::{oidc, tokens};
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 pub async fn login() -> Result<()> {
     let config = Config::load()?;
@@ -46,6 +46,23 @@ pub fn status() -> Result<()> {
 pub async fn ensure_access_token() -> Result<String> {
     let config = Config::load()?;
     let (name, ctx) = config.current_context()?;
+    ensure_access_token_for(name, ctx).await
+}
+
+/// Meme logique que [`ensure_access_token`], pour un contexte explicite —
+/// utilise par `atelier mcp serve --context <nom>` (tache 9.9), qui doit
+/// pouvoir cibler un contexte distinct du contexte actif sans le changer
+/// de facon persistante.
+pub async fn ensure_access_token_for_named_context(name: &str) -> Result<String> {
+    let config = Config::load()?;
+    let ctx = config
+        .contexts
+        .get(name)
+        .with_context(|| format!("contexte '{name}' inconnu (`atelier context list`)"))?;
+    ensure_access_token_for(name, ctx).await
+}
+
+async fn ensure_access_token_for(name: &str, ctx: &crate::config::ContextConfig) -> Result<String> {
     let Some(token_set) = tokens::load(name)? else {
         anyhow::bail!("non authentifie sur le contexte '{name}' (`atelier auth login`)");
     };

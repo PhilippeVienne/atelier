@@ -47,6 +47,18 @@ base64 = "0.22"
 kvm-ioctls = "0.19"
 indicatif = "0.17"
 rand = "0.8"
+# `atelier mcp serve` (tache 9.9) : serveur MCP local stdio pour agents
+# desktop (Claude Desktop, Cursor), qui relaie vers le vrai serveur MCP
+# externe deja expose par `api-server` (`/v1/mcp`, memes outils lifecycle
+# que `crates/api-server/src/mcp_server.rs`) — client ET serveur du meme
+# SDK, comme `crates/api-server/tests/mcp.rs` (meme pattern de test reel).
+rmcp = { version = "3.1.4", features = ["client", "server", "macros", "transport-streamable-http-client-reqwest", "transport-child-process", "transport-io"] }
+# `StreamableHttpClientTransportConfig` de rmcp est ecrit contre reqwest
+# 0.13 en interne (version differente du reste du workspace, qui est resté
+# sur 0.12 — meme situation que `crates/api-server/Cargo.toml`) : alias de
+# nom pour ne pas entrer en conflit avec la dependance `reqwest` normale
+# de ce crate.
+reqwest013 = { package = "reqwest", version = "0.13" }
 # Pont tunnels (`atelier port-forward`/`ssh`/`code`, tache 9.2) : meme
 # sous-protocole websocket que `crates/api-server/src/portforward.rs`
 # (calque sur `portforward.k8s.io`), donc meme client websocket que ce

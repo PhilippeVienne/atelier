@@ -6,6 +6,7 @@
 mod api;
 mod commands;
 mod config;
+mod mcp_client;
 mod oidc;
 mod tokens;
 mod tunnel;
@@ -69,6 +70,30 @@ enum Command {
     Server {
         #[command(subcommand)]
         command: ServerCommand,
+    },
+    /// Serveur MCP local pour agents desktop (spec §3.4).
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Lance le serveur MCP (stdio) pour Claude Desktop/Cursor.
+    Serve {
+        /// Contexte a utiliser (par defaut, le contexte actif) — permet a
+        /// `install_config` de lancer un agent desktop sur un contexte
+        /// distinct de celui utilise par `atelier` en interactif.
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Injecte la configuration MCP dans Claude Desktop ou Cursor.
+    InstallConfig {
+        #[arg(long, value_parser = ["claude-desktop", "cursor"])]
+        target: String,
+        #[arg(long)]
+        context: Option<String>,
     },
 }
 
@@ -267,6 +292,12 @@ async fn main() -> anyhow::Result<()> {
             ServerCommand::Status => commands::server::status().await,
             ServerCommand::Upgrade => commands::server::upgrade().await,
             ServerCommand::Uninstall => commands::server::uninstall().await,
+        },
+        Command::Mcp { command } => match command {
+            McpCommand::Serve { context } => commands::mcp::serve(context).await,
+            McpCommand::InstallConfig { target, context } => {
+                commands::mcp::install_config(target, context)
+            }
         },
     }
 }
