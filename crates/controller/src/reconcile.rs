@@ -354,9 +354,22 @@ fn error_policy(
 /// demarrer un `Controller` complet ni attendre le cycle finalizer reel.
 pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<()> {
     let name = workshop.name_any();
+    let ns = workshop.namespace().unwrap_or_else(|| "default".into());
 
     if let Some(openbao_config) = &ctx.openbao {
         openbao::delete_workshop_role(openbao_config, &name).await?;
+    }
+
+    // Tache 8.1 (spec docs/specs/13-image-cache-offload.md) : corrige une
+    // fuite reelle constatee empiriquement (103 Go de snapshots orphelins
+    // mesures sur l'instance de dev) — sans ceci, le snapshot Firecracker de
+    // ce Workshop (`storage::snapshot_cache_subdir`) survit indefiniment sur
+    // le PVC de cache partage, meme apres suppression du Workshop. Best
+    // effort et non bloquant, meme discipline que le reste de cette
+    // fonction : un echec ici ne doit jamais empecher la suppression reelle
+    // du Workshop.
+    if let Err(err) = cleanup_snapshot_cache(ctx, &ns, &name).await {
+        tracing::warn!(%err, "nettoyage du snapshot en cache (cleanup) echoue, finalizer non bloque");
     }
 
     // Tache 3.2.1 (Jalon M3) : revoque la Virtual Key LiteLLM de ce
@@ -386,6 +399,85 @@ pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<
         }
     }
 
+    Ok(())
+}
+
+/// Lance un Job ephemere qui monte le PVC de cache partage et supprime le
+/// sous-repertoire de snapshot de CE Workshop (`storage::
+/// snapshot_cache_subdir`) — le controller lui-meme ne monte jamais ce PVC
+/// (il ne fait que creer des objets Kubernetes qui le referencent, voir
+/// `ensure_image_build_job`), un Job est donc necessaire pour toute
+/// operation sur son CONTENU. `ttl_seconds_after_finished` : Kubernetes
+/// nettoie lui-meme l'objet Job une fois termine, pas besoin de le faire
+/// depuis ce code.
+///
+/// Idempotent via `Patch::Apply` (comme `storage::ensure_image_cache_pvc`) :
+/// un retry apres un echec anterieur ne heurte pas un Job deja cree avec le
+/// meme nom — contrairement a `Api::create`, qui echouerait sur un conflit
+/// 409 et compliquerait inutilement l'appelant (deja tolerant aux erreurs,
+/// voir `cleanup`).
+async fn cleanup_snapshot_cache(ctx: &ReconcileCtx, ns: &str, name: &str) -> anyhow::Result<()> {
+    let subdir = storage::snapshot_cache_subdir(ns, name);
+    let mount_path = storage::IMAGE_CACHE_MOUNT_PATH;
+
+    let cache_volume = Volume {
+        name: "cache".to_string(),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: storage::IMAGE_CACHE_PVC_NAME.to_string(),
+            read_only: Some(false),
+        }),
+        ..Default::default()
+    };
+    let cache_mount = VolumeMount {
+        name: "cache".to_string(),
+        mount_path: mount_path.to_string(),
+        ..Default::default()
+    };
+
+    let job = Job {
+        metadata: ObjectMeta {
+            name: Some(format!("{name}-snapshot-cleanup")),
+            namespace: Some(ns.to_string()),
+            ..Default::default()
+        },
+        spec: Some(JobSpec {
+            backoff_limit: Some(2),
+            ttl_seconds_after_finished: Some(300),
+            template: PodTemplateSpec {
+                spec: Some(PodSpec {
+                    restart_policy: Some("Never".to_string()),
+                    volumes: Some(vec![cache_volume]),
+                    containers: vec![Container {
+                        name: "cleanup".to_string(),
+                        // Image deja utilisee ailleurs dans ce projet (voir
+                        // `deploy/dev/*`), pas de nouveau fournisseur
+                        // d'image a faire confiance pour une simple
+                        // suppression de repertoire.
+                        image: Some("busybox:1.36".to_string()),
+                        command: Some(vec![
+                            "rm".to_string(),
+                            "-rf".to_string(),
+                            format!("{mount_path}/{subdir}"),
+                        ]),
+                        volume_mounts: Some(vec![cache_mount]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), ns);
+    jobs.patch(
+        &format!("{name}-snapshot-cleanup"),
+        &PatchParams::apply(FIELD_MANAGER).force(),
+        &Patch::Apply(&job),
+    )
+    .await?;
     Ok(())
 }
 
