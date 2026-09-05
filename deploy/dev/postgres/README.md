@@ -37,7 +37,7 @@ base, pas seulement par schema) :
 En production (Jalon M6, `charts/atelier`), ces bases sont creees par un
 Job Kubernetes dedie (`db-init-job.yaml`) avec un role d'administration de
 schema separe (`atelier_migrator`) — voir
-`docs/specs/PLAN-ACTION-GLOBAL.md`, section 9.3.
+`docs/archive/PLAN-ACTION-M1-M6.md`, section 9.3.
 
 ## Roles : `atelier_admin` vs `atelier_app`
 

@@ -230,7 +230,7 @@ impl LiteLlmClient {
 /// Alias de Virtual Key du pod parent (session runtime) d'un Workshop —
 /// utilise a la fois a la generation (`ensure_parent_pod`) et a la
 /// revocation (finalizer `atelier.dev/cleanup`), voir
-/// `docs/specs/PLAN-ACTION-GLOBAL.md`, tache 3.2.1.
+/// `docs/archive/PLAN-ACTION-M1-M6.md`, tache 3.2.1.
 pub fn workshop_key_alias(workshop_name: &str) -> String {
     format!("atelier-wks-{workshop_name}")
 }

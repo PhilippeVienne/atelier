@@ -1085,7 +1085,7 @@ async fn cleanup_tolerates_an_unreachable_litellm() {
 /// Necessite OPENBAO_ADDR/OPENBAO_TOKEN (voir deploy/dev/openbao/README.md),
 /// silencieusement ignore sans ces variables.
 ///
-/// Tache 1.2.6 (docs/specs/PLAN-ACTION-GLOBAL.md) : verifie le role OpenBao
+/// Tache 1.2.6 (docs/archive/PLAN-ACTION-M1-M6.md) : verifie le role OpenBao
 /// cluster-wide `atelier-api-server` (pas scope a un seul Workshop, voir
 /// `crates/controller/src/openbao.rs::ensure_api_server_role`). Contrairement
 /// au role `workshop-<name>` teste ci-dessus, celui-ci doit permettre de

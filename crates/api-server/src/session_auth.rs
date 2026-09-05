@@ -1,6 +1,6 @@
 //! Injection du Basic Auth de session (secret OpenBao `session_auth`) dans
 //! les tunnels VS Code/Terminal (`crate::vscode`, `crate::terminal`) — voir
-//! la tache 1.2.6 de `docs/specs/PLAN-ACTION-GLOBAL.md`.
+//! la tache 1.2.6 de `docs/archive/PLAN-ACTION-M1-M6.md`.
 //!
 //! `api-server` est un composant cluster-wide (une seule instance pour tous
 //! les Workshops, pas un pod par Workshop) : il ne peut donc pas utiliser le

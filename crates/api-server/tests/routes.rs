@@ -1172,7 +1172,7 @@ async fn spawn_stub_http_server_capturing_authorization(
     (port, observed)
 }
 
-/// Tache 1.2.6 (docs/specs/PLAN-ACTION-GLOBAL.md), en conditions reelles :
+/// Tache 1.2.6 (docs/archive/PLAN-ACTION-M1-M6.md), en conditions reelles :
 /// verifie que le pont VS Code (`crate::vscode::proxy_to_guest_port`, aussi
 /// emprunte par le terminal) injecte bien l'en-tete `Authorization: Basic
 /// base64(atelier:<password>)` attendu par `code-server`/`ttyd` (voir

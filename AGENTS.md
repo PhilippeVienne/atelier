@@ -136,7 +136,12 @@ cargo test --workspace
   devient fausse en silence (c'est arrivé).
 
 Les récits antérieurs à cette révision sont figés dans
-[`docs/archive/PROGRESS-2026-08.md`](docs/archive/PROGRESS-2026-08.md).
+[`docs/archive/PROGRESS-2026-08.md`](docs/archive/PROGRESS-2026-08.md). Même
+principe pour le plan d'action : le détail tâche par tâche des jalons clos
+(M1 à M6) est figé dans
+[`docs/archive/PLAN-ACTION-M1-M6.md`](docs/archive/PLAN-ACTION-M1-M6.md) —
+`PLAN-ACTION-GLOBAL.md` ne garde que le protocole, les principes
+transversaux et la Matrice Récapitulative des jalons clos.
 
 **Un bon ajout à `pieges.md`** répond à trois questions en quelques lignes : quel était le
 symptôme observable, quelle en était la cause réelle, et à quoi reconnaître le cas la

@@ -1,5 +1,5 @@
 """Les 12 noeuds du graphe LangGraph du PM (Jalon M5, tache 5.2.2 — voir
-`docs/specs/PLAN-ACTION-GLOBAL.md`, section 8.2, et
+`docs/archive/PLAN-ACTION-M1-M6.md`, section 8.2, et
 `docs/specs/05-devfactory-pm-engine.md`).
 
 Chaque noeud est une fonction `async def node(state, config) -> dict` :
