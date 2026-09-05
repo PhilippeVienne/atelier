@@ -123,13 +123,13 @@ Pour que le Frontend puisse tester dynamiquement l'API du Backend pendant son d�
 
 Non fait, resté hors de portée de M5 comme de cette tâche : un Workshop QA physiquement DISTINCT dédié aux tests e2e (la spec l'envisageait, l'implémentation réelle réutilise le Workshop d'intégration — plus simple, sans duplication d'environnement, jugé suffisant faute de besoin identifié d'isolement supplémentaire à ce stade).
 
-### 3.4. Gestion Consolidée des Budgets LLM
+### 3.4. Gestion Consolidée des Budgets LLM — tâche 12.5, **implémentée**
 
-1. **Virtual Key Parente dans LiteLLM** :
-   - À l'initialisation de la campagne, `pm-engine` crée une Virtual Key de projet avec un plafond financier global (ex: `max_budget: 10.00$`).
-2. **Coupe-Circuit Collectif** :
-   - Si l'ensemble des agents atteint le quota, LiteLLM bloque immédiatement les appels avec un code HTTP 429.
-   - Empêche tout emballement de facturation lié à une régression ou une boucle de retries.
+**Correction par rapport à la première rédaction** : pas de "Virtual Key parente" — LiteLLM n'a aucune notion de clé hiérarchique. Le mécanisme natif équivalent est une **Team LiteLLM** (`POST /team/new`), un objet distinct porteur d'un `max_budget` PARTAGÉ par toutes les Virtual Keys qui lui sont rattachées (`team_id` sur `POST /key/generate`) — vérifié empiriquement contre l'instance LiteLLM réelle du cluster de dev.
+1. **Team LiteLLM par Campagne** (pas par `pm-engine`, mais par le `controller`, cohérent avec le reste du provisioning LiteLLM déjà en place — Virtual Key par Workshop, tâche 3.1.3) : `crates/controller/src/litellm.rs::ensure_team`, appelée dans `ensure_parent_pod` dès que `Workshop.spec.campaign_id` est renseigné, avant la génération de la Virtual Key du Workshop (`generate_virtual_key_in_team`, avec `team_id`). **Idempotence gérée explicitement** (contrairement à `generate_virtual_key`, non idempotent par conception) : plusieurs Workshops de la même campagne appellent chacun `ensure_team` indépendamment, sans coordination — vérifié empiriquement que `POST /team/new` sur un `team_id` déjà existant renvoie `400` avec un message précis ("already exists"), seule façon fiable de distinguer "déjà créée" d'un autre échec.
+2. **Coupe-Circuit Collectif** : mécanisme LiteLLM natif, non ré-implémenté — une fois toutes les Virtual Keys d'une campagne rattachées à la même Team, LiteLLM applique lui-même le plafond agrégé.
+   - **Limite assumée, documentée dans le code** : le plafond de la Team est celui du PREMIER Workshop de la campagne à être réconcilié (`Workshop.spec.resources.max_llm_budget_usd`) — il n'existe pas de champ CRD dédié à un budget de campagne indépendant du budget individuel d'un Workshop particulier.
+   - **Nettoyage volontairement absent** : la Team n'est jamais supprimée par le finalizer `atelier.dev/cleanup` d'un Workshop — une campagne regroupe plusieurs Workshops, aucun n'étant "le dernier" de façon fiable du point de vue d'un seul finalizer, et rien ne représente la campagne elle-même comme objet à supprimer. Une Team orpheline s'accumule côté LiteLLM après suppression de tous les Workshops d'une campagne, sans impact fonctionnel.
 
 ---
 

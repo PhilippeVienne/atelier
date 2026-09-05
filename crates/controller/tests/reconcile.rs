@@ -1509,6 +1509,183 @@ async fn apply_wires_the_llm_virtual_key_injection_rule_when_configured() {
         .ok();
 }
 
+/// Tache 12.5 (spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+/// §3.4) : DEUX Workshops portant le MEME `campaign_id` doivent voir leurs
+/// Virtual Keys rattachees a la MEME Team LiteLLM (`ensure_team`,
+/// idempotent) — le coupe-circuit collectif de la spec. Contre l'infra
+/// reelle (OpenBao + LiteLLM de dev), pas une simulation cote client.
+#[tokio::test]
+async fn apply_wires_two_workshops_of_the_same_campaign_into_the_same_litellm_team() {
+    atelier_common::telemetry::ensure_crypto_provider();
+
+    let (Ok(openbao_addr), Ok(openbao_token)) = (
+        std::env::var("OPENBAO_ADDR"),
+        std::env::var("OPENBAO_TOKEN"),
+    ) else {
+        eprintln!(
+            "OPENBAO_ADDR/OPENBAO_TOKEN non definis, test ignore (voir deploy/dev/openbao/README.md)"
+        );
+        return;
+    };
+    let Some(litellm_config) = atelier_controller::litellm::config_from_env(
+        std::env::var("ATELIER_LLM_PROXY_ADDR").ok(),
+        std::env::var("ATELIER_LLM_PROXY_AUTH_TOKEN").ok(),
+    ) else {
+        eprintln!(
+            "ATELIER_LLM_PROXY_ADDR/ATELIER_LLM_PROXY_AUTH_TOKEN non definis, test ignore (voir deploy/dev/llm-proxy/README.md)"
+        );
+        return;
+    };
+
+    let client = Client::try_default()
+        .await
+        .expect("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier)");
+
+    let ns = "default";
+    let name_a = unique_name("test-workshop-team-a");
+    let name_b = unique_name("test-workshop-team-b");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    let base_url = format!("http://{}", litellm_config.addr);
+    let master_key = litellm_config.master_key.clone();
+    let campaign_id = unique_name("campaign-litellm");
+    let ctx = ReconcileCtx {
+        client: client.clone(),
+        openbao: Some(atelier_controller::openbao::OpenBaoConfig {
+            addr: openbao_addr.clone(),
+            token: openbao_token.clone(),
+            pod_addr: openbao_addr.clone(),
+        }),
+        registry_addr: "localhost:5000".to_string(),
+        registry_insecure: true,
+        llm_proxy_addr: None,
+        llm_proxy_pod_addr: Some("atelier-llm-proxy.default.svc.cluster.local:4000".to_string()),
+        llm_proxy_auth_token: None,
+        git_identity: None,
+        litellm: Some(litellm_config),
+        component_image_registry: None,
+        s3: None,
+        s3_pod_endpoint: None,
+        ca_bundle_configmap: None,
+        squad_token_signing_key: None,
+    };
+
+    let mut virtual_keys = Vec::new();
+    for name in [&name_a, &name_b] {
+        let spec = WorkshopSpec {
+            campaign_id: Some(campaign_id.clone()),
+            ..sample_spec()
+        };
+        workshops
+            .create(&PostParams::default(), &Workshop::new(name, spec))
+            .await
+            .expect("creation du Workshop");
+        workshops
+            .patch_status(
+                name,
+                &PatchParams::default(),
+                &Patch::Merge(&serde_json::json!({ "status": { "phase": "Pending", "imageDigest": "sha256:deadbeef" } })),
+            )
+            .await
+            .expect("ecriture du statut initial");
+        let with_digest = workshops.get(name).await.expect("get workshop");
+
+        atelier_controller::reconcile::apply(&ctx, &with_digest)
+            .await
+            .expect("apply() ne doit pas echouer");
+
+        let http = reqwest::Client::new();
+        let secret: serde_json::Value = http
+            .get(format!(
+                "{openbao_addr}/v1/secret/data/workshops/{name}/llm_key"
+            ))
+            .header("X-Vault-Token", &openbao_token)
+            .send()
+            .await
+            .expect("lecture du secret llm_key")
+            .error_for_status()
+            .expect("le secret llm_key doit avoir ete ecrit par apply()")
+            .json()
+            .await
+            .expect("reponse JSON de lecture llm_key");
+        virtual_keys.push(
+            secret["data"]["data"]["value"]
+                .as_str()
+                .expect("champ value du secret llm_key")
+                .to_string(),
+        );
+    }
+
+    let http = reqwest::Client::new();
+    let expected_team_id = atelier_controller::litellm::campaign_team_id(&campaign_id);
+    for virtual_key in &virtual_keys {
+        let info: serde_json::Value = http
+            .get(format!("{base_url}/key/info"))
+            .bearer_auth(&master_key)
+            .query(&[("key", virtual_key)])
+            .send()
+            .await
+            .expect("appel /key/info")
+            .error_for_status()
+            .expect("la Virtual Key doit exister cote LiteLLM")
+            .json()
+            .await
+            .expect("reponse JSON /key/info");
+        assert_eq!(
+            info["info"]["team_id"].as_str(),
+            Some(expected_team_id.as_str()),
+            "les deux Workshops de la meme campagne doivent partager la meme Team LiteLLM"
+        );
+    }
+
+    let team_info = http
+        .get(format!("{base_url}/team/info"))
+        .bearer_auth(&master_key)
+        .query(&[("team_id", &expected_team_id)])
+        .send()
+        .await
+        .expect("appel /team/info")
+        .error_for_status()
+        .expect("la Team doit exister cote LiteLLM")
+        .json::<serde_json::Value>()
+        .await
+        .expect("reponse JSON /team/info");
+    // `keys` est au niveau RACINE de la reponse `/team/info`, pas imbrique
+    // sous `team_info` (verifie empiriquement contre l'instance de dev
+    // reelle — la premiere version de ce test s'attendait a tort a
+    // `team_info.team_info.keys`).
+    assert_eq!(
+        team_info["keys"].as_array().map(|keys| keys.len()),
+        Some(2),
+        "la Team doit lister les DEUX cles des deux Workshops"
+    );
+
+    for name in [&name_a, &name_b] {
+        let with_digest = workshops.get(name).await.expect("get workshop");
+        atelier_controller::reconcile::cleanup(&ctx, &with_digest)
+            .await
+            .expect("cleanup() ne doit pas echouer");
+        workshops.delete(name, &DeleteParams::default()).await.ok();
+        let pod_name = format!("{name}-parent");
+        pods.delete(&pod_name, &DeleteParams::default()).await.ok();
+        service_accounts
+            .delete(&pod_name, &DeleteParams::default())
+            .await
+            .ok();
+    }
+    // La Team, elle, n'est jamais supprimee par `cleanup()` (voir le
+    // commentaire dans `reconcile.rs` — limite assumee) : nettoyage direct
+    // ici pour ne rien laisser trainer cote LiteLLM apres ce test.
+    let _ = http
+        .post(format!("{base_url}/team/delete"))
+        .bearer_auth(&master_key)
+        .json(&serde_json::json!({ "team_ids": [expected_team_id] }))
+        .send()
+        .await;
+}
+
 /// Bug reel constate en pratique (session de debug 2026-08-30, controller
 /// lance hors cluster — cas de dev documente, `deploy/dev/README.md`) :
 /// `cleanup()` propageait toute erreur `delete_virtual_key` via `?`, y

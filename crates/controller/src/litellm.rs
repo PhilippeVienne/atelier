@@ -169,6 +169,28 @@ impl LiteLlmClient {
         max_budget_usd: Option<f64>,
         ttl: &str,
     ) -> anyhow::Result<VirtualKey> {
+        self.generate_virtual_key_in_team(key_alias, owner, max_budget_usd, ttl, None)
+            .await
+    }
+
+    /// Comme [`Self::generate_virtual_key`], avec en plus `team_id` (tache
+    /// 12.5, spec docs/specs/16-escouades-multi-agents-swarms-mesh.md §3.4,
+    /// "Virtual Key Parente") : une cle rattachee a une Team LiteLLM (voir
+    /// [`Self::ensure_team`]) partage la depense agregee de CETTE Team avec
+    /// toutes les autres cles qui y sont rattachees — c'est le coupe-circuit
+    /// collectif d'une campagne multi-Workshops, pas un plafond individuel
+    /// supplementaire (`max_budget_usd` reste independant et s'applique EN
+    /// PLUS, au niveau de la cle elle-meme, verifie empiriquement contre le
+    /// cluster de dev reel : une cle liee a une Team garde son propre champ
+    /// `max_budget`, LiteLLM applique les deux plafonds).
+    pub async fn generate_virtual_key_in_team(
+        &self,
+        key_alias: &str,
+        owner: &str,
+        max_budget_usd: Option<f64>,
+        ttl: &str,
+        team_id: Option<&str>,
+    ) -> anyhow::Result<VirtualKey> {
         let mut body = serde_json::json!({
             "key_alias": key_alias,
             "duration": ttl,
@@ -176,6 +198,9 @@ impl LiteLlmClient {
         });
         if let Some(budget) = max_budget_usd {
             body["max_budget"] = serde_json::json!(budget);
+        }
+        if let Some(team_id) = team_id {
+            body["team_id"] = serde_json::json!(team_id);
         }
 
         let response = self
@@ -225,6 +250,79 @@ impl LiteLlmClient {
             response.status()
         ))
     }
+
+    /// `POST /team/new` (tache 12.5) : cree la Team LiteLLM d'une campagne
+    /// multi-Workshops, porteuse du plafond financier GLOBAL partage par
+    /// toutes ses Virtual Keys (voir [`Self::generate_virtual_key_in_team`]).
+    ///
+    /// **Idempotence geree explicitement** (contrairement a
+    /// `generate_virtual_key`, ou l'appelant garantit lui-meme l'unicite) :
+    /// PLUSIEURS Workshops de la MEME campagne appellent chacun cette
+    /// methode a leur propre provisioning, sans coordination entre eux — le
+    /// premier arrive cree reellement la Team, les suivants doivent voir un
+    /// succes. Verifie empiriquement contre le cluster de dev reel :
+    /// `POST /team/new` sur un `team_id` deja existant renvoie `400` avec
+    /// `{"error": "Team id = <id> already exists..."}` (pas de `409`
+    /// standard) — ce message precis est la seule facon fiable de
+    /// distinguer "deja cree, rien a faire" d'un autre echec 400.
+    pub async fn ensure_team(
+        &self,
+        team_id: &str,
+        max_budget_usd: Option<f64>,
+    ) -> anyhow::Result<()> {
+        let mut body = serde_json::json!({ "team_id": team_id });
+        if let Some(budget) = max_budget_usd {
+            body["max_budget"] = serde_json::json!(budget);
+        }
+
+        let response = self
+            .http
+            .post(format!("{}/team/new", self.base_url()))
+            .bearer_auth(&self.config.master_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+        if response.status() == reqwest::StatusCode::BAD_REQUEST {
+            let text = response.text().await.unwrap_or_default();
+            if text.contains("already exists") {
+                return Ok(());
+            }
+            return Err(anyhow::anyhow!(
+                "creation de la Team LiteLLM ({team_id}) a echoue: 400 {text}"
+            ));
+        }
+
+        Err(anyhow::anyhow!(
+            "creation de la Team LiteLLM ({team_id}) a echoue: {}",
+            response.status()
+        ))
+    }
+
+    /// `POST /team/delete` : idempotent, meme convention que
+    /// [`Self::delete_virtual_key`] — verifie empiriquement qu'un `team_id`
+    /// absent renvoie `404`, traite ici comme un succes.
+    pub async fn delete_team(&self, team_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .http
+            .post(format!("{}/team/delete", self.base_url()))
+            .bearer_auth(&self.config.master_key)
+            .json(&serde_json::json!({ "team_ids": [team_id] }))
+            .send()
+            .await?;
+
+        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+
+        Err(anyhow::anyhow!(
+            "suppression de la Team LiteLLM ({team_id}) a echoue: {}",
+            response.status()
+        ))
+    }
 }
 
 /// Alias de Virtual Key du pod parent (session runtime) d'un Workshop —
@@ -241,6 +339,23 @@ pub fn workshop_key_alias(workshop_name: &str) -> String {
 /// parent.
 pub fn build_key_alias(workshop_name: &str) -> String {
     format!("atelier-build-{workshop_name}")
+}
+
+/// Team LiteLLM d'une campagne multi-Workshops (tache 12.5) — prefixee pour
+/// ne jamais collisionner avec un `team_id` sans rapport cree ailleurs
+/// (LiteLLM n'impose aucun espace de noms par application), `campaign_id`
+/// restant un champ libre du CRD `Workshop`.
+///
+/// **Limite assumee** : le plafond financier de la Team est celui du
+/// PREMIER Workshop de la campagne a etre reconcilie (`ensure_team` est
+/// idempotent : un `campaign_id` deja vu ignore silencieusement le budget
+/// demande par les Workshops suivants) — il n'existe pas de champ CRD dedie
+/// a un budget de campagne INDEPENDANT du budget individuel d'un Workshop
+/// particulier. Documente plutot que corrige dans cette tache : un champ
+/// `Workshop.spec.campaign_budget_usd` dedie resterait un changement
+/// localise si le besoin s'en fait sentir.
+pub fn campaign_team_id(campaign_id: &str) -> String {
+    format!("atelier-campaign-{campaign_id}")
 }
 
 #[cfg(test)]
@@ -267,5 +382,12 @@ mod tests {
         assert_eq!(workshop_key_alias("demo"), "atelier-wks-demo");
         assert_eq!(build_key_alias("demo"), "atelier-build-demo");
         assert_ne!(workshop_key_alias("demo"), build_key_alias("demo"));
+    }
+
+    #[test]
+    fn campaign_team_id_is_prefixed_and_deterministic() {
+        assert_eq!(campaign_team_id("pm-42"), "atelier-campaign-pm-42");
+        assert_eq!(campaign_team_id("pm-42"), campaign_team_id("pm-42"));
+        assert_ne!(campaign_team_id("pm-42"), campaign_team_id("pm-43"));
     }
 }

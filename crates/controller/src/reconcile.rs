@@ -460,6 +460,16 @@ pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<
         {
             tracing::warn!(%err, "revocation de la Virtual Key LiteLLM (cleanup) echouee, finalizer non bloque");
         }
+        // Tache 12.5 : la Team LiteLLM d'une campagne (`litellm::
+        // campaign_team_id`), elle, n'est JAMAIS supprimee ici — une
+        // campagne regroupe PLUSIEURS Workshops (aucun n'est "le dernier"
+        // de facon fiable du point de vue d'un seul finalizer), et rien
+        // dans ce CRD ne represente la campagne elle-meme pour porter un
+        // evenement de suppression propre. Limite assumee : une Team
+        // orpheline s'accumule cote LiteLLM apres la suppression de tous
+        // les Workshops d'une campagne — sans impact fonctionnel (elle ne
+        // fait plus depenser personne), mais un nettoyage periodique reste
+        // a faire si le volume devient genant.
     }
 
     Ok(())
@@ -1526,12 +1536,40 @@ async fn ensure_parent_pod(
     if pod_will_be_created {
         if let (Some(litellm_config), Some(openbao_config)) = (&ctx.litellm, &ctx.openbao) {
             let client = litellm::LiteLlmClient::new(litellm_config.clone());
+            // Tache 12.5 (spec docs/specs/16-escouades-multi-agents-swarms-
+            // mesh.md §3.4) : quand ce Workshop appartient a une campagne,
+            // sa Virtual Key est rattachee a la Team LiteLLM de cette
+            // campagne (`ensure_team`, idempotent — PLUSIEURS Workshops de
+            // la meme campagne appellent cette meme methode independamment,
+            // sans coordination entre eux) : leur depense s'agrege alors
+            // sur un plafond COMMUN, le coupe-circuit collectif de la spec.
+            // Best-effort et non bloquant, meme convention que le reste du
+            // provisioning LiteLLM/OpenBao ci-dessus : un echec degrade
+            // vers une Virtual Key SANS Team (comportement inchange), ne
+            // bloque jamais le provisioning du Workshop lui-meme.
+            let team_id = match &workshop.spec.campaign_id {
+                Some(campaign_id) => {
+                    let team_id = litellm::campaign_team_id(campaign_id);
+                    match client
+                        .ensure_team(&team_id, workshop.spec.resources.max_llm_budget_usd)
+                        .await
+                    {
+                        Ok(()) => Some(team_id),
+                        Err(err) => {
+                            tracing::error!(%err, campaign_id, "creation de la Team LiteLLM de campagne echouee, Virtual Key sans plafond partage");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
             match client
-                .generate_virtual_key(
+                .generate_virtual_key_in_team(
                     &litellm::workshop_key_alias(name),
                     &workshop.spec.owner_group,
                     workshop.spec.resources.max_llm_budget_usd,
                     litellm::VIRTUAL_KEY_TTL,
+                    team_id.as_deref(),
                 )
                 .await
             {
