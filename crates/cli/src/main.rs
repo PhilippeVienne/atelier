@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod oidc;
 mod tokens;
+mod tunnel;
 
 use clap::{Parser, Subcommand};
 
@@ -34,6 +35,30 @@ enum Command {
     Workshops {
         #[command(subcommand)]
         command: WorkshopsCommand,
+    },
+    /// Tunnel port-forward brut vers un port du Workshop (spec §3.7).
+    PortForward {
+        /// Utilisable comme `ProxyCommand` SSH : relaie stdin/stdout au
+        /// lieu d'ecouter sur un port local.
+        #[arg(long)]
+        stdio: bool,
+        name: String,
+        /// `local:remote` en mode ecoute, `remote` seul en mode `--stdio`.
+        mapping: String,
+    },
+    /// Terminal SSH interactif dans le Workshop (spec §3.7).
+    Ssh {
+        name: String,
+        #[arg(long, default_value = "root")]
+        user: String,
+    },
+    /// Connecte un IDE local (VS Code/Cursor) en Remote-SSH au Workshop.
+    Code {
+        name: String,
+        #[arg(long, default_value = "root")]
+        user: String,
+        #[arg(long, default_value = "code")]
+        editor: String,
     },
 }
 
@@ -167,5 +192,12 @@ async fn main() -> anyhow::Result<()> {
             WorkshopsCommand::Resume { name } => commands::workshops::resume(name).await,
             WorkshopsCommand::Delete { name } => commands::workshops::delete(name).await,
         },
+        Command::PortForward {
+            stdio,
+            name,
+            mapping,
+        } => commands::tunnels::port_forward(name, mapping, stdio).await,
+        Command::Ssh { name, user } => commands::tunnels::ssh(name, user).await,
+        Command::Code { name, user, editor } => commands::tunnels::code(name, user, editor).await,
     }
 }

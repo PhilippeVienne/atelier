@@ -39,6 +39,13 @@ dirs = "5"
 keyring = { version = "3", features = ["linux-native"] }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+# Pont tunnels (`atelier port-forward`/`ssh`/`code`, tache 9.2) : meme
+# sous-protocole websocket que `crates/api-server/src/portforward.rs`
+# (calque sur `portforward.k8s.io`), donc meme client websocket que ce
+# crate cote serveur.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
+http = "1"
 
 [dev-dependencies]
 tempfile = "3"
