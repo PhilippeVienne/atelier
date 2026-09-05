@@ -34,7 +34,7 @@ attendus et font partie du processus, ils sont consignes dans
 | `identity-proxy` | Fonctionnel | Injection d'en-tete depuis OpenBao, verifie contre un vrai pod |
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock) | 3 tools verifies contre OpenBao/net-proxy/LocalStack reels |
 | `dashboard` | Fonctionnel | Next.js 16 BFF, CRUD Workshops, VS Code/terminal en navigateur reel |
-| `llm-proxy` (LiteLLM) | Fonctionnel (base) | Routage Claude Code → DeepSeek verifie de bout en bout via l'alias `net-proxy` |
+| `llm-proxy` (LiteLLM) | Fonctionnel | Routage Claude Code → DeepSeek verifie de bout en bout via l'alias `net-proxy` ; configuration des modeles par un admin (ajout/modification/suppression) depuis le Dashboard — `docs/specs/11-admin-litellm-model-config.md` |
 | `charts/atelier` (Helm, Jalon M6) | Fonctionnel | Chart monolithique (control plane + infra embarquee), 4 Ingress/TLS, Jobs d'init sequences — `docs/admin-guide.md` |
 | `scripts/install.sh` (single-node low-cost) | Fonctionnel (shellcheck + verif GHCR) | `docs/specs/10-low-cost-single-node-install.md` — non execute de bout en bout sur serveur frais |
 | `pm-engine` — graphe LangGraph (PM autonome) | Valide de bout en bout | Ticket Forgejo reel → decoupage → microVMs → PR — `docs/specs/05-devfactory-pm-engine.md` |
@@ -48,8 +48,6 @@ attendus et font partie du processus, ils sont consignes dans
 - Offload/reload du cache d'images `image-builder` vers S3 (prevu des la
   conception, encore un `TODO` dans `crates/image-builder/src/main.rs`).
 - Stack d'observabilite complet : collector OTLP + backend de stockage + Grafana.
-- Configuration des modeles LiteLLM par un admin (`docs/specs/11-admin-litellm-model-config.md`,
-  PLAN-ACTION-GLOBAL.md section 9.7) : spec rédigée, implementation non commencee.
 
 > Le récit complet des jalons 1 à 6 (microVM builder, canal suspend/resume,
 > reseau du pod parent, OAuth2/OIDC, `mcp-gateway`, device plugin `/dev/kvm`,
