@@ -9,9 +9,9 @@
 //!   export S3_BUCKET_SESSIONS="atelier-sessions"
 //!   export S3_BUCKET_SNAPSHOTS="atelier-snapshots"
 //!   export S3_FORCE_PATH_STYLE="true"
-//!   cargo test -p atelier-api-server --test storage
+//!   cargo test -p atelier-common --test storage
 
-use atelier_api_server::storage::{S3StorageBackend, StorageBackend};
+use atelier_common::storage::{S3StorageBackend, StorageBackend};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};

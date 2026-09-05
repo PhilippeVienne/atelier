@@ -1,14 +1,21 @@
-//! Stockage S3 hybride (Jalon M2, section 5.1 du plan) : archive les
-//! sessions terminal/VS Code volumineuses vers un bucket compatible S3
-//! (RustFS en dev, n'importe quel service compatible en production —
-//! voir le principe transversal de substitutabilite,
+//! Stockage S3 hybride : archive les sessions terminal/VS Code volumineuses
+//! (`atelier-api-server`) et, a terme, le cache d'images/snapshots
+//! Firecracker (`image-builder`/`vm-supervisor`, spec
+//! docs/specs/13-image-cache-offload.md) vers un bucket compatible S3
+//! (RustFS en dev, n'importe quel service compatible en production — voir
+//! le principe transversal de substitutabilite,
 //! `docs/specs/00-architecture-principles-substitutability.md`).
+//!
+//! Deplace ici depuis `crates/api-server/src/storage.rs` (tache 8.2) pour
+//! etre partage par plusieurs crates plutot que par la seule `api-server` :
+//! meme raison que `atelier_common::telemetry`, deja partage de la meme
+//! facon.
 //!
 //! Le trait [`StorageBackend`] est deliberement generique (bucket/cle en
 //! parametres, flux en entree/sortie) pour permettre une implementation
-//! alternative future sans toucher au reste du code (`crate::terminal`,
-//! `crate::vscode`). [`S3StorageBackend`] est la seule implementation a ce
-//! jour, au-dessus d'`aws-sdk-s3`.
+//! alternative future sans toucher au reste du code appelant.
+//! [`S3StorageBackend`] est la seule implementation a ce jour, au-dessus
+//! d'`aws-sdk-s3`.
 //!
 //! Convention de cle S3 pour les archives de session :
 //! `workshops/<workshop_name>/sessions/<session_id>.zst` (voir
@@ -126,7 +133,8 @@ pub fn config_from_env() -> Result<Option<S3Config>> {
 pub struct S3StorageBackend {
     client: S3Client,
     bucket_sessions: String,
-    #[allow(dead_code)] // reserve aux futures taches de snapshots (M2 5.1, hors 2.1.1-2.1.4)
+    #[allow(dead_code)]
+    // branche par la tache 8.4 (docs/specs/13-image-cache-offload.md), pas encore
     bucket_snapshots: String,
 }
 

@@ -34,22 +34,8 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
-# Stockage S3 hybride des archives de session (Jalon M2, cf.
-# crates/api-server/src/storage.rs). "rt-tokio" fournit l'implementation
-# par defaut du sleep/retry async requise par le client (sinon panique a
-# l'execution) et `ByteStream::into_async_read` pour le rejeu en streaming.
-aws-sdk-s3 = { version = "1.71", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-config = { version = "1.5", default-features = false, features = ["default-https-client"] }
 base64 = "0.22"
-# Compression/decompression zstd en streaming (tache 2.1.3/2.1.4) : API
-# async-native (AsyncRead -> AsyncRead), pas besoin de charger le flux en
-# memoire ni de gerer nous-memes un thread bloquant pour libzstd.
-async-compression = { version = "0.4.43", features = ["tokio", "zstd"] }
-bytes = "1"
-async-trait = "0.1.92"
-# Identifiant de session terminal enregistree (crate::session_recorder) :
-# deja present transitivement via aws-runtime, declare explicitement car
-# utilise directement dans notre propre code.
+# Identifiant de session terminal enregistree (crate::session_recorder).
 uuid = { version = "1", features = ["v4", "serde"] }
 # Serveur MCP externe (Jalon M4, crate::mcp_server) : memes features que
 # `crates/mcp-gateway` (transport Streamable HTTP officiel du SDK Rust).
@@ -62,7 +48,6 @@ russh = { version = "0.63", default-features = false, features = ["ring", "flate
 http = "1"
 
 [dev-dependencies]
-sha2 = "0.10"
 tower = "0.5"
 # Genere une paire de cles SSH de test (tests/exec.rs) et fait tourner un
 # serveur SSH minimal (`russh::server`) pour valider `crate::exec` sans

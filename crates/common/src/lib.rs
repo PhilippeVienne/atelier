@@ -1,6 +1,7 @@
 pub mod crd;
 pub mod openbao_client;
 pub mod status;
+pub mod storage;
 pub mod telemetry;
 
 pub use crd::{

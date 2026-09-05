@@ -62,7 +62,7 @@ pub struct AppState {
     /// l'archivage est alors simplement desactive, aucune session n'est
     /// enregistree (fonctionnalite optionnelle si non configuree, meme
     /// convention que `session_auth`).
-    pub storage: Option<std::sync::Arc<crate::storage::S3StorageBackend>>,
+    pub storage: Option<std::sync::Arc<atelier_common::storage::S3StorageBackend>>,
 }
 
 /// Role de realm requis pour les routes d'administration. Correspond au

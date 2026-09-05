@@ -11,16 +11,16 @@
 //! enregistree, pas la saisie utilisateur — rejouer une session ne necessite
 //! que ce qui s'est affiche a l'ecran).
 //!
-//! Le flux est pousse en streaming vers [`crate::storage::S3StorageBackend`]
+//! Le flux est pousse en streaming vers [`atelier_common::storage::S3StorageBackend`]
 //! au fur et a mesure de la session (jamais de buffer complet en memoire,
 //! y compris pour une session de plusieurs heures) : un `tokio::io::duplex`
 //! sert de tuyau interne dont la moitie lecture est immediatement consommee
 //! par un televersement S3 en arriere-plan (compression zstd streaming,
-//! upload multipart, voir `crate::storage`), pendant que la moitie ecriture
-//! est alimentee au fil de l'eau par le pont WebSocket
+//! upload multipart, voir `atelier_common::storage`), pendant que la moitie
+//! ecriture est alimentee au fil de l'eau par le pont WebSocket
 //! (`crate::vscode::proxy_to_guest_port`).
 
-use crate::storage::S3StorageBackend;
+use atelier_common::storage::S3StorageBackend;
 use std::sync::Arc;
 use tokio::io::{AsyncWriteExt, DuplexStream};
 use tokio::task::JoinHandle;

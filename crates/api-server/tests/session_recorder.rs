@@ -20,7 +20,7 @@
 //! `S3StorageBackend::get_session_stream`.
 
 use atelier_api_server::session_recorder::SessionRecording;
-use atelier_api_server::storage::{S3StorageBackend, StorageBackend};
+use atelier_common::storage::{S3StorageBackend, StorageBackend};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
