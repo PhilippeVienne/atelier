@@ -14,7 +14,11 @@
 Deux faits vérifiés en conditions réelles avant d'écrire une ligne de code de cette spec, précisément parce que la documentation existante (le commentaire de tête de `telemetry.rs`) laissait croire à une instrumentation déjà fonctionnelle :
 
 1. **`OTEL_EXPORTER_OTLP_ENDPOINT` n'est positionnée nulle part** — ni dans `charts/atelier/`, ni dans `deploy/dev/local-stack.sh`. Chaque binaire tourne donc aujourd'hui, partout, en mode `fmt` seul : aucun export OTLP n'a jamais lieu, même sur l'instance de dev.
-2. **Même en pointant `OTEL_EXPORTER_OTLP_ENDPOINT` vers un vrai collecteur, aucune trace n'est produite.** Vérifié en lançant `atelier-api-server` en local avec la variable positionnée vers une instance réelle de `grafana/otel-lgtm` (voir §3), puis en émettant plusieurs requêtes HTTP réelles (`/health/readiness`) : zéro trace dans Tempo (interrogé via l'API `/api/ds/query` de Grafana). Cause : aucune route d'aucun service n'est instrumentée par un `TraceLayer`/`#[tracing::instrument]` créant un span autour d'une requête — `tracing_subscriber`/`tracing-opentelemetry` n'exportent que des **spans**, jamais un `tracing::info!`/`warn!` isolé sans span actif englobant. Le tuyau existe ; rien ne coule dedans.
+2. **Ça dépend du service — nuance trouvée après re-vérification.** En pointant `OTEL_EXPORTER_OTLP_ENDPOINT` vers une instance réelle de `grafana/otel-lgtm` (voir §3) :
+   - `atelier-api-server` : plusieurs requêtes HTTP réelles (`/health/readiness`) produisent **zéro trace** dans Tempo. Cause : aucune route n'est instrumentée par un `TraceLayer`/`#[tracing::instrument]` créant un span autour d'une requête — `tracing-opentelemetry` n'exporte que des **spans**, jamais un `tracing::info!`/`warn!` isolé sans span actif englobant.
+   - `atelier-controller` : **fonctionne déjà**. Une vraie réconciliation contre le cluster de dev produit des traces réelles et hiérarchisées, `service.name=atelier-controller`, retrouvées dans Tempo — la boucle de réconciliation est instrumentée depuis le commit `a51b1c9` (voir §4.2). Une première lecture rapide du code (recherche de `#[tracing::instrument]` sans arguments) avait manqué cette instrumentation, qui utilise partout la forme `#[tracing::instrument(skip_all, ...)]` — corrigé ici après re-vérification empirique plutôt que laissé tel quel.
+
+   Le tuyau fonctionne réellement dès qu'un span existe pour s'y déverser ; `api-server` est le seul composant où il manque encore.
 
 Conséquence : ce n'est pas seulement « pas de collecteur/backend/dashboard déployé » (constat déjà connu, `docs/PROGRESS.md` le classait en *Backlog*) — c'est que **même en déployant un backend aujourd'hui, l'onglet traces resterait vide**. Cette spec couvre donc les deux moitiés du problème : l'infrastructure de collecte ET l'instrumentation applicative qui doit réellement produire des spans.
 
@@ -78,9 +82,11 @@ Même câblage pour `deploy/dev/local-stack.sh` (nouvelle section, même convent
 
 `tower_http::trace::TraceLayer` (dépendance déjà transitive d'`axum`, à ajouter explicitement à `Cargo.toml`), posé dans `routes::router` en tête de la chaîne de middlewares — un span par requête, avec méthode/chemin/statut en attributs. C'est le strict minimum pour qu'une requête corresponde à UNE trace exploitable dans Tempo ; le détail interne (par ex. l'appel LiteLLM déclenché par `admin_llm_create_model`) reste un span enfant à ajouter au cas par cas via `#[tracing::instrument]`, pas systématiquement partout d'un coup.
 
-### 4.2. `controller` : un span par itération de réconciliation
+### 4.2. `controller` : déjà instrumenté — vérifié empiriquement, RAS
 
-`crates/controller/src/reconcile.rs::run()` boucle sur les évènements `Workshop` — envelopper le corps de traitement d'un événement dans un span nommé (`workshop_name` en attribut), via `#[tracing::instrument(skip(...), fields(workshop = %name))]` sur la fonction de réconciliation unitaire. Permet de retrouver, dans Tempo, tout ce qu'une réconciliation donnée a déclenché (appels OpenBao, LiteLLM, Kubernetes).
+Correction par rapport à une première lecture trop rapide de `reconcile.rs` (une recherche de `#[tracing::instrument]` sans arguments ne remontait rien, alors que le code utilise partout la forme `#[tracing::instrument(skip_all, ...)]`) : la boucle de réconciliation **est déjà instrumentée**, depuis le commit `a51b1c9` (« Imposer OpenTelemetry comme convention d'observabilité », 2026-08-18) — cinq fonctions de `crates/controller/src/reconcile.rs` portent `#[tracing::instrument(skip_all, ...)]`, dont deux avec `fields(workshop = %workshop.name_any())`.
+
+Reverifié bout en bout dans le cadre de cette session (pas seulement relu dans le code) : `atelier-controller` lancé en local avec `OTEL_EXPORTER_OTLP_ENDPOINT` pointée vers une instance réelle de `grafana/otel-lgtm`, une vraie réconciliation d'un Workshop existant sur le cluster de dev déclenchée — **cinq traces `service.name=atelier-controller`, span racine `reconciling object`, correctement hiérarchisées**, retrouvées dans Tempo (`GET /api/ds/query`). Aucune tâche d'implémentation nécessaire ici : seul le câblage de `OTEL_EXPORTER_OTLP_ENDPOINT` (§3.2) manquait pour que ce qui existe déjà produise des traces exploitables.
 
 ### 4.3. Métriques : compteur + histogramme sur `api-server`
 

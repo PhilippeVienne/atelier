@@ -247,7 +247,26 @@ for component in net-proxy identity-proxy mcp-gateway vm-supervisor image-builde
   kind load docker-image "atelier-$component:dev" --name "$KIND_CLUSTER" >/dev/null
 done
 
-# --- 11. LLM Proxy (optionnel — voir deploy/dev/llm-proxy/README.md) -----
+# --- 11. Observabilite (traces/metriques/logs, spec docs/specs/12-observabilite.md) ---
+# Deployee inconditionnellement (comme OpenBao/PostgreSQL) : c'est le meme
+# pod tout-en-un que celui du chart de production (grafana/otel-lgtm),
+# jamais optionnel comme le LLM Proxy ci-dessous.
+log "Observabilite (grafana/otel-lgtm)"
+kubectl apply -f deploy/dev/otel/dev-deployment.yaml >/dev/null
+kubectl wait --for=condition=Available deployment/atelier-observability --timeout=90s >/dev/null
+OTEL_ENDPOINT=""
+if ! port_open 4317; then
+  log "Observabilite: demarrage du port-forward (127.0.0.1:4317)"
+  nohup kubectl port-forward svc/atelier-observability 4317:4317 >/tmp/atelier-observability-port-forward.log 2>&1 &
+  disown
+  for _ in $(seq 1 20); do
+    port_open 4317 && break
+    sleep 0.5
+  done
+fi
+OTEL_ENDPOINT="http://127.0.0.1:4317"
+
+# --- 12. LLM Proxy (optionnel — voir deploy/dev/llm-proxy/README.md) -----
 LLM_PROXY_ADDR=""
 LLM_PROXY_AUTH_TOKEN=""
 LLM_SALT_KEY_CONFIGURED="false"
@@ -283,10 +302,10 @@ else
   log "LLM Proxy: ignore (DEEPSEEK_API_KEY/ANTHROPIC_API_KEY absentes)"
 fi
 
-# --- 12. Redis (Jalon M5, pas encore d'infra de dev) ----------------------
+# --- 13. Redis (Jalon M5, pas encore d'infra de dev) ----------------------
 log "Redis: pas encore d'infra de dev (Jalon M5, verrouille [ ] dans docs/specs/PLAN-ACTION-GLOBAL.md — non fait par ce script, ne pas en inventer une)"
 
-# --- 13. Fichier d'environnement pour `cargo run` / `npm run dev` --------
+# --- 14. Fichier d'environnement pour `cargo run` / `npm run dev` --------
 # `controller` et `api-server` utilisent tous deux `DATABASE_URL` mais sur
 # des bases distinctes (isolation par base, cf. deploy/dev/postgres/README.md)
 # : deux variables dediees ici, a affecter explicitement a `DATABASE_URL`
@@ -372,6 +391,11 @@ export S3_FORCE_PATH_STYLE="true"
 # Forgejo — via l'ingress Traefik (necessite /etc/hosts a jour).
 export ATELIER_FORGEJO_URL=http://git.atelier.local
 export ATELIER_FORGEJO_ADMIN_TOKEN="$FORGEJO_ADMIN_TOKEN"
+
+# Observabilite (traces/metriques, spec docs/specs/12-observabilite.md) :
+# port-forward local, le controller/api-server tournant hors cluster en dev
+# (meme raison que le port-forward OpenBao/PostgreSQL ci-dessus).
+export OTEL_EXPORTER_OTLP_ENDPOINT="$OTEL_ENDPOINT"
 
 # LLM Proxy (optionnel, voir deploy/dev/llm-proxy/README.md).
 export ATELIER_LLM_PROXY_ADDR="$LLM_PROXY_ADDR"

@@ -75,6 +75,10 @@ spec:
             - name: ATELIER_REGISTRY_INSECURE
               value: {{ .Values.registry.insecure | quote }}
             {{- end }}
+            {{- if .Values.observability.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "observability") }}:4317"
+            {{- end }}
             {{- range $k, $v := .Values.controller.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

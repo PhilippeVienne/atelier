@@ -1,0 +1,71 @@
+# Meme image tout-en-un que le composant `observability` du chart de
+# production (charts/atelier/templates/infra/observability-deployment.yaml,
+# spec docs/specs/12-observabilite.md §3) : collecteur OTLP + Tempo
+# (traces) + Prometheus (metriques) + Loki (logs) + Grafana, datasources
+# pre-provisionnees. Demarrage/memoire mesures empiriquement (docker run,
+# 2026-09-05) : `healthy` en ~40s, ~480Mi de RAM au repos.
+#
+# Remplace l'ancien `collector-config.yaml` (collecteur nu, exporteur
+# `debug` seul, jamais cable a un backend ni deploye par ce script) —
+# garde comme reference historique dans git log, pas comme config active.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atelier-observability
+  namespace: default
+  labels:
+    app: atelier-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atelier-observability
+  template:
+    metadata:
+      labels:
+        app: atelier-observability
+    spec:
+      containers:
+        - name: observability
+          # Tag epingle (pas `:latest`) pour un deploiement deterministe,
+          # meme convention que le reste de `deploy/dev/`.
+          image: grafana/otel-lgtm:0.32.1
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: grafana
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: grafana
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: grafana
+            initialDelaySeconds: 30
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atelier-observability
+  namespace: default
+spec:
+  selector:
+    app: atelier-observability
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: grafana
+      port: 3000
+      targetPort: grafana

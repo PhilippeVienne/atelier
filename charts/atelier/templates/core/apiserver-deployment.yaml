@@ -99,6 +99,10 @@ spec:
               value: "true"
             {{- end }}
             {{- end }}
+            {{- if .Values.observability.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "atelier.componentName" (dict "root" $ "component" "observability") }}:4317"
+            {{- end }}
             {{- range $k, $v := .Values.apiServer.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
