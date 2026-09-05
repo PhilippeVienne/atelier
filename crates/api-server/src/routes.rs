@@ -63,6 +63,18 @@ pub struct AppState {
     /// enregistree (fonctionnalite optionnelle si non configuree, meme
     /// convention que `session_auth`).
     pub storage: Option<std::sync::Arc<atelier_common::storage::S3StorageBackend>>,
+    /// Webhook entrant Slack (tache 9.7, `crate::chatops`) : URL a laquelle
+    /// notifier chaque nouvelle demande HITL (`ATELIER_SLACK_WEBHOOK_URL`).
+    /// `None` : integration ChatOps desactivee, aucune notification
+    /// sortante (fonctionnalite optionnelle si non configuree, meme
+    /// convention que `session_auth`/`storage` ci-dessus).
+    pub slack_webhook_url: Option<String>,
+    /// Secret de signature Slack (`ATELIER_SLACK_SIGNING_SECRET`), pour
+    /// verifier `POST /v1/webhooks/slack/interactions` (HMAC-SHA256, voir
+    /// `crate::chatops::verify_slack_signature`). `None` : l'endpoint refuse
+    /// systematiquement (fail-closed — jamais d'acceptation par defaut d'un
+    /// webhook non signe).
+    pub slack_signing_secret: Option<String>,
 }
 
 /// Role de realm requis pour les routes d'administration. Correspond au
@@ -176,6 +188,13 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/health/liveness", get(health_liveness))
         .route("/health/readiness", get(health_readiness))
+        // Hors du groupe `protected` (pas de JWT OIDC — Slack n'en presente
+        // pas) : l'authenticite est etablie par la signature HMAC verifiee
+        // dans le handler lui-meme, voir `crate::chatops`.
+        .route(
+            "/v1/webhooks/slack/interactions",
+            post(crate::chatops::slack_interactions),
+        )
         .with_state(health_state)
         .merge(protected)
         // `route_layer` (pas `layer`) : place ce middleware APRES la

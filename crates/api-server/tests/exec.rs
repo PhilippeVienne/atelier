@@ -221,6 +221,8 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         llm_salt_key_configured: false,
         session_auth: None,
         storage: None,
+        slack_webhook_url: None,
+        slack_signing_secret: None,
     };
 
     let id = atelier_api_server::exec::spawn(
@@ -261,11 +263,11 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
     // du guest plutot que dans le workspace ne trouverait pas les sources.
     assert_eq!(
         stdout,
-        "echo cd /workspaces/repo 2>/dev/null || true; echo hello"
+        "echo timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello'"
     );
     assert_eq!(
         stderr,
-        "stderr from cd /workspaces/repo 2>/dev/null || true; echo hello"
+        "stderr from timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello'"
     );
 
     net_proxy.start_kill().ok();

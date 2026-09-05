@@ -35,6 +35,15 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 base64 = "0.22"
+# Signature des webhooks entrants Slack (tache 9.7, crate::chatops) : meme
+# famille de crates (RustCrypto) que `sha2` deja utilise ailleurs dans le
+# workspace (`crates/common`, `crates/vm-supervisor`).
+hmac = "0.12"
+sha2 = "0.10"
+# Parsing du corps `application/x-www-form-urlencoded` des webhooks Slack
+# (`crate::chatops`) : un seul champ `payload`, pas besoin d'un crate de
+# formulaire complet, juste `form_urlencoded`.
+url = "2"
 # Identifiant de session terminal enregistree (crate::session_recorder).
 uuid = { version = "1", features = ["v4", "serde"] }
 # Serveur MCP externe (Jalon M4, crate::mcp_server) : memes features que

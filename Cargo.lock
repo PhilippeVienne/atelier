@@ -233,6 +233,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "getrandom 0.4.3",
+ "hmac 0.12.1",
  "http 1.5.0",
  "http-body-util",
  "hyper",
@@ -249,12 +250,14 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tokio-tungstenite",
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "uuid",
 ]
 

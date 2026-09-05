@@ -38,18 +38,18 @@ const VALID_CATEGORIES: &[&str] = &[
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct HitlRequest {
-    id: Uuid,
-    tenant: String,
-    workshop_name: String,
-    category: String,
-    requested_by: String,
-    payload: serde_json::Value,
-    status: String,
-    decided_by: Option<String>,
-    decision_reason: Option<String>,
-    created_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-    decided_at: Option<DateTime<Utc>>,
+    pub id: Uuid,
+    pub tenant: String,
+    pub workshop_name: String,
+    pub category: String,
+    pub requested_by: String,
+    pub payload: serde_json::Value,
+    pub status: String,
+    pub decided_by: Option<String>,
+    pub decision_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
 }
 
 /// Positionne `app.current_tenant` (portee transaction, voir
@@ -117,6 +117,15 @@ pub async fn create_approval(
     .await?;
     tx.commit().await?;
 
+    // Best-effort, jamais bloquant pour la creation elle-meme (meme
+    // raisonnement que les autres integrations optionnelles de ce
+    // fichier/projet, ex: `crate::exec::append_chunk`) : un webhook Slack
+    // absent ou momentanement injoignable ne doit jamais empecher
+    // l'enregistrement de la demande HITL.
+    if let Some(webhook_url) = &state.slack_webhook_url {
+        crate::chatops::notify_slack(webhook_url, &created).await;
+    }
+
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -171,7 +180,46 @@ pub async fn decide_approval(
     Path(id): Path<Uuid>,
     Json(req): Json<DecisionRequest>,
 ) -> Result<Json<HitlRequest>, ApiError> {
-    let new_status = match req.decision.as_str() {
+    let is_admin = claims.has_role(ADMIN_ROLE);
+    let candidate_tenants = if is_admin {
+        vec![String::new()]
+    } else {
+        user.groups.clone()
+    };
+    let decided = apply_decision(
+        &state,
+        id,
+        &req.decision,
+        req.reason.as_deref(),
+        &user.subject,
+        is_admin,
+        &candidate_tenants,
+    )
+    .await?;
+    Ok(Json(decided))
+}
+
+/// Coeur de la decision, partage entre `decide_approval` (REST, sujet OIDC
+/// authentifie) et `crate::chatops::slack_interactions` (webhook Slack
+/// signe HMAC, tache 9.7 — pas de sujet OIDC, `decided_by` porte alors
+/// l'identifiant Slack de la personne qui a clique).
+///
+/// `is_admin`/`candidate_tenants` restent explicites (pas de re-derivation
+/// interne a partir d'un `AuthenticatedUser`) : c'est ce qui permet a
+/// l'appelant Slack de passer `is_admin = true` (une signature HMAC valide
+/// prouve que la requete vient bien de l'app Slack configuree, mais pas de
+/// quel groupe l'utilisateur Slack qui a clique est membre — voir la doc de
+/// tete de `crate::chatops` pour la limite assumee).
+pub(crate) async fn apply_decision(
+    state: &AppState,
+    id: Uuid,
+    decision: &str,
+    reason: Option<&str>,
+    decided_by: &str,
+    is_admin: bool,
+    candidate_tenants: &[String],
+) -> Result<HitlRequest, ApiError> {
+    let new_status = match decision {
         "APPROVED" => "APPROVED",
         "REJECTED" => "REJECTED",
         other => {
@@ -181,7 +229,6 @@ pub async fn decide_approval(
         }
     };
 
-    let is_admin = claims.has_role(ADMIN_ROLE);
     let mut tx = state.db_pool.begin().await?;
     set_admin(&mut tx, is_admin).await?;
 
@@ -190,14 +237,8 @@ pub async fn decide_approval(
     // un seul) jusqu'a en trouver un qui rend la ligne visible au RLS.
     // Admin : `app.is_admin` deja positionne ci-dessus, `current_tenant`
     // n'a pas besoin d'etre juste.
-    let candidate_tenants: Vec<String> = if is_admin {
-        vec![String::new()]
-    } else {
-        user.groups.clone()
-    };
-
     let mut found: Option<HitlRequest> = None;
-    for tenant in &candidate_tenants {
+    for tenant in candidate_tenants {
         if !is_admin {
             set_tenant(&mut tx, tenant).await?;
         }
@@ -241,14 +282,14 @@ pub async fn decide_approval(
          WHERE id = $4 RETURNING *",
     )
     .bind(new_status)
-    .bind(&user.subject)
-    .bind(&req.reason)
+    .bind(decided_by)
+    .bind(reason)
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
-    Ok(Json(decided))
+    Ok(decided)
 }
 
 /// Bascule silencieusement en `EXPIRED` toute demande `PENDING` de ce

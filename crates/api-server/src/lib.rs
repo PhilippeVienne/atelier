@@ -1,5 +1,6 @@
 pub mod approvals;
 pub mod auth;
+pub mod chatops;
 pub mod credentials;
 pub mod exec;
 pub mod http_metrics;

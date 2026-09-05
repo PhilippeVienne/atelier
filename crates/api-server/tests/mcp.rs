@@ -184,6 +184,8 @@ async fn mcp_lifecycle_tools_drive_a_real_workshop() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     )
@@ -349,6 +351,8 @@ async fn mcp_tools_enforce_ownership_isolation() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     )
@@ -447,6 +451,8 @@ async fn mcp_create_workshop_fast_fails_when_litellm_unreachable() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     )

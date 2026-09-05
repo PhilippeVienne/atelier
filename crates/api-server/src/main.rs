@@ -55,6 +55,18 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .map(atelier_api_server::session_auth::SessionAuthClient::from_env);
     let storage = atelier_common::storage::S3StorageBackend::from_env()?.map(std::sync::Arc::new);
+    let slack_webhook_url = std::env::var("ATELIER_SLACK_WEBHOOK_URL").ok();
+    let slack_signing_secret = std::env::var("ATELIER_SLACK_SIGNING_SECRET").ok();
+    if slack_webhook_url.is_none() {
+        tracing::info!(
+            "ATELIER_SLACK_WEBHOOK_URL absent : notifications ChatOps Slack desactivees"
+        );
+    }
+    if slack_signing_secret.is_none() {
+        tracing::warn!(
+            "ATELIER_SLACK_SIGNING_SECRET absent : POST /v1/webhooks/slack/interactions refusera systematiquement"
+        );
+    }
 
     let app = routes::router(
         AppState {
@@ -67,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
             llm_salt_key_configured,
             session_auth,
             storage,
+            slack_webhook_url,
+            slack_signing_secret,
         },
         auth,
     );

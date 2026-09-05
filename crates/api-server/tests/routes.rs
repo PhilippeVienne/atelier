@@ -151,6 +151,8 @@ async fn health_endpoints_respond_without_auth() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
@@ -214,6 +216,8 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
@@ -548,6 +552,8 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
@@ -799,6 +805,8 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
@@ -981,6 +989,8 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             llm_salt_key_configured: false,
             session_auth: None,
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
@@ -1438,6 +1448,8 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             llm_salt_key_configured: false,
             session_auth: Some(session_auth),
             storage: None,
+            slack_webhook_url: None,
+            slack_signing_secret: None,
         },
         auth,
     );
