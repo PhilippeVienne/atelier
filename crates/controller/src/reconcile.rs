@@ -1662,6 +1662,25 @@ async fn ensure_parent_pod(
                                 &format!("127.0.0.1:{SIMULATOR_PORT}"),
                             )
                         }))
+                        // Alias `<name>.atelier.internal` par simulateur
+                        // declare (tache 9.3) : distinct de `simulator_enabled`
+                        // ci-dessus (mecanisme historique, un seul LocalStack,
+                        // gate par `Workshop.spec.tools`) — ceux-ci sont
+                        // toujours actifs des qu'ils sont declares dans
+                        // `Workshop.spec.simulators`, voir
+                        // `crates/net-proxy/src/internal.rs`.
+                        .chain((!workshop.spec.simulators.is_empty()).then(|| {
+                            let aliases = workshop
+                                .spec
+                                .simulators
+                                .iter()
+                                .map(|s| {
+                                    format!("{}=127.0.0.1:{}", s.name, simulator_port(s.type_))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            env_var("ATELIER_SIMULATORS", &aliases)
+                        }))
                         // Service global du cluster (voir `deploy/dev/llm-proxy/`),
                         // pas un sidecar de ce pod : toujours cable des que
                         // configure, contrairement a `simulator` (gate par
@@ -1805,6 +1824,7 @@ async fn ensure_parent_pod(
                 ]),
                 ..Default::default()
             }))
+            .chain(workshop.spec.simulators.iter().map(simulator_container))
             .collect(),
             ..Default::default()
         }),
@@ -2151,6 +2171,52 @@ fn env_var(name: &str, value: &str) -> EnvVar {
     }
 }
 
+/// Port interne par defaut d'un simulateur sidecar (tache 9.3, spec
+/// `docs/specs/14-devex-cli-simulateurs-hitl.md` §4.3) : toujours lie a
+/// `127.0.0.1` du pod (voir `crates/net-proxy/src/internal.rs`), jamais
+/// expose a la VM directement — seulement via l'alias
+/// `<name>.atelier.internal` de `net-proxy`.
+fn simulator_port(type_: atelier_common::SimulatorType) -> u16 {
+    match type_ {
+        atelier_common::SimulatorType::Postgres => 5432,
+        atelier_common::SimulatorType::Localstack => 4566,
+        atelier_common::SimulatorType::Wiremock => 8080,
+    }
+}
+
+/// Construit le conteneur sidecar pour un simulateur declare
+/// (`Workshop.spec.simulators`, tache 9.3). Le nom du conteneur est le nom
+/// logique declare par l'utilisateur : doit donc etre un nom de conteneur
+/// Kubernetes valide (DNS-1123), meme convention que le nom du `Workshop`
+/// lui-meme — non revalide ici, la validation cote `api-server` (chemin
+/// normal de creation) est la premiere ligne de defense.
+fn simulator_container(sim: &atelier_common::SimulatorSpec) -> Container {
+    let (image, default_env): (&str, &[(&str, &str)]) = match sim.type_ {
+        // `POSTGRES_PASSWORD` est obligatoire cote image officielle (le
+        // conteneur refuse de demarrer sans lui, ni `POSTGRES_HOST_AUTH_METHOD`) :
+        // valeur par defaut fournie si l'utilisateur ne l'a pas declaree dans
+        // `sim.env`, jamais utilisee pour autre chose qu'un test ephemere
+        // detruit avec le Workshop.
+        atelier_common::SimulatorType::Postgres => {
+            ("postgres:16-alpine", &[("POSTGRES_PASSWORD", "postgres")])
+        }
+        atelier_common::SimulatorType::Localstack => ("localstack/localstack:3", &[]),
+        atelier_common::SimulatorType::Wiremock => ("wiremock/wiremock:3", &[]),
+    };
+    let env = default_env
+        .iter()
+        .filter(|(k, _)| !sim.env.contains_key(*k))
+        .map(|(k, v)| env_var(k, v))
+        .chain(sim.env.iter().map(|(k, v)| env_var(k, v)))
+        .collect();
+    Container {
+        name: sim.name.clone(),
+        image: Some(image.to_string()),
+        env: Some(env),
+        ..Default::default()
+    }
+}
+
 async fn update_status(
     client: &Client,
     workshop: &Workshop,
@@ -2234,6 +2300,7 @@ mod template_hash_tests {
                 owner_group: "atelier-core".into(),
                 owner_subject: "test-user".into(),
                 desired_state: WorkshopDesiredState::Running,
+                simulators: vec![],
             },
             status: Some(WorkshopStatus {
                 phase: WorkshopPhase::Running,

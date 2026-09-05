@@ -483,6 +483,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             owner_group: "equipe-portforward".into(),
             owner_subject: "portforward-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
+            simulators: vec![],
         },
     );
     workshop = workshops
@@ -731,6 +732,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             owner_group: "equipe-vscode".into(),
             owner_subject: "vscode-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
+            simulators: vec![],
         },
     );
     workshops
@@ -919,6 +921,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             owner_group: "equipe-vscode-ws".into(),
             owner_subject: "vscode-ws-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
+            simulators: vec![],
         },
     );
     workshops
@@ -1369,6 +1372,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             owner_group: "equipe-vscode-auth".into(),
             owner_subject: "vscode-session-auth-owner@test.atelier".to_string(),
             desired_state: atelier_common::WorkshopDesiredState::Running,
+            simulators: vec![],
         },
     );
     workshops

@@ -694,6 +694,10 @@ struct CreateWorkshopRequest {
     /// obligatoire s'il en a plusieurs (voir `resolve_owner_group`).
     #[serde(default)]
     owner_group: Option<String>,
+    /// Simulateurs ephemeres a deployer en sidecars (tache 9.3, voir
+    /// `atelier_common::SimulatorSpec`).
+    #[serde(default)]
+    simulators: Vec<atelier_common::SimulatorSpec>,
 }
 
 async fn create_workshop(
@@ -728,6 +732,7 @@ async fn create_workshop(
             owner_group,
             owner_subject: user.subject,
             desired_state: WorkshopDesiredState::Running,
+            simulators: req.simulators,
         },
     );
 

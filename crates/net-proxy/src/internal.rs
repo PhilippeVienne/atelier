@@ -55,20 +55,51 @@ const LLM_PROXY_ALIAS: &str = "llm-proxy";
 /// toujours pouvoir joindre pour cloner/pousser sur ses propres depots.
 const GIT_ALIAS: &str = atelier_common::GIT_ALIAS_HOST;
 
+/// Suffixe des alias de simulateurs sidecars declares dans
+/// `Workshop.spec.simulators` (spec `docs/specs/14-devex-cli-simulateurs-hitl.md`
+/// §4.3, tache 9.3) : `<name>.atelier.internal`, meme convention de nommage
+/// que [`GIT_ALIAS`] — mais un ensemble DYNAMIQUE (un nom par Workshop, pas
+/// fixe a la compilation), d'ou une table separee de [`InternalRoutes::routes`]
+/// (cles `&'static str`).
+const SIMULATOR_ALIAS_SUFFIX: &str = ".atelier.internal";
+
 #[derive(Debug, Clone, Default)]
 pub struct InternalRoutes {
     routes: HashMap<&'static str, (String, u16)>,
+    /// Alias de simulateurs sidecars, cle = alias complet en minuscules
+    /// (ex: `postgres.atelier.internal`) — voir [`SIMULATOR_ALIAS_SUFFIX`].
+    simulators: HashMap<String, (String, u16)>,
 }
 
 impl InternalRoutes {
     pub fn from_env() -> anyhow::Result<Self> {
-        Self::parse(
+        let mut routes = Self::parse(
             std::env::var("ATELIER_IDENTITY_PROXY_ADDR").ok(),
             std::env::var("ATELIER_MCP_GATEWAY_ADDR").ok(),
             std::env::var("ATELIER_REGISTRY_ALIAS_ADDR").ok(),
             std::env::var("ATELIER_LLM_PROXY_ADDR").ok(),
             std::env::var("ATELIER_GIT_ALIAS_ADDR").ok(),
-        )
+        )?;
+        if let Ok(raw) = std::env::var("ATELIER_SIMULATORS") {
+            routes.add_simulators(&raw)?;
+        }
+        Ok(routes)
+    }
+
+    /// Ajoute les alias de simulateurs decrits par `raw` : liste separee par
+    /// des virgules d'entrees `nom=host:port` (posee par le `controller` a
+    /// partir de `Workshop.spec.simulators`, un sidecar du meme pod donc
+    /// toujours `127.0.0.1:<port>` en pratique — voir
+    /// `crates/controller/src/reconcile.rs`).
+    pub fn add_simulators(&mut self, raw: &str) -> anyhow::Result<()> {
+        for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (name, addr) = entry.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("entree de simulateur invalide {entry:?}, attendu nom=host:port")
+            })?;
+            let alias = format!("{}{SIMULATOR_ALIAS_SUFFIX}", name.to_ascii_lowercase());
+            self.simulators.insert(alias, parse_addr(addr)?);
+        }
+        Ok(())
     }
 
     fn parse(
@@ -94,7 +125,10 @@ impl InternalRoutes {
         if let Some(addr) = git_alias_addr.filter(|s| !s.trim().is_empty()) {
             routes.insert(GIT_ALIAS, parse_addr(&addr)?);
         }
-        Ok(Self { routes })
+        Ok(Self {
+            routes,
+            simulators: HashMap::new(),
+        })
     }
 
     /// Enregistre un alias a la main — reserve aux tests, qui n'ont pas a
@@ -113,6 +147,7 @@ impl InternalRoutes {
             .iter()
             .find(|(alias, _)| alias.eq_ignore_ascii_case(&host))
             .map(|(_, addr)| addr.clone())
+            .or_else(|| self.simulators.get(&host).cloned())
     }
 }
 
@@ -230,5 +265,31 @@ mod tests {
             Some(("127.0.0.1".to_string(), 3129))
         );
         assert_eq!(routes.resolve("llm-proxy"), None);
+    }
+
+    /// Alias de simulateurs sidecars (tache 9.3) : declaratifs, un par
+    /// `Workshop.spec.simulators`, poses par le controller via
+    /// `ATELIER_SIMULATORS` — independants des alias fixes ci-dessus.
+    #[test]
+    fn simulator_aliases_resolve_by_name_and_are_case_insensitive() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        routes
+            .add_simulators("postgres=127.0.0.1:5432,localstack=127.0.0.1:4566")
+            .unwrap();
+        assert_eq!(
+            routes.resolve("postgres.atelier.internal"),
+            Some(("127.0.0.1".to_string(), 5432))
+        );
+        assert_eq!(
+            routes.resolve("LOCALSTACK.ATELIER.INTERNAL"),
+            Some(("127.0.0.1".to_string(), 4566))
+        );
+        assert_eq!(routes.resolve("wiremock.atelier.internal"), None);
+    }
+
+    #[test]
+    fn malformed_simulator_entry_is_rejected() {
+        let mut routes = InternalRoutes::parse(None, None, None, None, None).unwrap();
+        assert!(routes.add_simulators("postgres-no-equals-sign").is_err());
     }
 }

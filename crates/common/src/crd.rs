@@ -58,6 +58,42 @@ pub struct WorkshopSpec {
     /// fait converger `status.phase` vers cet etat.
     #[serde(default)]
     pub desired_state: WorkshopDesiredState,
+    /// Simulateurs ephemeres deployes en sidecars dans le pod parent (spec
+    /// `docs/specs/14-devex-cli-simulateurs-hitl.md` §4, tache 9.3) :
+    /// dependances d'appoint (base de donnees, mock d'API) pour les tests de
+    /// l'agent, sans acces Internet et sans alourdir la microVM elle-meme.
+    /// Chaque entree devient joignable in-VM via `<name>.atelier.internal`
+    /// (voir `crates/net-proxy/src/internal.rs`).
+    #[serde(default)]
+    pub simulators: Vec<SimulatorSpec>,
+}
+
+/// Un simulateur sidecar declare pour un `Workshop` — voir la doc du champ
+/// `WorkshopSpec::simulators`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatorSpec {
+    /// Nom logique, unique parmi les simulateurs de ce Workshop : devient le
+    /// sous-domaine de l'alias `<name>.atelier.internal`. Independant de
+    /// `type_` pour permettre plusieurs instances d'un meme type (ex: deux
+    /// bases Postgres distinctes) sous des noms differents.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: SimulatorType,
+    /// Variables d'environnement transmises telles quelles au conteneur
+    /// sidecar (ex: `POSTGRES_DB`, `POSTGRES_PASSWORD` pour `Postgres`).
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Type d'un simulateur sidecar : determine l'image de conteneur et le port
+/// interne par defaut utilises par `crates/controller/src/reconcile.rs`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SimulatorType {
+    Postgres,
+    Localstack,
+    Wiremock,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default, PartialEq, Eq)]
@@ -267,6 +303,7 @@ mod tests {
                 owner_group: "atelier-core".into(),
                 owner_subject: "user@example.invalid".into(),
                 desired_state: WorkshopDesiredState::Running,
+                simulators: vec![],
             },
         );
 

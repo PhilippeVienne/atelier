@@ -73,6 +73,7 @@ fn sample_spec() -> WorkshopSpec {
         owner_group: "atelier-core".into(),
         owner_subject: "test-user".into(),
         desired_state: WorkshopDesiredState::Running,
+        simulators: vec![],
     }
 }
 
@@ -278,6 +279,136 @@ async fn apply_creates_owned_parent_pod_once_image_ready() {
     atelier_controller::reconcile::apply(&ctx, &with_digest)
         .await
         .expect("un deuxieme apply() doit rester idempotent");
+
+    let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
+        Api::namespaced(client.clone(), ns);
+    service_accounts
+        .delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    pods.delete(&expected_pod_name, &DeleteParams::default())
+        .await
+        .ok();
+    jobs.delete(&format!("{name}-image-build"), &foreground_delete())
+        .await
+        .ok();
+    workshops.delete(&name, &DeleteParams::default()).await.ok();
+}
+
+/// Tache 9.3 (spec `docs/specs/14-devex-cli-simulateurs-hitl.md` §4.3) :
+/// chaque entree de `Workshop.spec.simulators` doit devenir un conteneur
+/// sidecar du pod parent (nomme d'apres `SimulatorSpec::name`), et le
+/// conteneur `net-proxy` doit recevoir `ATELIER_SIMULATORS` avec l'alias
+/// correspondant — voir `crates/net-proxy/src/internal.rs::add_simulators`
+/// pour la resolution `<name>.atelier.internal` cote net-proxy (testee
+/// separement, en isolation, dans ce crate-la).
+#[tokio::test]
+async fn apply_creates_simulator_sidecar_containers_when_declared() {
+    let Some(client) = try_client().await else {
+        eprintln!("kubeconfig requis (cluster kind local, cf. commentaire en tete de fichier), test ignore");
+        return;
+    };
+
+    let ns = "default";
+    let name = unique_name("test-workshop-simulators");
+    let workshops: Api<Workshop> = Api::namespaced(client.clone(), ns);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), ns);
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let ctx = ctx_without_openbao(client.clone());
+
+    let mut spec = sample_spec();
+    spec.simulators = vec![
+        atelier_common::SimulatorSpec {
+            name: "postgres".to_string(),
+            type_: atelier_common::SimulatorType::Postgres,
+            env: [("POSTGRES_DB".to_string(), "testdb".to_string())].into(),
+        },
+        atelier_common::SimulatorSpec {
+            name: "mock".to_string(),
+            type_: atelier_common::SimulatorType::Wiremock,
+            env: Default::default(),
+        },
+    ];
+
+    let created = workshops
+        .create(&PostParams::default(), &Workshop::new(&name, spec))
+        .await
+        .expect("creation du Workshop");
+
+    let building_status = atelier_controller::reconcile::apply(&ctx, &created)
+        .await
+        .expect("premier apply()");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": building_status })),
+        )
+        .await
+        .expect("ecriture du statut initial");
+    workshops
+        .patch_status(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(&serde_json::json!({ "status": { "imageDigest": "sha256:deadbeef" } })),
+        )
+        .await
+        .expect("patch du statut");
+    let with_digest = workshops.get(&name).await.expect("get workshop");
+
+    atelier_controller::reconcile::apply(&ctx, &with_digest)
+        .await
+        .expect("apply() ne doit pas echouer");
+
+    let expected_pod_name = format!("{name}-parent");
+    let pod = pods
+        .get(&expected_pod_name)
+        .await
+        .expect("le pod parent doit avoir ete cree");
+    let containers = &pod.spec.as_ref().expect("pod spec").containers;
+
+    let postgres = containers
+        .iter()
+        .find(|c| c.name == "postgres")
+        .expect("conteneur sidecar 'postgres' attendu");
+    assert_eq!(postgres.image.as_deref(), Some("postgres:16-alpine"));
+    let postgres_env: std::collections::HashMap<_, _> = postgres
+        .env
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| (e.name.clone(), e.value.clone()))
+        .collect();
+    assert_eq!(
+        postgres_env.get("POSTGRES_DB").cloned().flatten(),
+        Some("testdb".to_string())
+    );
+    assert_eq!(
+        postgres_env.get("POSTGRES_PASSWORD").cloned().flatten(),
+        Some("postgres".to_string()),
+        "POSTGRES_PASSWORD doit avoir une valeur par defaut si non declaree"
+    );
+
+    let mock = containers
+        .iter()
+        .find(|c| c.name == "mock")
+        .expect("conteneur sidecar 'mock' attendu");
+    assert_eq!(mock.image.as_deref(), Some("wiremock/wiremock:3"));
+
+    let net_proxy = containers
+        .iter()
+        .find(|c| c.name == "net-proxy")
+        .expect("conteneur net-proxy attendu");
+    let net_proxy_simulators = net_proxy
+        .env
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|e| e.name == "ATELIER_SIMULATORS")
+        .and_then(|e| e.value.clone())
+        .expect("net-proxy doit recevoir ATELIER_SIMULATORS");
+    assert!(net_proxy_simulators.contains("postgres=127.0.0.1:5432"));
+    assert!(net_proxy_simulators.contains("mock=127.0.0.1:8080"));
 
     let service_accounts: Api<k8s_openapi::api::core::v1::ServiceAccount> =
         Api::namespaced(client.clone(), ns);

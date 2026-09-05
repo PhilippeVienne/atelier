@@ -249,6 +249,7 @@ impl WorkshopMcpServer {
                 owner_group,
                 owner_subject: user.subject,
                 desired_state: WorkshopDesiredState::Running,
+                simulators: vec![],
             },
         );
 
