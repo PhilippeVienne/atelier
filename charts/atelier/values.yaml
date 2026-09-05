@@ -51,6 +51,19 @@ tls:
   # porte qu'un host, ce qui reste le chemin le mieux teste de cert-manager
   # HTTP-01/DNS-01 et evite un seul secret multi-SAN comme point de
   # defaillance commun.
+  #
+  # `customCaBundle` (spec docs/specs/15-souverainete-airgap-inference-gpu.md
+  # §3.2, tache 11.1) est un concept DIFFERENT de ce qui precede : ce qui
+  # precede concerne les certificats SERVIS par les Ingress d'Atelier ;
+  # `customCaBundle` concerne les CA a faire confiance quand Atelier appelle
+  # une infrastructure d'entreprise EXTERNE deja derriere une CA privee
+  # (typiquement `keycloak.external.url` sur un IdP auto-heberge). PEM d'une
+  # ou plusieurs CA racine/intermediaires, monte en ConfigMap
+  # (`atelier-ca-bundle`) et pointe par `ATELIER_JWT_CA_PATH` cote
+  # `api-server` (`crates/api-server/src/auth.rs::fetch_jwks`) quand non deja
+  # positionnee explicitement via `apiServer.env`. Vide par defaut (aucune CA
+  # supplementaire).
+  customCaBundle: ""
 
 # ==============================================================================
 # Identités Cloud & Fallback Secrets Statiques (voir docs/admin-guide.md,

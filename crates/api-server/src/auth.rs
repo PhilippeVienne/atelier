@@ -80,17 +80,16 @@ impl TrustedIssuer {
     }
 
     pub async fn fetch_jwks(&self) -> Result<JwkSet> {
-        let mut builder = reqwest::Client::builder();
-        if let Some(ca_path) = &self.ca_path {
-            let pem = std::fs::read(ca_path)
-                .with_context(|| format!("lecture de ATELIER_JWT_CA_PATH ({ca_path})"))?;
-            let cert = reqwest::Certificate::from_pem(&pem)
-                .context("certificat CA invalide (PEM attendu)")?;
-            builder = builder.add_root_certificate(cert);
-        }
-        let client = builder
-            .build()
-            .context("construction du client HTTP pour le JWKS")?;
+        // `ATELIER_JWT_CA_PATH` (voir doc du champ `ca_path`) est un cas
+        // particulier du mecanisme generique
+        // `atelier_common::tls_client::client_builder_trusting_extra_ca`
+        // (spec docs/specs/15-souverainete-airgap-inference-gpu.md §3.2,
+        // tache 11.1) : garde son propre nom de variable pour ne pas casser
+        // les deploiements existants qui la positionnent deja.
+        let client =
+            atelier_common::tls_client::client_builder_trusting_extra_ca("ATELIER_JWT_CA_PATH")?
+                .build()
+                .context("construction du client HTTP pour le JWKS")?;
 
         client
             .get(&self.jwks_url)

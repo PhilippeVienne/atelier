@@ -21,6 +21,17 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 tracing-opentelemetry.workspace = true
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std"] }
+# Validation stricte d'un CA bundle PEM avant de le passer a
+# `reqwest::Certificate::from_pem` (tache 11.1) : verifie empiriquement que
+# `from_pem` ACCEPTE silencieusement un contenu totalement invalide (bytes
+# arbitraires, ou un bloc PEM avec un corps base64 corrompu) sans jamais
+# retourner d'erreur ni au parsing ni a `ClientBuilder::build()` — un CA
+# d'entreprise mal colle dans les values Helm serait donc ignore en silence,
+# avec un `CERTIFICATE_VERIFY_FAILED` opaque bien plus tard au premier appel
+# reseau. `rustls-pemfile` (deja une dependance transitive de `reqwest`/
+# `rustls` dans ce workspace, epingle ici en direct) decode reellement la
+# structure DER de chaque certificat PEM avant de faire confiance au bundle.
+rustls-pemfile = "2"
 # Stockage S3 hybride (`crate::storage`, deplace depuis `crates/api-server`
 # a la tache 8.2 pour etre partage par `image-builder`/`vm-supervisor`,
 # spec docs/specs/13-image-cache-offload.md §3.3). "rt-tokio" fournit
@@ -38,3 +49,4 @@ async-trait = "0.1.92"
 [dev-dependencies]
 serde_yaml = "0.9"
 sha2 = "0.10"
+tempfile = "3"

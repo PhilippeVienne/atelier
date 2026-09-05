@@ -3,6 +3,7 @@ pub mod openbao_client;
 pub mod status;
 pub mod storage;
 pub mod telemetry;
+pub mod tls_client;
 
 pub use crd::{
     DevcontainerSource, IdentityInjectionRule, SimulatorSpec, SimulatorType, Workshop,

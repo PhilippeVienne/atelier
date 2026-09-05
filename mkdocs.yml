@@ -104,6 +104,12 @@ nav:
       - 09. Validation QA Dynamique Post-Merge: specs/09-qa-validation-post-merge.md
       - 10. Installation Single-Node Low-Cost: specs/10-low-cost-single-node-install.md
       - 11. Configuration Admin des Modèles LiteLLM: specs/11-admin-litellm-model-config.md
+      - 12. Observabilité (Traces, Métriques, Logs): specs/12-observabilite.md
+      - 13. Offload S3 du Cache d'Images et Snapshots: specs/13-image-cache-offload.md
+      - 14. Expérience Dev, Simulateurs in-VM & HITL: specs/14-devex-cli-simulateurs-hitl.md
+      - 15. Souveraineté Absolue, Air-Gap & GPU Local: specs/15-souverainete-airgap-inference-gpu.md
+      - 16. Workflows Multi-Workshops & Équipes d'Agents: specs/16-escouades-multi-agents-swarms-mesh.md
+      - 17. Audit Immuable WORM, Replay & SWE-bench: specs/17-audit-immuable-worm-swebench.md
       - Plan d'Action Global & DoD: specs/PLAN-ACTION-GLOBAL.md
   - 🤝 Communauté & Gouvernance:
       - Guide de Contribution: contributing.md

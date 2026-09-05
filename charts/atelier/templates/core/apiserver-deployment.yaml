@@ -64,6 +64,19 @@ spec:
             - name: ATELIER_JWT_JWKS_URL
               value: "{{ .Values.keycloak.external.url }}/realms/{{ .Values.keycloak.realmName }}/protocol/openid-connect/certs"
             {{- end }}
+            {{- /*
+            `tls.customCaBundle` (tache 11.1) : un fournisseur OIDC externe
+            derriere une CA d'entreprise privee (`keycloak.external.url` en
+            HTTPS) fait echouer `fetch_jwks` (crates/api-server/src/auth.rs)
+            sans cette CA supplementaire — `reqwest` (backend rustls) ne
+            consulte jamais le magasin systeme. N'ecrase jamais une valeur
+            deja fournie explicitement via `apiServer.env.ATELIER_JWT_CA_PATH`
+            (ex: CA distincte de la CA generale, cas rare mais possible).
+            */}}
+            {{- if and .Values.tls.customCaBundle (not (hasKey .Values.apiServer.env "ATELIER_JWT_CA_PATH")) }}
+            - name: ATELIER_JWT_CA_PATH
+              value: /etc/atelier/ca/ca.crt
+            {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -121,4 +134,16 @@ spec:
             periodSeconds: 20
           resources:
             {{- toYaml .Values.apiServer.resources | nindent 12 }}
+          {{- if .Values.tls.customCaBundle }}
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: /etc/atelier/ca
+              readOnly: true
+          {{- end }}
+      {{- if .Values.tls.customCaBundle }}
+      volumes:
+        - name: ca-bundle
+          configMap:
+            name: {{ include "atelier.componentName" (dict "root" $ "component" "ca-bundle") }}
+      {{- end }}
 {{- end }}

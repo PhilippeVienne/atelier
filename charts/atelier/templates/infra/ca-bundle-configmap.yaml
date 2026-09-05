@@ -1,0 +1,16 @@
+{{- if .Values.tls.customCaBundle }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atelier.componentName" (dict "root" $ "component" "ca-bundle") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" $ | nindent 4 }}
+data:
+  # Un seul fichier concatenable (une ou plusieurs CA), monte tel quel par
+  # les Deployments qui en ont besoin (`crates/api-server/src/auth.rs::
+  # fetch_jwks`, spec docs/specs/15-souverainete-airgap-inference-gpu.md
+  # §3.2, tache 11.1).
+  ca.crt: |
+    {{- .Values.tls.customCaBundle | nindent 4 }}
+{{- end }}
