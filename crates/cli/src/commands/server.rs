@@ -119,6 +119,14 @@ pub async fn doctor() -> Result<()> {
         blocking: true,
     });
 
+    // Non bloquant : le GPU n'est necessaire qu'a `--enable-gpu` (tache
+    // 11.4), jamais pour une installation standard.
+    checks.push(CheckResult {
+        name: "GPU NVIDIA (optionnel, --enable-gpu)",
+        outcome: detect_nvidia_gpu(),
+        blocking: false,
+    });
+
     let mut any_blocking_failure = false;
     for check in &checks {
         match &check.outcome {
@@ -170,6 +178,49 @@ fn total_memory_gib() -> std::result::Result<f64, String> {
     Ok(kib / 1024.0 / 1024.0)
 }
 
+/// Detection GPU REELLE (tache 11.4, spec docs/specs/15-souverainete-airgap-
+/// inference-gpu.md §3.1) : interroge le pilote NVIDIA via `nvidia-smi`
+/// (`nvidia-smi` parle a NVML, le pilote charge en espace noyau — une vraie
+/// requete, pas juste `ls /dev/nvidia*`, qui peut exister sans pilote
+/// fonctionnel derriere, ou etre absent alors qu'un GPU est present mais mal
+/// configure). Meme principe que la verification KVM ci-dessus
+/// (`kvm_ioctls::Kvm::new()`, un ioctl reel plutot que `/dev/kvm.exists()`).
+///
+/// Verifie EN PLUS que `nvidia-container-toolkit` est installe
+/// (`nvidia-container-runtime` dans le `PATH`) : sans lui, k3s/containerd ne
+/// peut exposer aucun GPU aux pods (`nvidia.com/gpu` resterait a `0` sur le
+/// noeud quel que soit le materiel reellement present) — un pilote hote
+/// fonctionnel ne suffit pas a lui seul.
+fn detect_nvidia_gpu() -> std::result::Result<String, String> {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=name,memory.total", "--format=csv,noheader"])
+        .output()
+        .map_err(|e| format!("`nvidia-smi` introuvable ou injoignable ({e})"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("`nvidia-smi` a echoue : {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_gpu = stdout
+        .lines()
+        .next()
+        .ok_or_else(|| "`nvidia-smi` n'a signale aucun GPU".to_string())?
+        .trim()
+        .to_string();
+    if first_gpu.is_empty() {
+        return Err("`nvidia-smi` n'a signale aucun GPU".to_string());
+    }
+
+    match which("nvidia-container-runtime") {
+        Ok(()) => Ok(first_gpu),
+        Err(_) => Err(format!(
+            "{first_gpu} detecte, mais `nvidia-container-runtime` est absent du PATH — \
+             installer `nvidia-container-toolkit` avant `--enable-gpu`, sans quoi k3s ne \
+             pourra jamais exposer ce GPU aux pods"
+        )),
+    }
+}
+
 /// Tente une vraie liaison TCP sur le port : distingue "deja utilise"
 /// (`AddrInUse`) de "permissions insuffisantes" (`PermissionDenied`, ports
 /// < 1024 sans privilege) plutot que de tout confondre en un echec generique.
@@ -204,13 +255,29 @@ fn run(pb: &ProgressBar, program: &str, args: &[&str]) -> Result<()> {
 /// session (voir la doc de tete de module) — implementation portee du
 /// script shell, a verifier contre un vrai serveur/VM avant de s'y fier en
 /// production.
-pub async fn install(domain: String, email: String, openbao_production: bool) -> Result<()> {
+pub async fn install(
+    domain: String,
+    email: String,
+    openbao_production: bool,
+    enable_gpu: bool,
+) -> Result<()> {
     if !nix_is_root() {
         bail!("`atelier server install` doit s'executer en root (ou via sudo)");
     }
     doctor().await.context(
         "prerequis non remplis (`atelier server doctor`) — installation annulee avant toute modification",
     )?;
+
+    // Echec explicite plutot qu'un chart installe avec `gpu.enabled: true`
+    // dont le `StatefulSet` vLLM resterait `Pending` a jamais (`doctor`
+    // liste ce meme diagnostic, mais en avertissement non bloquant —
+    // `--enable-gpu` transforme l'intention explicite de l'operateur en
+    // exigence bloquante).
+    if enable_gpu {
+        detect_nvidia_gpu()
+            .map_err(|reason| anyhow::anyhow!(reason))
+            .context("--enable-gpu demande mais aucun GPU NVIDIA utilisable n'a ete detecte")?;
+    }
 
     let dir = install_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creation de {dir}"))?;
@@ -324,7 +391,13 @@ pub async fn install(domain: String, email: String, openbao_production: bool) ->
 
     let credentials = ensure_credentials(&dir, openbao_production)?;
     let values_path = format!("{dir}/values-generated.yaml");
-    write_values_file(&values_path, &domain, &credentials, openbao_production)?;
+    write_values_file(
+        &values_path,
+        &domain,
+        &credentials,
+        openbao_production,
+        enable_gpu,
+    )?;
 
     let repo_dir = format!("{dir}/src");
     ensure_repo_cloned(&repo_dir)?;
@@ -572,8 +645,9 @@ fn write_values_file(
     domain: &str,
     creds: &Credentials,
     openbao_production: bool,
+    enable_gpu: bool,
 ) -> Result<()> {
-    let content = format!(
+    let mut content = format!(
         "# Genere par `atelier server install` — ne pas committer, ne pas partager.\n\
          domains:\n  keycloak: \"auth.{domain}\"\n  forgejo: \"git.{domain}\"\n  dashboard: \"app.{domain}\"\n  apiServer: \"api.{domain}\"\n\n\
          ingress:\n  className: \"nginx\"\n\n\
@@ -589,6 +663,16 @@ fn write_values_file(
         creds.litellm_salt_key,
         !openbao_production,
     );
+    // `resources.limits."nvidia.com/gpu"` explicite a 1 (deja la valeur par
+    // defaut du chart, spec docs/specs/15-souverainete-airgap-inference-
+    // gpu.md §3.1, tache 11.3) : un seul GPU par machine single-node, jamais
+    // plusieurs — cette commande installe un serveur MONO-noeud (voir le
+    // module de tete de ce fichier).
+    if enable_gpu {
+        content.push_str(
+            "gpu:\n  enabled: true\n  resources:\n    limits:\n      \"nvidia.com/gpu\": 1\n",
+        );
+    }
     std::fs::write(path, content).with_context(|| format!("ecriture de {path}"))?;
     set_owner_only(path)
 }

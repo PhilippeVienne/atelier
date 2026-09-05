@@ -109,6 +109,13 @@ enum ServerCommand {
         email: String,
         #[arg(long)]
         openbao_production: bool,
+        /// Active l'inference GPU locale (backend vLLM, spec
+        /// docs/specs/15-souverainete-airgap-inference-gpu.md §3.1, tache
+        /// 11.3) : echoue explicitement si aucun GPU NVIDIA n'est reellement
+        /// detecte (`nvidia-smi`, pas seulement `/dev/nvidia*`) plutot que
+        /// d'installer silencieusement un backend qui ne demarrera jamais.
+        #[arg(long)]
+        enable_gpu: bool,
     },
     /// Etat des pods du namespace Atelier.
     Status,
@@ -288,7 +295,8 @@ async fn main() -> anyhow::Result<()> {
                 domain,
                 email,
                 openbao_production,
-            } => commands::server::install(domain, email, openbao_production).await,
+                enable_gpu,
+            } => commands::server::install(domain, email, openbao_production, enable_gpu).await,
             ServerCommand::Status => commands::server::status().await,
             ServerCommand::Upgrade => commands::server::upgrade().await,
             ServerCommand::Uninstall => commands::server::uninstall().await,
