@@ -29,6 +29,14 @@ export interface WorkshopResources {
   disk?: string | null;
 }
 
+/** Port applicatif expose aux autres Workshops d'une meme campagne (tache
+ *  12.1/12.6, spec docs/specs/16-escouades-multi-agents-swarms-mesh.md
+ *  §3.2). */
+export interface ExportedService {
+  name: string;
+  port: number;
+}
+
 export interface WorkshopSpec {
   devcontainer: DevcontainerSource;
   resources: WorkshopResources;
@@ -36,6 +44,19 @@ export interface WorkshopSpec {
   tools: string[];
   ownerSubject: string;
   desiredState: "Running" | "Suspended";
+  /** Escouades multi-Workshops (tache 12.6) : `null`/absent du CRD = Workshop
+   *  solitaire, exclu de la vue Campagnes. Toujours PRESENT dans la reponse
+   *  JSON de l'api-server (`Option<String>` cote Rust, jamais omis a la
+   *  serialisation — contrairement a `podName`/`imageDigest` sur
+   *  `WorkshopStatus`, qui eux le sont). */
+  campaignId: string | null;
+  /** Toujours present (`Vec<T>` cote Rust, jamais `Option`) : `[]` pour un
+   *  Workshop qui n'exporte rien. */
+  exportedServices: ExportedService[];
+  /** Format `<service>.<workshop-cible>.atelier.internal:<port>` — voir
+   *  `crates/net-proxy/src/internal.rs`, table `squad`. Toujours present,
+   *  meme convention que `exportedServices`. */
+  allowedInternalTargets: string[];
 }
 
 export interface WorkshopStatus {

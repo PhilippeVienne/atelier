@@ -47,6 +47,7 @@ export async function TopNav({
             <NavLink href="/pipeline">Pipeline</NavLink>
             <NavLink href="/projects">Projets</NavLink>
             <NavLink href="/workshops">Workshops</NavLink>
+            <NavLink href="/campaigns">Campagnes</NavLink>
             {isAdmin && <NavLink href="/admin/llm">LLM</NavLink>}
           </nav>
         </div>
