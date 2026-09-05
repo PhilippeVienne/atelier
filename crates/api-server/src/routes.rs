@@ -10,7 +10,7 @@ use atelier_common::{
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, patch, post};
 use axum::{Json, Router};
 use k8s_openapi::api::core::v1::{Event as K8sEvent, Pod};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
@@ -103,6 +103,11 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
         )
         .route("/v1/admin/llm", get(admin_llm_overview))
         .route("/v1/admin/llm/spend", get(admin_llm_spend))
+        .route("/v1/admin/llm/models", post(admin_llm_create_model))
+        .route(
+            "/v1/admin/llm/models/{id}",
+            patch(admin_llm_update_model).delete(admin_llm_delete_model),
+        )
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
             get(crate::exec::stream_handler),
@@ -473,6 +478,103 @@ async fn admin_llm_overview(
         ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
     })?;
     Ok(Json(client.overview().await))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateLlmModelRequest {
+    model_name: String,
+    target: String,
+    api_base: Option<String>,
+    api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateLlmModelRequest {
+    model_name: String,
+    target: String,
+    api_base: Option<String>,
+    /// `None` : ne change pas l'identifiant enregistre (voir
+    /// `LlmBudgetClient::update_model`, comportement cote LiteLLM non
+    /// encore verifie empiriquement dans ce cas).
+    api_key: Option<String>,
+}
+
+/// Ajoute un modele/provider a la passerelle LiteLLM (spec
+/// `docs/specs/11-admin-litellm-model-config.md`). Reserve a `ADMIN_ROLE`,
+/// meme controle cote serveur que le reste de la console admin.
+async fn admin_llm_create_model(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<CreateLlmModelRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+    let id = client
+        .create_model(
+            &body.model_name,
+            &body.target,
+            body.api_base.as_deref(),
+            &body.api_key,
+        )
+        .await
+        .map_err(ApiError::bad_gateway)?;
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+/// Modifie un modele existant. `api_key` absent du corps = identifiant
+/// inchange (le formulaire ne le reaffiche jamais, spec §4.1).
+async fn admin_llm_update_model(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateLlmModelRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+    client
+        .update_model(
+            &id,
+            &body.model_name,
+            &body.target,
+            body.api_base.as_deref(),
+            body.api_key.as_deref(),
+        )
+        .await
+        .map_err(ApiError::bad_gateway)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Retire un modele de la passerelle LiteLLM.
+async fn admin_llm_delete_model(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let client = state.llm_budget.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable("passerelle LiteLLM non configuree sur cette instance")
+    })?;
+    client
+        .delete_model(&id)
+        .await
+        .map_err(ApiError::bad_gateway)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Consommation LLM d'un Workshop (`crate::llm_budget`).

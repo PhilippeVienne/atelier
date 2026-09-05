@@ -165,6 +165,12 @@ pub struct LlmOverview {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmModel {
+    /// Identifiant stable attribue par LiteLLM aux entrees de `model_list`
+    /// creees dynamiquement (`model_info.id`, verifie empiriquement contre
+    /// `/model/new` — voir `docs/specs/11-admin-litellm-model-config.md`
+    /// §3.2). `None` pour une entree statique du `config.yaml` (cas du
+    /// cluster de dev) : `update`/`delete` n'ont alors rien a cibler.
+    pub id: Option<String>,
     /// Nom expose aux clients (`claude-3-5-sonnet-20241022`, `*`...).
     pub name: String,
     /// Modele reellement appele derriere cet alias.
@@ -225,6 +231,8 @@ struct ModelInfoEntry {
     model_name: Option<String>,
     #[serde(default)]
     litellm_params: Option<serde_json::Value>,
+    #[serde(default)]
+    model_info: Option<serde_json::Value>,
 }
 
 impl LlmBudgetClient {
@@ -262,7 +270,9 @@ impl LlmBudgetClient {
                     .into_iter()
                     .filter_map(|entry| {
                         let params = entry.litellm_params.unwrap_or(serde_json::Value::Null);
+                        let info = entry.model_info.unwrap_or(serde_json::Value::Null);
                         Some(LlmModel {
+                            id: info.get("id").and_then(|v| v.as_str()).map(str::to_string),
                             name: entry.model_name?,
                             target: params
                                 .get("model")
@@ -331,6 +341,110 @@ impl LlmBudgetClient {
             models,
             keys,
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelWriteResponse {
+    model_info: ModelWriteInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelWriteInfo {
+    id: String,
+}
+
+impl LlmBudgetClient {
+    fn model_payload(
+        model_name: &str,
+        target: &str,
+        api_base: Option<&str>,
+        api_key: Option<&str>,
+    ) -> serde_json::Value {
+        let mut litellm_params = serde_json::json!({ "model": target });
+        if let Some(base) = api_base {
+            litellm_params["api_base"] = serde_json::Value::String(base.to_string());
+        }
+        if let Some(key) = api_key {
+            litellm_params["api_key"] = serde_json::Value::String(key.to_string());
+        }
+        serde_json::json!({ "model_name": model_name, "litellm_params": litellm_params })
+    }
+
+    async fn post_model_mutation(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, String> {
+        let response = self
+            .http
+            .post(format!("http://{}{path}", self.addr))
+            .bearer_auth(&self.master_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("passerelle LiteLLM injoignable : {e}"))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("LiteLLM a repondu {status} : {text}"));
+        }
+        Ok(response)
+    }
+
+    /// Ajoute un modele a `model_list` (`POST /model/new`, verifie
+    /// empiriquement contre le cluster de dev — spec 11 §3.1). Renvoie l'`id`
+    /// genere par LiteLLM, seule cible valide de `update_model`/`delete_model`
+    /// (`model_name` n'est pas garanti unique, voir spec 11 §3.2).
+    ///
+    /// Precondition (verifiee de la meme facon) : `STORE_MODEL_IN_DB=True`
+    /// doit etre positionnee sur le deploiement LiteLLM, sans quoi cet appel
+    /// echoue systematiquement avec `500`.
+    pub async fn create_model(
+        &self,
+        model_name: &str,
+        target: &str,
+        api_base: Option<&str>,
+        api_key: &str,
+    ) -> Result<String, String> {
+        let body = Self::model_payload(model_name, target, api_base, Some(api_key));
+        let response = self.post_model_mutation("/model/new", &body).await?;
+        let parsed: ModelWriteResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("reponse LiteLLM inattendue : {e}"))?;
+        Ok(parsed.model_info.id)
+    }
+
+    /// Modifie un modele existant (`POST /model/update`, cible par
+    /// `model_info.id` dans le corps — verifie empiriquement, spec 11 §3.1).
+    ///
+    /// `api_key: None` omet le champ du payload envoye a LiteLLM plutot que
+    /// d'y mettre une chaine vide : conforme a la convention write-only de la
+    /// console (spec 11 §4.1, jamais reafficher un identifiant enregistre),
+    /// mais le comportement resultant cote LiteLLM (conserve l'ancienne
+    /// valeur vs. l'efface) n'a PAS ete verifie empiriquement — seul le cas
+    /// "toutes les valeurs fournies" l'a ete. A verifier avant `6.7.4`.
+    pub async fn update_model(
+        &self,
+        id: &str,
+        model_name: &str,
+        target: &str,
+        api_base: Option<&str>,
+        api_key: Option<&str>,
+    ) -> Result<(), String> {
+        let mut body = Self::model_payload(model_name, target, api_base, api_key);
+        body["model_info"] = serde_json::json!({ "id": id });
+        self.post_model_mutation("/model/update", &body).await?;
+        Ok(())
+    }
+
+    /// Retire un modele (`POST /model/delete`, body `{"id": ...}` — verifie
+    /// empiriquement, spec 11 §3.1).
+    pub async fn delete_model(&self, id: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "id": id });
+        self.post_model_mutation("/model/delete", &body).await?;
+        Ok(())
     }
 }
 
