@@ -134,6 +134,12 @@ spec:
             - name: S3_BUCKET_IMAGE_CACHE
               value: {{ .Values.s3Storage.buckets.imageCache | quote }}
             {{- end }}
+            # Eviction LRU du cache d'images (spec docs/specs/13-image-
+            # cache-offload.md, tache 8.5) : sans effet si S3_BUCKET_
+            # IMAGE_CACHE n'est pas configure ci-dessus (l'eviction reste
+            # alors desactivee, voir crate::eviction).
+            - name: ATELIER_IMAGE_CACHE_EVICTION_THRESHOLD_GB
+              value: {{ .Values.imageCache.evictionThresholdGb | quote }}
             {{- range $k, $v := .Values.controller.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

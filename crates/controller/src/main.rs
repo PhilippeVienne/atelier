@@ -68,5 +68,18 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Passe periodique d'eviction LRU du cache d'images (spec
+    // docs/specs/13-image-cache-offload.md, tache 8.5) : boucle
+    // independante du cycle de reconciliation, ne fait rien si S3 n'est pas
+    // configure (voir `eviction::run_periodic`).
+    let eviction_namespace =
+        std::env::var("ATELIER_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    tokio::spawn(atelier_controller::eviction::run_periodic(
+        kube::Client::try_default()
+            .await
+            .context("construction du client Kubernetes (eviction)")?,
+        eviction_namespace,
+    ));
+
     atelier_controller::reconcile::run().await
 }

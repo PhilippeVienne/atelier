@@ -29,6 +29,7 @@ attendus et font partie du processus, ils sont consignes dans
 | `kvm-device-plugin` | Fonctionnel | Expose `/dev/kvm`+`/dev/net/tun` via device plugin kubelet, verifie contre kind |
 | `crates/builder-vm-init` | Fonctionnel | Cycle boot+reseau+`envbuilder`+extinction verifie de bout en bout |
 | Boucle Workshop → pod → microVM `Running` | Fonctionnel (automatique) | `kubectl apply` declenche build + boot sans peuplage manuel du cache |
+| Cache d'images/snapshots — offload S3 + eviction LRU | Fonctionnel | PVC local = cache chaud, S3 = source durable ; correctif d'une fuite reelle (snapshots orphelins a la suppression d'un Workshop) — `docs/specs/13-image-cache-offload.md` |
 | `api-server` | Fonctionnel | JWT OIDC (JWKS), CRUD/suspend/resume `Workshop`, port-forward WS, ponts `code-server`/`ttyd` |
 | `net-proxy` — egress/port-forward/DNS | Fonctionnel | Allowlist + passerelle transparente + websocket port-forward + resolveur DNS, testes reellement |
 | `identity-proxy` | Fonctionnel | Injection d'en-tete depuis OpenBao, verifie contre un vrai pod |
@@ -45,9 +46,9 @@ attendus et font partie du processus, ils sont consignes dans
 
 ## Prochaines etapes
 
-- Offload/reload du cache d'images `image-builder` vers S3 (prevu des la
-  conception, encore un `TODO` dans `crates/image-builder/src/main.rs`).
-- Stack d'observabilite complet : collector OTLP + backend de stockage + Grafana.
+Jalons M1 a M8 entierement `[x]`. Voir `docs/specs/PLAN-ACTION-GLOBAL.md`
+pour le jalon M9 (Experience Dev CLI/Pont IDE, simulateurs in-VM, HITL),
+pas encore commence.
 
 > Le récit complet des jalons 1 à 6 (microVM builder, canal suspend/resume,
 > reseau du pod parent, OAuth2/OIDC, `mcp-gateway`, device plugin `/dev/kvm`,

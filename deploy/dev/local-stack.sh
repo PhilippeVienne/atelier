@@ -393,6 +393,10 @@ export AWS_SECRET_ACCESS_KEY="atelier-rustfs-secret-key"
 export S3_BUCKET_SESSIONS="atelier-sessions"
 export S3_BUCKET_SNAPSHOTS="atelier-snapshots"
 export S3_BUCKET_IMAGE_CACHE="atelier-image-cache"
+# Eviction LRU du cache d'images (spec docs/specs/13-image-cache-
+# offload.md, tache 8.5) : bas en dev (1Gi) pour observer l'eviction
+# rapidement plutot que d'attendre un vrai remplissage.
+export ATELIER_IMAGE_CACHE_EVICTION_THRESHOLD_GB="1"
 export S3_FORCE_PATH_STYLE="true"
 
 # Forgejo — via l'ingress Traefik (necessite /etc/hosts a jour).

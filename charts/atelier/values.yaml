@@ -257,6 +257,20 @@ litellm:
       memory: 1536Mi
 
 # ------------------------------------------------------------------------
+# Cache d'images (PVC partage) : eviction LRU (spec
+# docs/specs/13-image-cache-offload.md §3.1/8.5)
+# ------------------------------------------------------------------------
+imageCache:
+  # Plafond (Gio) au-dela duquel le controller evince les entrees les moins
+  # recemment accedees, jamais sans confirmer leur presence sur S3 au
+  # prealable (voir crates/controller/src/eviction.rs). Marge sous la
+  # taille nominale du PVC (20Gi, `storage::ensure_image_cache_pvc`) :
+  # laisse de la place aux snapshots (meme PVC) et a un build en cours.
+  # Sans effet si S3_BUCKET_IMAGE_CACHE n'est pas configure (l'eviction
+  # reste alors desactivee).
+  evictionThresholdGb: 15
+
+# ------------------------------------------------------------------------
 # Observabilite : traces/metriques/logs (spec docs/specs/12-observabilite.md)
 # ------------------------------------------------------------------------
 observability:
