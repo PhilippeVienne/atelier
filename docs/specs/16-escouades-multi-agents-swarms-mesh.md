@@ -111,19 +111,17 @@ Pour que le Frontend puisse tester dynamiquement l'API du Backend pendant son d�
    - Vérification (`crate::ingress::relay_one`) : lit la première ligne (timeout 5s), la vérifie via `squad_token::verify`, ferme la connexion AVANT tout relais vers le guest si absente/invalide/expirée — en plus, jamais à la place, de la `NetworkPolicy` de la tâche 12.1 (défense en profondeur au niveau paquet, pas une preuve d'identité applicative).
    - Les règles d'allowlist egress vers Internet restent 100% actives et indépendantes (mécanisme orthogonal, non touché par cette tâche).
 
-### 3.3. Isolation et Consolidation Git
+### 3.3. Isolation et Consolidation Git — tâche 12.4, **déjà entièrement implémentée depuis le Jalon M5**
 
-1. **Branches Dédiées par Rôle** :
-   - `pm-engine` provisionne une sous-branche par Workshop à partir de l'issue mère :
-     - `feature/auth-backend`
-     - `feature/auth-frontend`
-2. **Consolidation Automatisée par `pm-engine`** :
-   - Une fois les tests de chaque sous-branche validés :
-     1. `pm-engine` fusionne les sous-branches sur une branche d'intégration commune.
-     2. Déclenche le Workshop QA pour exécuter les tests end-to-end de non-régression.
-     3. Si les tests passent, génère une Pull Request unique avec le résumé consolidé des modifications.
-3. **Porte d'Approbation Humaine (HITL)** :
-   - Aucune fusion sur la branche principale (`main`) ne s'effectue sans approbation explicite d'un développeur via le Dashboard ou la CLI (`atelier approvals approve`).
+**Découverte faite en vérifiant** (même situation que la spec 14 vis-à-vis du Jalon M9) : cette section décrit un mécanisme qui existe déjà intégralement dans `pm-engine` depuis le Jalon M5, AVANT même la rédaction de cette spec — aucun nouveau code n'était nécessaire pour la tâche 12.4.
+1. **Branches Dédiées par Rôle** — déjà fait : `plan_parallel_tasks` (`pm_engine/nodes.py`) attribue `branch_name=f"feature/{issue_number}-{task_id}"` à chaque `SubTask`, `provision_workshop` crée réellement cette branche par sous-tâche.
+2. **Consolidation Automatisée** — déjà fait, dans l'ordre exact décrit ci-dessus, sous des noms de nœuds différents :
+   1. `integrate_sub_tasks` fusionne (`git merge --no-edit`) toutes les branches de sous-tâches dans celle de la PREMIÈRE sous-tâche (qui sert de "branche d'intégration commune"), exécuté réellement dans le Workshop de cette première sous-tâche (`exec_in_workshop`) — un conflit de fusion n'échoue jamais tout le run (`integration_conflicts` propagé, signalé explicitement dans la PR plutôt que de bloquer silencieusement).
+   2. `run_devcontainer_tests` exécute `.devcontainer/test.sh` dans CE MÊME Workshop intégré (pas un Workshop QA séparé — inutile de dupliquer l'environnement puisque l'intégration a déjà eu lieu là) : c'est la suite de tests de l'ENSEMBLE réuni, pas celle d'une seule sous-tâche isolée.
+   3. `open_pull_request` ouvre UNE SEULE Pull Request (tête = branche de la première sous-tâche, donc déjà porteuse de la fusion), avec un résumé consolidé (`body`, incluant l'état des tests et les éventuels conflits d'intégration non résolus).
+3. **Porte d'Approbation Humaine (HITL)** — déjà fait : `AwaitHitlApproval`/`route_after_hitl`/`MergeAndClose`, aucune fusion sur `main` sans décision explicite (Dashboard ou CLI `atelier approvals approve`, tâche 9.6).
+
+Non fait, resté hors de portée de M5 comme de cette tâche : un Workshop QA physiquement DISTINCT dédié aux tests e2e (la spec l'envisageait, l'implémentation réelle réutilise le Workshop d'intégration — plus simple, sans duplication d'environnement, jugé suffisant faute de besoin identifié d'isolement supplémentaire à ce stade).
 
 ### 3.4. Gestion Consolidée des Budgets LLM
 
