@@ -78,6 +78,12 @@ spec:
           env:
             - name: DATABASE_URL
               value: postgresql://litellm:dev-only-not-for-production@atelier-llm-proxy-db:5432/litellm
+            # Sans cette variable, /model/new, /model/update et /model/delete
+            # renvoient 500 "Set STORE_MODEL_IN_DB=True..." (verifie
+            # empiriquement, voir docs/specs/11-admin-litellm-model-config.md
+            # §3.1).
+            - name: STORE_MODEL_IN_DB
+              value: "True"
           envFrom:
             - secretRef:
                 name: atelier-llm-proxy-dev
