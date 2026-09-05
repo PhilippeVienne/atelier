@@ -59,7 +59,17 @@ pub async fn record_http_metrics(
     let attrs = [
         KeyValue::new("http.method", method),
         KeyValue::new("http.route", route),
-        KeyValue::new("http.status_code", response.status().as_u16() as i64),
+        // `http.response.status_code`, pas l'ancien `http.status_code`
+        // (deprecie) : c'est le nom attendu par le panneau "Error Rate" du
+        // dashboard "RED Metrics" deja auto-provisionne par
+        // `grafana/otel-lgtm` (verifie empiriquement — les panneaux
+        // Request Rate/Duration fonctionnaient deja avec nos metriques,
+        // seul celui-ci filtrait sur un nom d'attribut que nous ne
+        // produisions pas).
+        KeyValue::new(
+            "http.response.status_code",
+            response.status().as_u16() as i64,
+        ),
     ];
     let m = metrics();
     m.requests.add(1, &attrs);

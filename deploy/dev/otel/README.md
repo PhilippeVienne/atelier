@@ -20,12 +20,15 @@ open http://127.0.0.1:3000
 
 ## Branchement côté binaires Rust
 
-`crates/common/src/telemetry.rs` exporte des traces OTLP dès que `OTEL_EXPORTER_OTLP_ENDPOINT` est présente dans l'environnement — `local-stack.sh` la positionne automatiquement dans `env.sh` (`http://127.0.0.1:4317`, port-forward local puisque `controller`/`api-server` tournent hors cluster en dev).
+`crates/common/src/telemetry.rs` exporte traces ET métriques OTLP dès que `OTEL_EXPORTER_OTLP_ENDPOINT` est présente dans l'environnement — `local-stack.sh` la positionne automatiquement dans `env.sh` (`http://127.0.0.1:4317`, port-forward local puisque `controller`/`api-server` tournent hors cluster en dev). `api-server` (`crate::routes`, `TraceLayer`+`crate::http_metrics`) et `controller` (`#[tracing::instrument]` sur la boucle de réconciliation) exportent tous les deux.
+
+## Dashboard : déjà là, pas besoin d'en construire un
+
+L'image auto-provisionne un dashboard **« RED Metrics »** (Request rate, Error rate, Duration) — cherchez « RED » dans la recherche Grafana. Ses requêtes correspondent aux noms de métriques produits par `crate::http_metrics` (`http_server_duration_milliseconds_*`), vérifié empiriquement contre du trafic réel.
 
 ## Limites assumées (dev)
 
 - **Volume éphémère** : aucune persistance, un redémarrage du pod perd tout l'historique (voir spec §5).
-- **`api-server` n'exporte encore aucune trace** (spec §4.1, tâche 7.3) : seule la boucle de réconciliation du `controller` est aujourd'hui instrumentée (§4.2 de la spec).
 
 Pour tout arrêter/réinitialiser :
 `kubectl delete -f deploy/dev/otel/dev-deployment.yaml`.
