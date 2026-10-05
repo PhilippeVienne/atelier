@@ -84,6 +84,7 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
    - *Lire [`docs/specs/12-observabilite.md`](docs/specs/12-observabilite.md) avant d'éditer `crates/common/src/telemetry.rs` ou d'ajouter un span/une métrique dans un binaire Rust.*
 9. **Sur le cache d'images/snapshots (PVC partagé, offload S3)** :
    - *Lire [`docs/specs/13-image-cache-offload.md`](docs/specs/13-image-cache-offload.md) avant d'éditer `crates/controller/src/storage.rs`, `crates/image-builder/src/main.rs::publish_to_cache`, ou `crates/api-server/src/storage.rs`.*
+   - *Lire [`docs/specs/18-reutilisation-images-par-source.md`](docs/specs/18-reutilisation-images-par-source.md) avant d'éditer `crates/controller/src/reconcile.rs::ensure_image_build_job` ou le nommage des images dans `crates/image-builder` et `crates/builder-vm-init`.*
 
 ---
 
