@@ -110,6 +110,7 @@ nav:
       - 15. Souveraineté Absolue, Air-Gap & GPU Local: specs/15-souverainete-airgap-inference-gpu.md
       - 16. Workflows Multi-Workshops & Équipes d'Agents: specs/16-escouades-multi-agents-swarms-mesh.md
       - 17. Audit Immuable WORM, Replay & SWE-bench: specs/17-audit-immuable-worm-swebench.md
+      - 18. Réutilisation des Images par Source: specs/18-reutilisation-images-par-source.md
       - Plan d'Action Global & DoD: specs/PLAN-ACTION-GLOBAL.md
   - 🤝 Communauté & Gouvernance:
       - Guide de Contribution: contributing.md
