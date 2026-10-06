@@ -123,6 +123,9 @@ async fn main() -> Result<()> {
     tracing::info!("checking for an init system, installing a minimal fallback if absent");
     ensure_init_system(&rootfs_dir).await?;
 
+    tracing::info!("checking that the image can boot and start its atelier services");
+    check_boot_prerequisites(&rootfs_dir)?;
+
     tracing::info!("packaging rootfs as ext4");
     let ext4_path = work_dir.join("rootfs.ext4");
     package_ext4(&rootfs_dir, &ext4_path).await?;
@@ -1665,6 +1668,130 @@ async fn ensure_init_system(rootfs_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resout `path` (absolu, vu du guest) A L'INTERIEUR de `rootfs_dir`, en
+/// suivant les liens symboliques comme le ferait le guest : un lien absolu
+/// (`/sbin -> /usr/sbin`, `/sbin/init -> /lib/systemd/systemd`) repart de
+/// la racine du rootfs, pas de celle de la machine qui construit l'image.
+/// `rootfs_dir.join("sbin/init").exists()` repondrait pour l'hote des
+/// qu'un lien absolu se trouve sur le chemin.
+fn exists_in_rootfs(rootfs_dir: &Path, path: &str) -> bool {
+    // Borne le nombre de liens suivis : une boucle de liens n'existe pas.
+    let mut links_left = 32;
+    let mut pending: Vec<String> = path
+        .split('/')
+        .rev()
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut resolved = PathBuf::new();
+    while let Some(part) = pending.pop() {
+        match part.as_str() {
+            "." => continue,
+            ".." => {
+                resolved.pop();
+                continue;
+            }
+            _ => {}
+        }
+        let candidate = rootfs_dir.join(&resolved).join(&part);
+        let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+            return false;
+        };
+        if !metadata.file_type().is_symlink() {
+            resolved.push(&part);
+            continue;
+        }
+        if links_left == 0 {
+            return false;
+        }
+        links_left -= 1;
+        let Ok(target) = std::fs::read_link(&candidate) else {
+            return false;
+        };
+        if target.is_absolute() {
+            resolved.clear();
+        }
+        pending.extend(
+            target
+                .to_string_lossy()
+                .split('/')
+                .rev()
+                .filter(|part| !part.is_empty())
+                .map(str::to_string),
+        );
+    }
+    true
+}
+
+/// Refuse, AU BUILD et avec un message qui nomme le manque, une image qui
+/// ne pourrait pas demarrer ou dont les services atelier ne demarreraient
+/// pas (spec `docs/specs/19-sessions-pour-apprenants.md`, §3.2, tache
+/// 14.2). Sans cette verification ces images se construisent, et le
+/// Workshop reste en `Provisioning` sans aucune erreur :
+///
+/// - **systemd sans `/sbin/init`** : le noyau invite est lance sans
+///   `init=` et cherche `/sbin/init`. `ensure_init_system` n'installe
+///   `atelier-guest-init` que si systemd est ABSENT ; une image ou systemd
+///   est present sans etre l'init (Debian : `openssh-server` tire le paquet
+///   `systemd`, seul `systemd-sysv` fournit `/sbin/init`) n'a donc aucun
+///   init. Constate : plus de 10 minutes en `Provisioning`.
+/// - **`bash`, `env` ou `curl` absents** : les scripts de demarrage
+///   injectes (`inject_sshd`, `inject_terminal_and_ide`) commencent par
+///   `#!/usr/bin/env bash` et recuperent la cle SSH et le mot de passe de
+///   session avec `curl`. Sans eux, ni exec ni terminal.
+fn check_boot_prerequisites(rootfs_dir: &Path) -> Result<()> {
+    let present = |candidates: &[&str]| {
+        candidates
+            .iter()
+            .any(|path| exists_in_rootfs(rootfs_dir, path))
+    };
+    let mut missing = Vec::new();
+
+    let has_systemd = present(&["/lib/systemd/systemd", "/usr/lib/systemd/systemd"]);
+    if has_systemd && !present(&["/sbin/init"]) {
+        missing.push(
+            "systemd est installe mais `/sbin/init` n'existe pas : le noyau ne trouverait aucun init et la \
+             microVM ne demarrerait jamais. Installer le paquet qui fournit `/sbin/init` (`systemd-sysv` sur \
+             Debian et Ubuntu), ou retirer systemd de l'image"
+                .to_string(),
+        );
+    }
+    for (tool, candidates, why) in [
+        (
+            "bash",
+            &["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"][..],
+            "les scripts de demarrage injectes par atelier sont des scripts bash",
+        ),
+        (
+            "env",
+            &["/usr/bin/env"][..],
+            "ces scripts commencent par `#!/usr/bin/env bash`",
+        ),
+        (
+            "curl",
+            &["/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl"][..],
+            "ils recuperent la cle SSH et le mot de passe de session avec `curl`",
+        ),
+    ] {
+        if !present(candidates) {
+            missing.push(
+                format!(
+                    "`{tool}` est absent de l'image ({}) : l'installer dans le Dockerfile",
+                    candidates.join(", ")
+                ) + &format!(" ; {why}"),
+            );
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "l'image ne peut pas demarrer comme Workshop :\n- {}",
+        missing.join("\n- ")
+    )
+}
+
 /// Nom du repertoire de travail dans `/workspaces`, derive du depot.
 fn workspace_name(source: &DevcontainerSource) -> String {
     source
@@ -1789,7 +1916,11 @@ async fn publish_to_cache(cache_dir: &str, digest: &str, ext4_path: &Path) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::{append_pem_to_bundle_file, inject_enterprise_ca_bundle, render_ssh_environment};
+    use super::{
+        append_pem_to_bundle_file, check_boot_prerequisites, exists_in_rootfs,
+        inject_enterprise_ca_bundle, render_ssh_environment,
+    };
+    use std::path::Path;
     use tokio::sync::Mutex;
 
     // `ATELIER_CA_BUNDLE_PATH` est un etat process-global (`std::env`) :
@@ -1945,5 +2076,125 @@ mod tests {
         let rendered =
             render_ssh_environment("# un commentaire\n\nDEBIAN_FRONTEND=noninteractive\n");
         assert_eq!(rendered, "DEBIAN_FRONTEND=noninteractive\n");
+    }
+
+    /// Un rootfs minimal qui demarre : `bash`, `env`, `curl`, pas de systemd
+    /// (c'est alors `atelier-guest-init` qui sert d'init).
+    fn bootable_rootfs() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["usr/bin/bash", "usr/bin/env", "usr/bin/curl"] {
+            touch(dir.path(), path);
+        }
+        dir
+    }
+
+    fn touch(rootfs: &Path, path: &str) {
+        let file = rootfs.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "").unwrap();
+    }
+
+    #[test]
+    fn check_boot_prerequisites_accepts_an_image_that_can_boot() {
+        let rootfs = bootable_rootfs();
+        check_boot_prerequisites(rootfs.path()).unwrap();
+
+        // Avec systemd ET son `/sbin/init` (ce que fournit `systemd-sysv`).
+        touch(rootfs.path(), "usr/lib/systemd/systemd");
+        touch(rootfs.path(), "sbin/init");
+        check_boot_prerequisites(rootfs.path()).unwrap();
+    }
+
+    #[test]
+    fn check_boot_prerequisites_names_systemd_without_sbin_init() {
+        // Le cas constate : Debian avec `openssh-server` (qui tire `systemd`)
+        // sans `systemd-sysv`. L'image se construisait, le Workshop restait
+        // en `Provisioning` sans erreur.
+        let rootfs = bootable_rootfs();
+        touch(rootfs.path(), "usr/lib/systemd/systemd");
+        let error = check_boot_prerequisites(rootfs.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`/sbin/init` n'existe pas"), "{error}");
+        assert!(error.contains("systemd-sysv"), "{error}");
+        assert!(!error.contains("`curl`"), "{error}");
+    }
+
+    #[test]
+    fn check_boot_prerequisites_names_every_missing_tool() {
+        let rootfs = tempfile::tempdir().unwrap();
+        touch(rootfs.path(), "usr/bin/env");
+        let error = check_boot_prerequisites(rootfs.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`bash` est absent"), "{error}");
+        assert!(error.contains("`curl` est absent"), "{error}");
+        assert!(!error.contains("`env` est absent"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exists_in_rootfs_follows_links_inside_the_rootfs_only() {
+        use std::os::unix::fs::symlink;
+        let rootfs = tempfile::tempdir().unwrap();
+        let root = rootfs.path();
+        // Disposition « merged-usr » de Debian : `/sbin -> usr/sbin`, et
+        // `/sbin/init -> /lib/systemd/systemd` (lien ABSOLU), `/lib -> usr/lib`.
+        touch(root, "usr/lib/systemd/systemd");
+        std::fs::create_dir_all(root.join("usr/sbin")).unwrap();
+        symlink("usr/sbin", root.join("sbin")).unwrap();
+        symlink("usr/lib", root.join("lib")).unwrap();
+        symlink("/lib/systemd/systemd", root.join("usr/sbin/init")).unwrap();
+        assert!(exists_in_rootfs(root, "/sbin/init"));
+        assert!(exists_in_rootfs(root, "/lib/systemd/systemd"));
+
+        // Un lien absolu vers un fichier qui n'existe QUE sur l'hote ne
+        // compte pas : `/bin/sh` existe sur la machine de build, pas ici.
+        symlink("/bin/sh", root.join("usr/sbin/hote")).unwrap();
+        assert!(Path::new("/bin/sh").exists());
+        assert!(!exists_in_rootfs(root, "/sbin/hote"));
+
+        // Lien casse, boucle de liens, et `..` qui ne sort pas du rootfs.
+        symlink("nulle-part", root.join("usr/sbin/casse")).unwrap();
+        assert!(!exists_in_rootfs(root, "/sbin/casse"));
+        symlink("boucle", root.join("usr/sbin/boucle")).unwrap();
+        assert!(!exists_in_rootfs(root, "/sbin/boucle"));
+        assert!(exists_in_rootfs(root, "/../../usr/lib/systemd/systemd"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_boot_prerequisites_accepts_debian_with_systemd_sysv() {
+        use std::os::unix::fs::symlink;
+        let rootfs = bootable_rootfs();
+        let root = rootfs.path();
+        touch(root, "usr/lib/systemd/systemd");
+        std::fs::create_dir_all(root.join("usr/sbin")).unwrap();
+        symlink("usr/sbin", root.join("sbin")).unwrap();
+        symlink("usr/lib", root.join("lib")).unwrap();
+        symlink("/lib/systemd/systemd", root.join("usr/sbin/init")).unwrap();
+        check_boot_prerequisites(root).unwrap();
+    }
+
+    /// Confronte la verification a de VRAIS rootfs d'images, exportes par
+    /// `docker export <conteneur> | tar -x -C <dossier>` :
+    ///
+    /// ```sh
+    /// ATELIER_TEST_ROOTFS_BOOTABLE=/chemin/ok ATELIER_TEST_ROOTFS_NO_INIT=/chemin/ko \
+    ///     cargo test -p atelier-image-builder -- --ignored real_image
+    /// ```
+    ///
+    /// Ignore par defaut : il lui faut ces deux dossiers, que la CI n'a pas.
+    #[test]
+    #[ignore = "necessite deux rootfs exportes, voir le commentaire"]
+    fn check_boot_prerequisites_on_real_image_rootfs() {
+        let bootable = std::env::var("ATELIER_TEST_ROOTFS_BOOTABLE").unwrap();
+        let no_init = std::env::var("ATELIER_TEST_ROOTFS_NO_INIT").unwrap();
+        check_boot_prerequisites(Path::new(&bootable)).unwrap();
+        let error = check_boot_prerequisites(Path::new(&no_init))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`/sbin/init` n'existe pas"), "{error}");
+        println!("{error}");
     }
 }
