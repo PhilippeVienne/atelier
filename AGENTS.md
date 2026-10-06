@@ -85,6 +85,7 @@ Avant d'attaquer une tâche, l'agent **DOIT IMPÉRATIVEMENT** consulter la spéc
 9. **Sur le cache d'images/snapshots (PVC partagé, offload S3)** :
    - *Lire [`docs/specs/13-image-cache-offload.md`](docs/specs/13-image-cache-offload.md) avant d'éditer `crates/controller/src/storage.rs`, `crates/image-builder/src/main.rs::publish_to_cache`, ou `crates/api-server/src/storage.rs`.*
    - *Lire [`docs/specs/18-reutilisation-images-par-source.md`](docs/specs/18-reutilisation-images-par-source.md) avant d'éditer `crates/controller/src/reconcile.rs::ensure_image_build_job` ou le nommage des images dans `crates/image-builder` et `crates/builder-vm-init`.*
+   - *Lire [`docs/specs/19-sessions-pour-apprenants.md`](docs/specs/19-sessions-pour-apprenants.md) avant d'éditer `crates/api-server/src/exec.rs`, les injections de `crates/image-builder/src/main.rs` (sshd, terminal, IDE, clone de l'espace de travail) ou la prise en compte de `resources.disk`.*
 
 ---
 

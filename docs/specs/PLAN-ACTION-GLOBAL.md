@@ -31,6 +31,7 @@
 8. [Jalon 11 (M11) : Souveraineté, Air-Gap & Inférence GPU Locale](#8-jalon-11-m11--souveraineté-air-gap--inférence-gpu-locale)
 9. [Jalon 12 (M12) : Workflows Multi-Workshops & Orchestration d'Équipes d'Agents](#9-jalon-12-m12--workflows-multi-workshops--orchestration-déquipes-dagents)
 10. [Jalon 13 (M13) : Réutilisation des Images par Source](#10-jalon-13-m13--réutilisation-des-images-par-source)
+11. [Jalon 14 (M14) : Sessions pour Apprenants](#11-jalon-14-m14--sessions-pour-apprenants)
 
 ---
 
@@ -235,3 +236,21 @@ Détail tâche par tâche (fichiers exacts, garde-fous, sous-tâches) dans
   - [ ] **13.4** : Trancher et implémenter les questions ouvertes de la spec §4 (révisions mobiles, egress de build, dépôts privés, build en échec).
   - [ ] **13.5** : Éviction tenant compte des `WorkshopImage` (spec §3.2), sans régression des garanties de la spec 13.
   - [ ] **13.6** : Remesurer avec le même essai que le constat et consigner les résultats dans la spec.
+
+---
+
+## 11. Jalon 14 (M14) : Sessions pour Apprenants
+
+* **Spécification** : [`19-sessions-pour-apprenants.md`](19-sessions-pour-apprenants.md)
+* **Constat** : essayé comme plan d'exécution d'une plateforme de formation, Atelier fait tourner et vérifier des labos dans ses microVM (27 labos sur 34 rejoués sans modification des environnements), mais le disque de session ne se règle pas, trois ports courants sont pris dans l'invité, une image avec systemd sans `/sbin/init` ne démarre jamais sans le dire, et l'exec, pensé pour un agent, rend un résultat incomplet à un serveur qui vérifie.
+* **Fichiers** : `crates/controller/src/reconcile.rs`, `crates/firecracker/src/vm.rs`, `crates/image-builder/src/main.rs`, `crates/guest-init/`, `crates/api-server/src/exec.rs`, `crates/api-server/src/main.rs`, `crates/net-proxy/`, `crates/common/src/crd.rs`, `charts/atelier/`.
+  - [ ] **14.1** : `resources.disk` appliqué à l'invité, plafonné par une limite de cluster (spec §3.1). Critère : `df` dans l'invité montre la taille demandée ; un `dd` s'arrête à cette taille.
+  - [ ] **14.2** : Vérifications de fin de build (spec §3.2). Critère : une image avec systemd sans `/sbin/init`, ou sans `curl`, échoue au build avec un message qui nomme le manque.
+  - [ ] **14.3** : Services injectés jamais en root sous l'init d'Atelier (spec §3.2). Critère : `ps` dans un invité sans systemd montre `ttyd` et `code-server` sous le compte de la session.
+  - [ ] **14.4** : Ports injectés hors des valeurs courantes, terminal et IDE optionnels par Workshop (spec §3.3). Critère : un service de l'invité écoute sur 8080.
+  - [ ] **14.5** : Corriger le résultat d'exec (spec §3.4, constat 7) : sortie d'erreur conservée, octets nuls, code ou signal, entrée standard fermée, fin de l'appel malgré un processus d'arrière-plan.
+  - [ ] **14.6** : Appel « exécuter une commande » de l'API REST (spec §3.4) : compte, dossier, environnement, durée et taille de sortie par appel, réponse unique.
+  - [ ] **14.7** : Clone de l'espace de travail optionnel et champs de session du `devcontainer.json` appliqués (spec §3.5).
+  - [ ] **14.8** : Egress de build distinct de l'egress d'exécution, modifiable sans suspension (spec §3.6 ; à mener avec la tâche 13.4).
+  - [ ] **14.9** : Noyau invité avec `nf_tables` et la table `raw`, console de l'invité exposée, adresse d'écoute de l'api-server configurable (spec §3.7). Critère : Docker démarre dans l'invité sans réglage particulier.
+  - [ ] **14.10** : Instruire les questions ouvertes de la spec §4 (cloisonnement par organisation, canal d'exec, durée de vie).
