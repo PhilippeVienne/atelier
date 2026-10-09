@@ -99,6 +99,37 @@ pub async fn grow_ext4(image: &Path, size_mib: u64) -> Result<Resized> {
     })
 }
 
+/// Copie `source` vers `destination` en conservant les trous du fichier
+/// (spec 19, §3.8, tache 14.11).
+///
+/// Le disque d'une microVM est un fichier creux : allonge a
+/// `resources.disk` par [`grow_ext4`], il n'occupe sur le noeud que ce que
+/// l'invite a reellement ecrit. `tokio::fs::copy` materialiserait chaque
+/// trou en zeros (plusieurs Gio ecrits pour rien, a chaque mise en veille
+/// et a chaque reprise) ; `cp --sparse=always` saute les trous a la lecture
+/// et les recree a l'ecriture.
+///
+/// Une `destination` existante est reecrite en place : elle garde son
+/// proprietaire et ses droits, ce dont depend la reprise (le fichier du
+/// jail appartient deja a l'utilisateur de Firecracker).
+pub async fn copy_sparse(source: &Path, destination: &Path) -> Result<()> {
+    let copy = Command::new("cp")
+        .arg("--sparse=always")
+        .arg("--")
+        .arg(source)
+        .arg(destination)
+        .output()
+        .await
+        .context("lancement de cp")?;
+    ensure!(
+        copy.status.success(),
+        "copie de {source:?} vers {destination:?} echouee ({}) : {}",
+        copy.status,
+        String::from_utf8_lossy(&copy.stderr).trim()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +225,53 @@ mod tests {
         std::fs::write(&image, vec![0u8; MIB as usize]).unwrap();
         let error = grow_ext4(&image, 8).await.unwrap_err().to_string();
         assert!(error.contains("e2fsck a echoue"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn copy_sparse_keeps_content_and_holes() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("disk");
+        let file = std::fs::File::create(&source).unwrap();
+        file.set_len(64 * MIB).unwrap();
+        drop(file);
+        // Quelques octets au milieu d'un fichier par ailleurs vide.
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap();
+            file.seek(SeekFrom::Start(32 * MIB)).unwrap();
+            file.write_all(b"atelier").unwrap();
+        }
+
+        // Destination deja presente, avec un contenu plus long a ecraser.
+        let destination = dir.path().join("copy");
+        std::fs::write(&destination, vec![1u8; 4096]).unwrap();
+        copy_sparse(&source, &destination).await.unwrap();
+
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&destination).unwrap()
+        );
+        let copied = std::fs::metadata(&destination).unwrap();
+        assert_eq!(copied.len(), 64 * MIB);
+        // `blocks` compte des blocs de 512 octets : bien moins que 64 Mio.
+        assert!(
+            copied.blocks() * 512 < MIB,
+            "la copie occupe {} octets, les trous n'ont pas ete conserves",
+            copied.blocks() * 512
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_sparse_reports_a_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = copy_sparse(&dir.path().join("absent"), &dir.path().join("copy"))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("echouee"), "{error:#}");
     }
 }

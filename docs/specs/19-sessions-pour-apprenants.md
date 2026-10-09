@@ -105,7 +105,17 @@ Deux listes : celle du build, portée par l'image (elle rejoint la question ouve
 
 ### 3.8. Le disque survit à la mise en veille
 
-Un instantané ne vaut que avec le disque qu'il décrit (constat 16). `snapshot_and_publish` (`crates/vm-supervisor/src/main.rs`) enregistre le disque racine de la microVM avec `snapshot.state` et `snapshot.mem`, et `restore_persisted` repart de cette copie, jamais du cache d'images. Tant que ce n'est pas fait, toute reprise d'un Workshop qui a écrit sur son disque le corrompt en silence : c'est le défaut le plus grave relevé par ces essais, et il rend aussi dangereux le contournement du constat 9 (suspendre et reprendre pour appliquer une liste d'egress).
+Un instantané ne vaut que avec le disque qu'il décrit (constat 16). `snapshot_and_publish` (`crates/vm-supervisor/src/main.rs`) enregistre le disque racine de la microVM avec `snapshot.state` et `snapshot.mem`, et `restore_persisted` repart de cette copie, jamais du cache d'images. Sans cela, toute reprise d'un Workshop qui a écrit sur son disque le corrompt en silence : c'était le défaut le plus grave relevé par ces essais, et il rendait aussi dangereux le contournement du constat 9 (suspendre et reprendre pour appliquer une liste d'egress).
+
+Réalisé par la tâche 14.11, décrit dans [`architecture/snapshot-restore.md`](../architecture/snapshot-restore.md) :
+
+- le disque est copié vers `snapshot.rootfs` **pendant que la microVM est figée**, en conservant les trous du fichier ;
+- la reprise remet ce disque dans le jail sans le vérifier ni l'agrandir ;
+- un instantané sans son disque (pris avant cette tâche, ou dont la publication a été interrompue) n'est plus repris : le Workshop redémarre à froid, ce que le superviseur journalise.
+
+Vérifié dans l'invité le 2026-10-09 (quatrième passage), sur un Workshop de 4 Gio et sur un Workshop Docker de 6 Gio, deux suspensions de suite : fichiers de 200 Mio relus à l'identique en lecture directe une fois le cache de pages évincé, répertoires et petits fichiers intacts, même `boot_id` et processus d'arrière-plan toujours vivants, conteneurs Docker toujours en marche, aucune erreur ext4. `snapshot.rootfs` occupe ce que l'invité a écrit (1,2 Gio pour 4 Gio apparents, 2,1 Gio pour 6). Les fichiers sont dans le cache 6 à 21 s après la demande ; la reprise prend 16 à 18 s.
+
+Reste ouvert (tâche 14.13) : avec l'offload S3, `snapshot_and_publish` ne répond au controller qu'après le téléversement, soit 40 à 50 s après la demande, alors que `request_snapshot` n'attend que 30 s. Le controller journalise alors « suspension sans snapshot » et `status.snapshotDigest` reste vide, bien que l'instantané soit complet et que la reprise fonctionne ; le pod peut aussi être supprimé avant la fin du téléversement. Le défaut existait déjà pour une mémoire de plusieurs Gio, le disque (envoyé à sa taille apparente, zéros compris) le rend systématique. L'ordre de publication, local comme S3, garantit qu'une interruption laisse un instantané incomplet et ignoré, jamais un mélange.
 
 ---
 

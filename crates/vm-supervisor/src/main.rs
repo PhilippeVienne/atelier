@@ -184,8 +184,7 @@ async fn main() -> anyhow::Result<()> {
     let snapshot_dir = std::env::var("ATELIER_VM_SNAPSHOT_DIR")
         .ok()
         .map(PathBuf::from);
-    let snapshot_state_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.state"));
-    let snapshot_mem_path = snapshot_dir.as_ref().map(|d| d.join("snapshot.mem"));
+    let snapshot_files = snapshot_dir.as_deref().map(SnapshotFiles::in_dir);
 
     // Repli S3 (spec docs/specs/13-image-cache-offload.md, tache 8.4) :
     // le PVC local est un cache a eviction (8.5), pas la source de verite —
@@ -196,39 +195,33 @@ async fn main() -> anyhow::Result<()> {
     // Best effort et jamais bloquant : un echec ici (S3 non configure,
     // injoignable, ou simplement aucun snapshot a restaurer) laisse le
     // `match` suivant retomber sur son comportement actuel (boot a froid).
-    if let (Some(state), Some(mem), Some(prefix)) = (
-        &snapshot_state_path,
-        &snapshot_mem_path,
+    if let (Some(files), Some(prefix)) = (
+        &snapshot_files,
         std::env::var("ATELIER_VM_SNAPSHOT_S3_PREFIX").ok(),
     ) {
-        if !state.exists() || !mem.exists() {
+        if !files.complete() {
             match atelier_common::storage::S3StorageBackend::from_env() {
                 Ok(Some(storage)) => {
-                    let state_ok = storage
-                        .download_snapshot_to_file(&prefix, "snapshot.state", state)
-                        .await;
-                    let mem_ok = storage
-                        .download_snapshot_to_file(&prefix, "snapshot.mem", mem)
-                        .await;
-                    match (state_ok, mem_ok) {
-                        (Ok(()), Ok(())) => {
-                            tracing::info!(%prefix, "snapshot files restored from S3 after local cache eviction");
+                    // Partiel = inutilisable : les trois fichiers decrivent
+                    // un meme instant (voir `SnapshotFiles`), et il n'en
+                    // manque jamais un seul sans que les autres ne soient
+                    // perimes. Tout est donc retelecharge, et tout est
+                    // supprime au moindre echec, pour retomber proprement
+                    // sur le boot a froid ci-dessous.
+                    let mut failed = false;
+                    for (name, path) in files.named() {
+                        if let Err(err) =
+                            storage.download_snapshot_to_file(&prefix, name, path).await
+                        {
+                            tracing::warn!(%err, %prefix, file = name, "telechargement S3 d'un fichier de snapshot echoue");
+                            failed = true;
+                            break;
                         }
-                        (state_res, mem_res) => {
-                            // Partiel = inutilisable : un `snapshot.state`
-                            // sans son `snapshot.mem` (ou l'inverse) ferait
-                            // echouer `Vm::restore_persisted` de toute
-                            // facon — supprime les deux pour retomber
-                            // proprement sur le boot a froid ci-dessous.
-                            if let Err(err) = state_res {
-                                tracing::warn!(%err, %prefix, "telechargement S3 de snapshot.state echoue");
-                            }
-                            if let Err(err) = mem_res {
-                                tracing::warn!(%err, %prefix, "telechargement S3 de snapshot.mem echoue");
-                            }
-                            tokio::fs::remove_file(state).await.ok();
-                            tokio::fs::remove_file(mem).await.ok();
-                        }
+                    }
+                    if failed {
+                        files.remove().await;
+                    } else {
+                        tracing::info!(%prefix, "snapshot files restored from S3 after local cache eviction");
                     }
                 }
                 Ok(None) => {}
@@ -239,21 +232,32 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let mut vm = match (&snapshot_state_path, &snapshot_mem_path) {
-        (Some(state), Some(mem)) if state.exists() && mem.exists() => {
-            tracing::info!(?state, ?mem, "restoring microVM from persisted snapshot");
+    let mut vm = match &snapshot_files {
+        Some(files) if files.complete() => {
+            tracing::info!(?files, "restoring microVM from persisted snapshot");
             Vm::restore_persisted(
                 &config,
                 &kernel_path,
                 &rootfs_path,
                 Some(&network),
-                state,
-                mem,
+                &files.state,
+                &files.mem,
+                &files.disk,
             )
             .await
             .context("restauration de la microVM depuis un snapshot persiste")?
         }
-        _ => {
+        other => {
+            if let Some(files) = other.as_ref().filter(|f| f.without_disk()) {
+                // Instantane pris avant la tache 14.11 : memoire sans le
+                // disque qu'elle decrit. Le reprendre sur le disque de
+                // l'image corromprait le systeme de fichiers de l'invite
+                // (spec 19, constat 16) : on repart a froid, et on le dit.
+                tracing::warn!(
+                    ?files,
+                    "instantane sans son disque (anterieur a la conservation du disque) : ignore, demarrage a froid"
+                );
+            }
             tracing::info!(?kernel_path, ?rootfs_path, "booting microVM");
             Vm::boot_with_network(&config, &kernel_path, &rootfs_path, &network).await?
         }
@@ -386,22 +390,33 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
         anyhow::anyhow!("ATELIER_VM_SNAPSHOT_DIR non configure, impossible de publier le snapshot")
     })?;
     tokio::fs::create_dir_all(snapshot_dir).await?;
+    let published = SnapshotFiles::in_dir(snapshot_dir);
 
-    let snapshot = vm.snapshot().await?;
+    // Le disque est copie directement vers le cache, pendant que la VM est
+    // figee (`Vm::snapshot_with_disk`) : il n'y en a pas d'autre copie
+    // stable, celui du jail recommence a changer des la reprise.
+    let tmp_disk = snapshot_dir.join("snapshot.rootfs.tmp");
+    let snapshot = vm.snapshot_with_disk(&tmp_disk).await?;
 
-    let published_state = snapshot_dir.join("snapshot.state");
-    let published_mem = snapshot_dir.join("snapshot.mem");
-    // Fichiers temporaires puis rename atomique : un lecteur concurrent
-    // (reprise en cours pendant qu'une autre suspend republie, ne devrait
-    // pas arriver en pratique vu le cycle de vie d'un seul Workshop, mais
-    // bon marche a se premunir) ne voit jamais un fichier partiellement
-    // ecrit.
+    // Fichiers temporaires puis rename atomique : un lecteur ne voit jamais
+    // un fichier partiellement ecrit. Les trois fichiers ne valent
+    // qu'ensemble, et trois `rename` ne sont pas atomiques entre eux : l'etat
+    // de la suspension precedente est donc retire AVANT de publier, et le
+    // nouvel etat publie EN DERNIER. Un pod supprime en cours de route (le
+    // controller n'attend que 30 s) laisse ainsi un instantane incomplet,
+    // que la reprise ignore, jamais un melange de deux suspensions.
     let tmp_state = snapshot_dir.join("snapshot.state.tmp");
     let tmp_mem = snapshot_dir.join("snapshot.mem.tmp");
     tokio::fs::copy(&snapshot.snapshot_path, &tmp_state).await?;
     tokio::fs::copy(&snapshot.mem_file_path, &tmp_mem).await?;
-    tokio::fs::rename(&tmp_state, &published_state).await?;
-    tokio::fs::rename(&tmp_mem, &published_mem).await?;
+    match tokio::fs::remove_file(&published.state).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    tokio::fs::rename(&tmp_disk, &published.disk).await?;
+    tokio::fs::rename(&tmp_mem, &published.mem).await?;
+    tokio::fs::rename(&tmp_state, &published.state).await?;
 
     // Offload S3 best-effort (spec docs/specs/13-image-cache-offload.md,
     // tache 8.4) : ne bloque jamais la suspension, seule la publication
@@ -409,20 +424,19 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
     // immediate. `ATELIER_VM_SNAPSHOT_S3_PREFIX` absente = pas de prefixe
     // calculable, offload simplement saute (meme garde que `image-builder`,
     // tache 8.3).
+    //
+    // Meme regle que pour la publication locale : les trois objets ne valent
+    // qu'ensemble, et ce televersement peut etre interrompu (le controller
+    // supprime le pod s'il n'a pas de reponse en 30 s, et le disque part a
+    // sa taille apparente, trous compris). L'etat de la suspension
+    // precedente est donc supprime d'abord et le nouveau televerse en
+    // dernier, seulement si le disque et la memoire sont arrives : un
+    // offload incomplet est ignore a la reprise, jamais melange a l'ancien.
     if let Ok(prefix) = std::env::var("ATELIER_VM_SNAPSHOT_S3_PREFIX") {
         match atelier_common::storage::S3StorageBackend::from_env() {
             Ok(Some(storage)) => {
-                if let Err(err) = storage
-                    .upload_snapshot_file(&prefix, "snapshot.state", &published_state)
-                    .await
-                {
-                    tracing::warn!(%err, %prefix, "televersement S3 de snapshot.state echoue, ignore");
-                }
-                if let Err(err) = storage
-                    .upload_snapshot_file(&prefix, "snapshot.mem", &published_mem)
-                    .await
-                {
-                    tracing::warn!(%err, %prefix, "televersement S3 de snapshot.mem echoue, ignore");
+                if let Err(err) = offload_snapshot(&storage, &prefix, &published).await {
+                    tracing::warn!(%err, %prefix, "televersement S3 du snapshot echoue, ignore");
                 }
             }
             Ok(None) => {}
@@ -432,10 +446,80 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
         }
     }
 
+    // Le disque n'entre pas dans ce digest, qui reste informatif : le lire
+    // en entier doublerait le temps de la suspension.
     let mut hasher = Sha256::new();
-    hasher.update(tokio::fs::read(&published_state).await?);
-    hasher.update(tokio::fs::read(&published_mem).await?);
+    hasher.update(tokio::fs::read(&published.state).await?);
+    hasher.update(tokio::fs::read(&published.mem).await?);
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+/// Televerse un instantane publie vers S3, l'etat en dernier (voir
+/// `snapshot_and_publish`).
+async fn offload_snapshot(
+    storage: &atelier_common::storage::S3StorageBackend,
+    prefix: &str,
+    published: &SnapshotFiles,
+) -> anyhow::Result<()> {
+    storage
+        .delete_snapshot_file(prefix, "snapshot.state")
+        .await
+        .context("retrait de l'etat de la suspension precedente")?;
+    let [state, rest @ ..] = published.named();
+    for (name, path) in rest.into_iter().chain([state]) {
+        storage
+            .upload_snapshot_file(prefix, name, path)
+            .await
+            .with_context(|| format!("televersement de {name}"))?;
+    }
+    Ok(())
+}
+
+/// Les fichiers d'un instantane dans le cache partage. Ils decrivent un
+/// meme instant et ne valent qu'ensemble : la memoire figee contient le
+/// cache de pages et le journal du systeme de fichiers de CE disque (spec
+/// 19, §3.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotFiles {
+    state: PathBuf,
+    mem: PathBuf,
+    disk: PathBuf,
+}
+
+impl SnapshotFiles {
+    fn in_dir(dir: &Path) -> Self {
+        Self {
+            state: dir.join("snapshot.state"),
+            mem: dir.join("snapshot.mem"),
+            disk: dir.join("snapshot.rootfs"),
+        }
+    }
+
+    /// Nom dans le cache (et cle S3) et chemin local, l'etat en premier et
+    /// le disque en dernier.
+    fn named(&self) -> [(&'static str, &Path); 3] {
+        [
+            ("snapshot.state", &self.state),
+            ("snapshot.mem", &self.mem),
+            ("snapshot.rootfs", &self.disk),
+        ]
+    }
+
+    /// L'instantane peut etre repris.
+    fn complete(&self) -> bool {
+        self.state.exists() && self.mem.exists() && self.disk.exists()
+    }
+
+    /// Etat et memoire sans disque : instantane d'avant la tache 14.11.
+    fn without_disk(&self) -> bool {
+        self.state.exists() && self.mem.exists() && !self.disk.exists()
+    }
+
+    async fn remove(&self) {
+        for (_, path) in self.named() {
+            tokio::fs::remove_file(path).await.ok();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -509,4 +593,60 @@ fn env_u32(var: &str, default: u32) -> u32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_is_complete_only_with_its_three_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SnapshotFiles::in_dir(dir.path());
+        assert!(!files.complete());
+        assert!(!files.without_disk());
+
+        std::fs::write(&files.state, b"state").unwrap();
+        assert!(!files.complete());
+        assert!(!files.without_disk());
+
+        // Instantane d'avant la conservation du disque : a ne pas reprendre.
+        std::fs::write(&files.mem, b"mem").unwrap();
+        assert!(!files.complete());
+        assert!(files.without_disk());
+
+        std::fs::write(&files.disk, b"disk").unwrap();
+        assert!(files.complete());
+        assert!(!files.without_disk());
+    }
+
+    #[test]
+    fn a_disk_without_state_is_not_a_snapshot() {
+        // Ce que laisse une publication interrompue : l'etat est retire en
+        // premier et publie en dernier.
+        let dir = tempfile::tempdir().unwrap();
+        let files = SnapshotFiles::in_dir(dir.path());
+        std::fs::write(&files.mem, b"mem").unwrap();
+        std::fs::write(&files.disk, b"disk").unwrap();
+        assert!(!files.complete());
+        assert!(!files.without_disk());
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_every_file_and_tolerates_missing_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SnapshotFiles::in_dir(dir.path());
+        std::fs::write(&files.state, b"state").unwrap();
+        std::fs::write(&files.disk, b"disk").unwrap();
+        files.remove().await;
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_disk_is_published_under_its_own_name() {
+        let files = SnapshotFiles::in_dir(Path::new("/cache/ws"));
+        let names: Vec<_> = files.named().iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["snapshot.state", "snapshot.mem", "snapshot.rootfs"]);
+        assert_eq!(files.disk, Path::new("/cache/ws/snapshot.rootfs"));
+    }
 }

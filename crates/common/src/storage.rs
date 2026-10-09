@@ -233,6 +233,13 @@ impl S3StorageBackend {
             .await
     }
 
+    /// Supprime un fichier de snapshot de `S3_BUCKET_SNAPSHOTS`. Sans
+    /// erreur s'il n'y est pas (une suppression S3 est idempotente).
+    pub async fn delete_snapshot_file(&self, prefix: &str, filename: &str) -> Result<()> {
+        let key = Self::snapshot_key(prefix, filename);
+        self.delete_object(&self.bucket_snapshots, &key).await
+    }
+
     /// Retelecharge un fichier de snapshot depuis `S3_BUCKET_SNAPSHOTS` vers
     /// un chemin local (tache 8.4) — utilise par `vm-supervisor` quand le
     /// PVC local a ete evince (8.5) mais qu'une reprise est demandee.
