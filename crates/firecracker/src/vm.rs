@@ -42,7 +42,7 @@ use fctools::vmm::id::VmmId;
 use fctools::vmm::installation::VmmInstallation;
 use fctools::vmm::ownership::VmmOwnershipModel;
 use fctools::vmm::resource::system::ResourceSystem;
-use fctools::vmm::resource::{MovedResourceType, ResourceType};
+use fctools::vmm::resource::{MovedResourceType, Resource, ResourceType};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -70,7 +70,7 @@ fn build_configuration_data(
     kernel_path: &Path,
     rootfs_path: &Path,
     network: Option<&NetworkSetup>,
-) -> Result<VmConfigurationData> {
+) -> Result<(VmConfigurationData, Resource)> {
     let kernel = resource_system
         .create_resource(
             kernel_path.to_path_buf(),
@@ -83,6 +83,10 @@ fn build_configuration_data(
             ResourceType::Moved(MovedResourceType::Copied),
         )
         .context("declaration de la ressource rootfs")?;
+    // Poignee conservee sur la copie privee du rootfs : son chemin dans le
+    // jail n'est connu qu'une fois les ressources initialisees (voir
+    // `grow_rootfs`).
+    let rootfs_handle = rootfs.clone();
 
     let network_interfaces = network
         .map(|net| {
@@ -119,7 +123,7 @@ fn build_configuration_data(
         })
         .transpose()?;
 
-    Ok(VmConfigurationData {
+    let data = VmConfigurationData {
         boot_source: BootSource {
             kernel_image: kernel,
             boot_args: Some(config.boot_args.clone()),
@@ -153,7 +157,35 @@ fn build_configuration_data(
         memory_hotplug_configuration: None,
         mmds_configuration: None,
         entropy_device: None,
-    })
+    };
+    Ok((data, rootfs_handle))
+}
+
+/// Agrandit la copie privee du rootfs a `config.rootfs_size_mib`, une fois
+/// qu'elle est dans le jail et avant que Firecracker ne demarre (spec 19,
+/// §3.1). Sans effet si aucune taille n'est demandee.
+async fn grow_rootfs(config: &VmConfig, rootfs: &Resource) -> Result<()> {
+    let Some(size_mib) = config.rootfs_size_mib else {
+        return Ok(());
+    };
+    let path = rootfs
+        .get_effective_path()
+        .context("le rootfs n'a pas de chemin dans le jail apres preparation")?;
+    match crate::rootfs::grow_ext4(path, size_mib).await? {
+        crate::rootfs::Resized::Grown { from_mib, to_mib } => {
+            tracing::info!(from_mib, to_mib, "disque racine de la microVM agrandi");
+        }
+        crate::rootfs::Resized::AlreadyLargeEnough {
+            size_mib: image_mib,
+        } => {
+            tracing::warn!(
+                requested_mib = size_mib,
+                image_mib,
+                "taille de disque demandee inferieure a celle de l'image : disque laisse a la taille de l'image"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub struct VmConfig {
@@ -179,6 +211,10 @@ pub struct VmConfig {
     /// defaut (`None`), la microVM builder et les tests existants n'en ont
     /// pas besoin.
     pub vsock: Option<VsockConfig>,
+    /// Taille du disque racine de l'invite, en Mio (`resources.disk` du
+    /// Workshop). `None`, ou une valeur inferieure a la taille de l'image :
+    /// le disque garde la taille de l'image. Voir [`crate::rootfs`].
+    pub rootfs_size_mib: Option<u64>,
 }
 
 /// `guest_cid` : identifiant du guest sur le "reseau" vsock, doit etre >= 3
@@ -256,6 +292,10 @@ async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(stream_name: &'static str,
 /// Une microVM en cours d'execution.
 pub struct Vm {
     inner: FcVm,
+    /// Le disque racine dans le jail, pour l'enregistrer avec un
+    /// instantane ([`Vm::snapshot_with_disk`]). Absent d'une VM issue de
+    /// [`Vm::restore`], qui ne declare pas elle-meme ses ressources.
+    rootfs: Option<Resource>,
 }
 
 impl Vm {
@@ -286,7 +326,7 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(
+        let (data, rootfs) = build_configuration_data(
             &mut resource_system,
             config,
             kernel_path,
@@ -309,6 +349,8 @@ impl Vm {
         .await
         .map_err(to_anyhow("preparation de la microVM (jail, ressources)"))?;
 
+        grow_rootfs(config, &rootfs).await?;
+
         inner
             .start(Duration::from_secs(5))
             .await
@@ -316,7 +358,10 @@ impl Vm {
 
         drain_console_pipes(&mut inner);
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            rootfs: Some(rootfs),
+        })
     }
 
     /// Restaure une microVM depuis un snapshot **persiste** (fichiers
@@ -341,6 +386,20 @@ impl Vm {
     /// configuration serialisee vers Firecracker reference "/vmlinux.bin",
     /// "/rootfs.ext4", peu importe quel objet `Resource` interne les a
     /// produits.
+    ///
+    /// `disk_path` est le disque racine enregistre avec CET instantane
+    /// ([`Vm::snapshot_with_disk`]) : l'etat memoire fige decrit ce
+    /// disque-la (cache de pages, journal ext4, tables d'allocation), et le
+    /// reprendre sur un autre disque, celui de l'image par exemple, corrompt
+    /// le systeme de fichiers en silence (spec 19, constat 16). Il remplace
+    /// donc, dans le jail, la copie de `rootfs_path` que le systeme de
+    /// ressources vient d'y placer, et il n'est ni verifie ni agrandi :
+    /// `config.rootfs_size_mib` est ignore a la reprise, la taille est celle
+    /// du disque enregistre, la seule que connaisse l'invite.
+    ///
+    /// `rootfs_path` reste requis parce que c'est son nom de fichier qui
+    /// donne le chemin du disque dans le jail, et que l'instantane y fait
+    /// reference : ce doit etre le meme qu'au boot d'origine.
     pub async fn restore_persisted(
         config: &VmConfig,
         kernel_path: &Path,
@@ -348,10 +407,11 @@ impl Vm {
         network: Option<&NetworkSetup>,
         snapshot_path: &Path,
         mem_file_path: &Path,
+        disk_path: &Path,
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(
+        let (data, rootfs) = build_configuration_data(
             &mut resource_system,
             config,
             kernel_path,
@@ -400,6 +460,13 @@ impl Vm {
             "preparation de la microVM depuis un snapshot persiste",
         ))?;
 
+        let rootfs_in_jail = rootfs
+            .get_effective_path()
+            .context("le rootfs n'a pas de chemin dans le jail apres preparation")?;
+        crate::rootfs::copy_sparse(disk_path, rootfs_in_jail)
+            .await
+            .context("remise en place du disque enregistre avec l'instantane")?;
+
         inner
             .start(Duration::from_secs(5))
             .await
@@ -407,7 +474,10 @@ impl Vm {
 
         drain_console_pipes(&mut inner);
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            rootfs: Some(rootfs),
+        })
     }
 
     /// Restaure une microVM depuis un snapshot pris precedemment par
@@ -440,7 +510,10 @@ impl Vm {
 
         drain_console_pipes(&mut inner);
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            rootfs: None,
+        })
     }
 
     /// Fige la VM (pause) et ecrit son etat + sa memoire complete sur
@@ -457,7 +530,42 @@ impl Vm {
     /// ce chemin a l'intérieur du jail et echoue avec ENOENT. Le chemin
     /// hote effectif (`jail_root/snapshot.state`) est calcule par fctools
     /// et expose ensuite via `VmSnapshot`.
+    ///
+    /// L'instantane ne contient PAS le disque : il ne se reprend que dans ce
+    /// meme process ([`Vm::restore`]). Pour une mise en veille, utiliser
+    /// [`Vm::snapshot_with_disk`].
     pub async fn snapshot(&mut self) -> Result<VmSnapshot> {
+        self.snapshot_internal(None).await
+    }
+
+    /// Comme [`Vm::snapshot`], et enregistre en plus le disque racine dans
+    /// `disk_destination`, **pendant que la VM est figee** : etat, memoire
+    /// et disque decrivent alors le meme instant, ce qu'exige
+    /// [`Vm::restore_persisted`] (spec 19, §3.8). Copier le disque apres la
+    /// reprise, ou apres l'arret de l'invite, donnerait un disque en avance
+    /// sur la memoire.
+    ///
+    /// Firecracker sert les ecritures du disque de facon synchrone (moteur
+    /// `Sync`, celui par defaut) : une fois les vCPU en pause, plus rien
+    /// n'est en vol vers le fichier, et sa lecture depuis l'hote voit tout
+    /// ce que l'invite a deja ecrit. Ce que l'invite garde encore en cache
+    /// est dans la memoire figee.
+    pub async fn snapshot_with_disk(&mut self, disk_destination: &Path) -> Result<VmSnapshot> {
+        self.snapshot_internal(Some(disk_destination)).await
+    }
+
+    async fn snapshot_internal(&mut self, disk_destination: Option<&Path>) -> Result<VmSnapshot> {
+        let rootfs_in_jail = match disk_destination {
+            Some(_) => Some(
+                self.rootfs
+                    .as_ref()
+                    .and_then(Resource::get_effective_path)
+                    .context("cette microVM n'expose pas son disque racine")?
+                    .to_path_buf(),
+            ),
+            None => None,
+        };
+
         self.inner
             .pause()
             .await
@@ -481,13 +589,26 @@ impl Vm {
             .inner
             .create_snapshot(create_snapshot)
             .await
-            .map_err(to_anyhow("creation du snapshot"))?;
+            .map_err(to_anyhow("creation du snapshot"));
+
+        // La VM est toujours figee. Quoi qu'il arrive a la copie, elle est
+        // relancee ensuite : un echec ici ne doit pas la laisser en pause.
+        let disk = match (&snapshot, disk_destination, &rootfs_in_jail) {
+            (Ok(_), Some(destination), Some(rootfs)) => {
+                crate::rootfs::copy_sparse(rootfs, destination)
+                    .await
+                    .context("enregistrement du disque racine avec l'instantane")
+            }
+            _ => Ok(()),
+        };
 
         self.inner
             .resume()
             .await
             .map_err(to_anyhow("reprise apres snapshot"))?;
 
+        let snapshot = snapshot?;
+        disk?;
         Ok(snapshot)
     }
 

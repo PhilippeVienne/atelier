@@ -176,8 +176,6 @@ async fn upload_snapshot_file_survives_local_eviction_via_download() {
         eprintln!("S3_ENDPOINT absent, test ignore (voir l'en-tete de ce fichier)");
         return;
     };
-    let bucket_snapshots =
-        std::env::var("S3_BUCKET_SNAPSHOTS").expect("S3_BUCKET_SNAPSHOTS (verifie plus haut)");
 
     let payload = deterministic_session_payload(256 * 1024);
     let expected_sha256 = sha256_hex(&payload);
@@ -214,9 +212,22 @@ async fn upload_snapshot_file_survives_local_eviction_via_download() {
         .expect("lecture du fichier restaure");
     assert_eq!(sha256_hex(&restored), expected_sha256);
 
+    // Retrait de l'etat avant de publier un nouvel instantane (spec 19,
+    // §3.8) : l'objet disparait, et le retirer une seconde fois n'est pas
+    // une erreur.
     tokio::fs::remove_file(&local_path).await.ok();
-    let key = format!("{prefix}/snapshot.state");
-    if let Err(err) = backend.delete_object(&bucket_snapshots, &key).await {
-        eprintln!("nettoyage de l'objet de test echoue (sans impact sur le test) : {err:#}");
+    for _ in 0..2 {
+        backend
+            .delete_snapshot_file(&prefix, "snapshot.state")
+            .await
+            .expect("suppression du fichier de snapshot");
     }
+    assert!(
+        backend
+            .download_snapshot_to_file(&prefix, "snapshot.state", &local_path)
+            .await
+            .is_err(),
+        "un fichier de snapshot supprime ne doit plus se telecharger"
+    );
+    tokio::fs::remove_file(&local_path).await.ok();
 }

@@ -75,6 +75,7 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
         mem_mib: 256,
         boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
         vsock: None,
+        rootfs_size_mib: None,
     };
 
     let mut vm = Vm::boot(&base_config, &fixtures.kernel_path, &fixtures.rootfs_path)
@@ -134,7 +135,8 @@ async fn boot_snapshot_and_restore_real_jailed_microvm() {
 
 /// Contrairement au test precedent, ici la VM source (et son
 /// `ResourceSystem`) est **eteinte et abandonnee avant** la restauration :
-/// seuls les fichiers `snapshot.state`/`snapshot.mem`, copies au prealable
+/// seuls les fichiers `snapshot.state`/`snapshot.mem` et le disque
+/// enregistre avec eux (spec 19, §3.8), copies au prealable
 /// hors du jail d'origine (simulateur d'une publication vers un cache
 /// partage), et les memes parametres de boot (kernel/rootfs/vcpu/mem/
 /// boot_args) servent a `Vm::restore_persisted`. C'est le scenario reel
@@ -170,16 +172,41 @@ async fn snapshot_persist_and_restore_without_source_vm() {
         mem_mib: 256,
         boot_args: "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
         vsock: None,
+        rootfs_size_mib: None,
     };
 
     let mut vm = Vm::boot(&base_config, &fixtures.kernel_path, &fixtures.rootfs_path)
         .await
         .expect("le boot jaile de la microVM doit reussir");
 
+    // Laisse a l'invite le temps de monter sa racine et d'y ecrire : un
+    // instantane pris des la sortie de `boot` fige un noyau qui n'a pas
+    // encore touche au disque.
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+
+    // Le disque part directement vers le "cache" simule, pendant que la VM
+    // est figee : c'est la seule copie coherente avec la memoire.
+    let published_disk_path = work_dir.join("published-snapshot.rootfs");
     let snapshot = vm
-        .snapshot()
+        .snapshot_with_disk(&published_disk_path)
         .await
-        .expect("le snapshot de la microVM doit reussir");
+        .expect("le snapshot de la microVM, disque compris, doit reussir");
+
+    // Preuve que c'est bien le disque VIVANT qui a ete enregistre, pas
+    // l'image : monter un ext4 en ecriture le modifie deja (journal,
+    // superbloc), avant meme que l'invite n'ecrive un fichier.
+    let image = tokio::fs::read(&fixtures.rootfs_path).await.unwrap();
+    let disk = tokio::fs::read(&published_disk_path).await.unwrap();
+    assert_eq!(
+        image.len(),
+        disk.len(),
+        "le disque enregistre doit avoir la taille du disque de la microVM"
+    );
+    assert!(
+        image != disk,
+        "le disque enregistre est identique a l'image : ce n'est pas celui de la microVM"
+    );
+    drop((image, disk));
 
     // Publication vers un "cache" simule : copie hors du jail d'origine,
     // qui va etre detruit juste apres.
@@ -212,6 +239,7 @@ async fn snapshot_persist_and_restore_without_source_vm() {
         None,
         &published_snapshot_path,
         &published_mem_file_path,
+        &published_disk_path,
     )
     .await
     .expect("la restauration depuis un snapshot persiste (sans VM source vivante) doit reussir");

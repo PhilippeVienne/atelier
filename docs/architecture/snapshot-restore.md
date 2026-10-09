@@ -20,14 +20,14 @@ sequenceDiagram
 
     U->>C: spec.desiredState = Suspended
     C->>VM: POST /snapshot (canal de controle HTTP)
-    VM->>VM: fige la VM, publie snapshot.state/snapshot.mem sur le cache partage
+    VM->>VM: fige la VM, publie snapshot.state/snapshot.mem/snapshot.rootfs sur le cache partage
     VM-->>C: snapshotDigest
     C->>P: supprime le pod (phase Suspending)
     C-->>U: status.phase = Suspended, status.snapshotDigest
 
     U->>C: spec.desiredState = Running
     C->>P: recree le pod (phase Resuming)
-    P->>VM: snapshot present sur le cache ? restore_persisted : boot (depuis image_digest)
+    P->>VM: snapshot complet sur le cache ? restore_persisted : boot (depuis image_digest)
     VM-->>C: pod Running
     C-->>U: status.phase = Running
 ```
@@ -38,6 +38,49 @@ etat fige (`ensure_suspended`/`request_snapshot`,
 `crates/controller/src/reconcile.rs`) — mieux vaut honorer
 `desired_state: Suspended` sans snapshot que rester bloque dessus
 indefiniment.
+
+Le controller attend la reponse de `POST /snapshot` pendant
+`ATELIER_SNAPSHOT_TIMEOUT_SECS` (300 s par defaut, valeur
+`workshops.snapshotTimeoutSeconds` du chart). Ce delai couvre la copie du
+disque, la publication sur le cache **et le televersement vers S3** :
+`vm-supervisor` ne repond qu'une fois tout cela fait, et le pod est supprime
+des la reponse. Pendant que le pod s'arrete, le controller ne lui redemande
+plus d'instantane.
+
+## Le disque fait partie de l'instantane
+
+`snapshot/create` ne fige que l'etat de la VM et sa memoire. Or cette
+memoire contient le cache de pages et le journal du systeme de fichiers de
+l'invite : elle ne vaut qu'avec le disque qu'elle decrit. Un instantane
+d'Atelier compte donc **trois** fichiers, publies ensemble dans le
+repertoire du Workshop sur le cache partage (et sur S3 quand l'offload est
+configure) :
+
+| Fichier | Contenu |
+|---|---|
+| `snapshot.state` | etat des peripheriques et des vCPU |
+| `snapshot.mem` | memoire de l'invite |
+| `snapshot.rootfs` | disque racine de la microVM, copie **pendant que la VM est figee** |
+
+- Le disque est copie entre `snapshot/create` et la relance des vCPU
+  (`Vm::snapshot_with_disk`, `crates/firecracker/src/vm.rs`) : avant, il
+  serait en retard sur la memoire ; apres, en avance.
+- La copie conserve les trous du fichier (`cp --sparse=always`) : un disque
+  de 6 Gio dont l'invite a ecrit 500 Mio occupe 500 Mio sur le cache. S3,
+  lui, le recoit a sa taille apparente.
+- A la reprise, `Vm::restore_persisted` remet ce disque dans le jail a la
+  place de la copie de l'image, sans le verifier ni l'agrandir :
+  `resources.disk` n'est pas reapplique a un Workshop repris.
+- Les trois fichiers ne se publient pas atomiquement. L'etat de la
+  suspension precedente est retire en premier et le nouveau publie en
+  dernier (`snapshot_and_publish`, `crates/vm-supervisor/src/main.rs`) : une
+  publication interrompue laisse un instantane incomplet, jamais un melange
+  de deux suspensions.
+- Un instantane incomplet n'est pas repris : le Workshop redemarre a froid
+  depuis son image. C'est aussi le sort des instantanes pris avant que le
+  disque ne soit conserve (`snapshot.state` et `snapshot.mem` seuls) : leur
+  memoire est perdue, mais les reprendre sur le disque de l'image
+  corrompait le systeme de fichiers de l'invite.
 
 L'API expose ce cycle via `POST /v1/workshops/:name/suspend` et `/resume`
 (`crates/api-server`), typiquement utilises par le dashboard pour une mise
