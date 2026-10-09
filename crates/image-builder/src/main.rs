@@ -2197,8 +2197,11 @@ mod tests {
         )
         .unwrap();
         install_sshd(bare.path(), &sshd_dir, 61022).await.unwrap();
-        let passwd = std::fs::read_to_string(bare.path().join("etc/passwd")).unwrap();
-        assert!(passwd.contains("vscode:x:1000:1000:"), "{passwd}");
+        // Pas de contenu dans les messages d'echec de ce test ni du
+        // suivant : l'analyse statique prend l'affichage de `/etc/passwd` ou
+        // d'un script qui lit un mot de passe pour une fuite de secret.
+        let accounts = std::fs::read_to_string(bare.path().join("etc/passwd")).unwrap();
+        assert!(accounts.contains("vscode:x:1000:1000:"));
         let config =
             std::fs::read_to_string(bare.path().join("etc/atelier-sshd/sshd_config")).unwrap();
         assert!(config.starts_with("Port 61022\n"), "{config}");
@@ -2230,16 +2233,13 @@ mod tests {
     #[test]
     fn start_scripts_listen_on_the_ports_they_are_given() {
         let ttyd = ttyd_start_script("PASSWORD=x\n", 61081);
-        assert!(ttyd.starts_with("#!/usr/bin/env bash\n"), "{ttyd}");
-        assert!(ttyd.contains(" -p 61081 bash"), "{ttyd}");
-        assert!(!ttyd.contains("7681"), "{ttyd}");
+        assert!(ttyd.starts_with("#!/usr/bin/env bash\n"));
+        assert!(ttyd.contains(" -p 61081 bash"));
+        assert!(!ttyd.contains("7681"));
 
         let ide = code_server_start_script("PASSWORD=x\n", 61080, "/workspaces/repo");
-        assert!(
-            ide.contains("--bind-addr 0.0.0.0:61080 /workspaces/repo"),
-            "{ide}"
-        );
-        assert!(!ide.contains("8080"), "{ide}");
+        assert!(ide.contains("--bind-addr 0.0.0.0:61080 /workspaces/repo"));
+        assert!(!ide.contains("8080"));
     }
 
     #[test]
