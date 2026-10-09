@@ -587,6 +587,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
             exported_services: vec![],
             allowed_internal_targets: vec![],
             campaign_id: None,
+            guest_services: Default::default(),
         },
     );
     workshop = workshops
@@ -841,6 +842,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
             exported_services: vec![],
             allowed_internal_targets: vec![],
             campaign_id: None,
+            guest_services: Default::default(),
         },
     );
     workshops
@@ -1035,6 +1037,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
             exported_services: vec![],
             allowed_internal_targets: vec![],
             campaign_id: None,
+            guest_services: Default::default(),
         },
     );
     workshops
@@ -1491,6 +1494,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
             exported_services: vec![],
             allowed_internal_targets: vec![],
             campaign_id: None,
+            guest_services: Default::default(),
         },
     );
     workshops

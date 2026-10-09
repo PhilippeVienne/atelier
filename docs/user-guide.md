@@ -85,10 +85,35 @@ sequenceDiagram
     Dev->>Dash: Clique "Ouvrir VS Code"
     Dash->>API: GET /v1/workshops/:name/vscode (Cookie HTTP)
     API->>Net: Relai WebSocket / TCP Stream
-    Net->>VS: Port 8080 (guest microVM)
+    Net->>VS: Port 61080 (guest microVM)
     VS-->>Dash: Stream HTTP + WebSocket Live
     Dash-->>Dev: Affichage IDE VS Code interactif
 ```
+
+### Ports et services d'accès dans la micro-VM
+
+Atelier installe dans l'image de chaque Workshop trois services d'accès, sur une plage qui lui est réservée (**61000 à 61099**, au-dessus des ports éphémères de Linux) :
+
+| Service | Port | Rôle |
+|---|---|---|
+| `sshd` | 61022 | exécution de commandes (`exec_in_workshop`), toujours installé |
+| `code-server` | 61080 | IDE web, bouton **Ouvrir VS Code** |
+| `ttyd` | 61081 | terminal web, bouton **Terminal** |
+
+Tous les autres ports appartiennent à votre environnement : un service peut écouter sur 8080, 3000 ou 22 sans conflit.
+
+Le terminal et l'IDE sont facultatifs. Un Workshop piloté uniquement par des commandes peut s'en passer, ce qui allège son image et sa mémoire :
+
+```bash
+curl -X POST "$ATELIER_API/v1/workshops" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "name": "verif-labo",
+  "devcontainer": {"repo": "https://git.example.org/cours.git"},
+  "resources": {"cpu": "1", "memory": "1Gi"},
+  "guestServices": {"terminal": false, "ide": false}
+}'
+```
+
+Le choix se fait à la création : il est figé dans l'image. Les ports effectivement installés sont dans `status.guestPorts` ; un Workshop créé avant l'introduction de cette plage garde ses anciens ports (2222, 7681, 8080) jusqu'à sa suppression.
 
 ---
 

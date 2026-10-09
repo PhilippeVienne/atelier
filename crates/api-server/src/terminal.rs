@@ -8,22 +8,11 @@
 
 use crate::auth::AuthenticatedUser;
 use crate::routes::{ApiError, AppState};
-use crate::vscode::{proxy_to_guest_port, GuestAuth, GuestProxyTarget};
+use crate::vscode::{proxy_to_guest_port, GuestAuth, GuestProxyTarget, GuestService};
 use axum::body::Body;
 use axum::extract::{Extension, Path, State};
 use axum::http::Request;
 use axum::response::Response;
-
-/// Port sur lequel `ttyd` ecoute dans la microVM agent (voir
-/// github.com/PhilippeVienne/atelier-workspace `.devcontainer/atelier-terminal.service`) —
-/// meme convention que `code_server_port()` : fixe par Workshop pour ce lot,
-/// `ATELIER_TERMINAL_PORT` overridable pour les tests.
-fn terminal_port() -> u16 {
-    std::env::var("ATELIER_TERMINAL_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(7681)
-}
 
 pub async fn terminal_proxy_root(
     State(state): State<AppState>,
@@ -37,7 +26,7 @@ pub async fn terminal_proxy_root(
         GuestProxyTarget {
             name,
             path: String::new(),
-            port: terminal_port(),
+            service: GuestService::Terminal,
             url_prefix: "terminal",
             record_session: true,
             auth: GuestAuth::Basic,
@@ -59,7 +48,7 @@ pub async fn terminal_proxy(
         GuestProxyTarget {
             name,
             path,
-            port: terminal_port(),
+            service: GuestService::Terminal,
             url_prefix: "terminal",
             record_session: true,
             auth: GuestAuth::Basic,

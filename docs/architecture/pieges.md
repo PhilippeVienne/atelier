@@ -1226,3 +1226,9 @@
   - *Symptome observable* : après une reprise, surtout depuis S3, le Workshop passe `Running` puis le premier `exec_in_workshop` échoue avec `connexion SSH echouee: Disconnected` ; le suivant réussit.
   - *Cause reelle* : le protocole `portforward` ne signale un échec que quand la connexion vers l'invité est refusée. Tant que la microVM n'existe pas (instantané en cours de téléchargement ou de restauration), personne ne répond au SYN : `net-proxy` attend sans rien dire, et une sonde qui conclut « ouvert » d'une absence d'erreur répond vrai.
   - *Solution* : `guest_port_answers` (`crates/controller/src/guest_probe.rs`) ne tient un port pour prêt que sur des octets reçus de l'invité. Toute nouvelle sonde doit attendre une preuve positive du service visé, jamais l'absence de refus.
+
+- **Un service injecté optionnel ne doit rien préparer dont un autre dépend (tache 14.4, spec 19).**
+  - *Symptome observable* : un Workshop créé sans terminal ni IDE (`spec.guestServices`) atteint `Running`, puis chaque exec échoue avec `authentification SSH refusee (cle non autorisee cote guest ?)`.
+  - *Cause reelle* : le compte `vscode` (création, et déverrouillage de son entrée `shadow`, sans lequel `sshd` refuse même une clé publique) n'était préparé que par `inject_terminal_and_ide`, qui ne fait plus rien quand aucun des deux services n'est demandé. `sshd` s'installait donc pour un compte absent ou verrouillé.
+  - *Solution* : `install_sshd` (`crates/image-builder/src/main.rs`) prépare lui-même le compte. Chaque injection doit être autonome : la tester seule, sur un rootfs nu.
+  - *A quoi le reconnaitre* : la sonde de readiness ne voit que la bannière SSH. `Running` ne prouve pas qu'un exec aboutira.

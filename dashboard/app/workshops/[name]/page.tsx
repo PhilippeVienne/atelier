@@ -4,6 +4,7 @@ import {
   ApiServerError,
   getLlmBudget,
   getWorkshop,
+  installedGuestServices,
   listApprovals,
   listCredentials,
   listWorkshopEvents,
@@ -129,6 +130,9 @@ export default async function WorkshopDetailPage({
   const canSuspend = phase === "Running";
   const canResume = phase === "Suspended";
   const canConnect = phase === "Running";
+  // Un Workshop peut etre cree sans terminal ni IDE (`spec.guestServices`) :
+  // ne pas proposer un pont que l'api-server refuserait en 404.
+  const { terminal: hasTerminal, ide: hasIde } = installedGuestServices(workshop);
   const busy = BUSY_PHASES.includes(phase);
 
   // Consommation LLM : information d'appoint, jamais bloquante — une
@@ -230,14 +234,14 @@ export default async function WorkshopDetailPage({
         <Credentials workshopName={name} initial={credentials} />
 
         <div className="flex flex-wrap gap-2">
-          {canConnect && (
+          {canConnect && hasIde && (
             <ConnectLink
               href={`/workshops/${encodeURIComponent(name)}/vscode/`}
               label="Ouvrir VS Code"
               variant="primary"
             />
           )}
-          {canConnect && (
+          {canConnect && hasTerminal && (
             <ConnectLink
               href={`/workshops/${encodeURIComponent(name)}/terminal/`}
               label="Terminal"
@@ -281,7 +285,7 @@ export default async function WorkshopDetailPage({
           <EventsLog name={name} initialEvents={events} live={busy} />
         </div>
 
-        {canConnect && (
+        {canConnect && hasTerminal && (
           <div className="flex flex-col gap-3">
             <h2 className="text-sm font-medium text-muted uppercase tracking-wide">Terminal</h2>
             <TerminalFrame src={`/workshops/${encodeURIComponent(name)}/terminal/`} />

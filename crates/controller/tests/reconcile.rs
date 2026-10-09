@@ -81,6 +81,7 @@ fn sample_spec() -> WorkshopSpec {
         exported_services: vec![],
         allowed_internal_targets: vec![],
         campaign_id: None,
+        guest_services: Default::default(),
     }
 }
 

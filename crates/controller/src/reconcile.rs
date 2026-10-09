@@ -1050,6 +1050,16 @@ async fn ensure_image_build_job(
         ),
         env_var("ATELIER_WORKSHOP_NAME", name),
         env_var("ATELIER_WORKSHOP_NAMESPACE", ns),
+        // Services d'acces a installer dans l'image, en plus de `sshd`
+        // (`spec.guestServices`, tache 14.4).
+        env_var(
+            "ATELIER_GUEST_TERMINAL",
+            &workshop.spec.guest_services.terminal.to_string(),
+        ),
+        env_var(
+            "ATELIER_GUEST_IDE",
+            &workshop.spec.guest_services.ide.to_string(),
+        ),
         env_var("ATELIER_REGISTRY_ADDR", &ctx.registry_addr),
         env_var(
             "ATELIER_REGISTRY_INSECURE",
@@ -1735,15 +1745,10 @@ async fn ensure_parent_pod(
     // `0.0.0.0` — c'est par la que passe `crate::guest_probe`, depuis
     // l'exterieur du pod.
     const NET_PROXY_CONTROL_PORT: u16 = 9000;
-    // Port `ttyd` dans le guest (voir `crates/api-server/src/terminal.rs`,
-    // meme convention) : canari le plus rapide a demarrer parmi les
-    // services embarques par le devcontainer, utilise comme signal de
-    // readiness avant de marquer le Workshop `Running`.
-    const GUEST_TERMINAL_PORT: u16 = 7681;
-    /// Port SSH du guest, tel qu'ecrit dans le `sshd_config` injecte par
-    /// `crates/image-builder` et attendu par `crate::exec` cote api-server
-    /// (`ATELIER_SSH_PORT`).
-    const GUEST_SSH_PORT: u16 = 2222;
+    // Ports des services injectes dans l'invite : ceux que `image-builder`
+    // a inscrits dans le statut au build, sinon les ports historiques
+    // (`atelier_common::GuestPorts`). L'api-server lit la meme source.
+    let guest_ports = workshop.guest_ports();
     // "Edge port" LocalStack (sert la quasi-totalite des API AWS emulees
     // sur ce seul port) : lie a `127.0.0.1` du pod, jamais expose
     // directement a la VM (seulement via l'alias `simulator` de net-proxy,
@@ -2326,17 +2331,26 @@ async fn ensure_parent_pod(
                     // l'invite, pas l'absence de refus : a la reprise, tant
                     // que la microVM n'existe pas, rien ne refuse (tache
                     // 14.14, voir `guest_probe`).
-                    crate::guest_probe::guest_port_answers(
-                        &pod_ip,
-                        NET_PROXY_CONTROL_PORT,
-                        GUEST_TERMINAL_PORT,
-                        crate::guest_probe::Expect::HttpResponse,
-                    )
-                    .await
+                    //
+                    // Sans terminal installe (`spec.guestServices`), il ne
+                    // reste que la porte de l'exec.
+                    let terminal_ready = match guest_ports.terminal {
+                        Some(port) => {
+                            crate::guest_probe::guest_port_answers(
+                                &pod_ip,
+                                NET_PROXY_CONTROL_PORT,
+                                port,
+                                crate::guest_probe::Expect::HttpResponse,
+                            )
+                            .await
+                        }
+                        None => true,
+                    };
+                    terminal_ready
                         && crate::guest_probe::guest_port_answers(
                             &pod_ip,
                             NET_PROXY_CONTROL_PORT,
-                            GUEST_SSH_PORT,
+                            guest_ports.ssh,
                             crate::guest_probe::Expect::SshBanner,
                         )
                         .await
@@ -2555,6 +2569,10 @@ fn carry_forward_status(
             .status
             .as_ref()
             .and_then(|s| s.upgrade_state.clone()),
+        // Ecrit par `image-builder` avec `image_digest`, et reporte comme
+        // lui : le perdre ferait retomber l'api-server et la sonde de
+        // readiness sur les ports historiques, ou plus rien n'ecoute.
+        guest_ports: workshop.status.as_ref().and_then(|s| s.guest_ports),
         conditions: BTreeMap::new(),
     }
 }
@@ -2893,6 +2911,7 @@ mod template_hash_tests {
                 exported_services: vec![],
                 allowed_internal_targets: vec![],
                 campaign_id: None,
+                guest_services: Default::default(),
             },
             status: Some(WorkshopStatus {
                 phase: WorkshopPhase::Running,
@@ -2907,6 +2926,40 @@ mod template_hash_tests {
             Some("ws-parent"),
             "le nom du pod parent doit etre reporte, pas efface"
         );
+    }
+
+    #[test]
+    fn carry_forward_keeps_the_guest_ports_written_by_image_builder() {
+        use atelier_common::GuestPorts;
+        let ports = GuestPorts {
+            ssh: 61022,
+            terminal: None,
+            ide: Some(61080),
+        };
+        let mut workshop: Workshop = serde_json::from_value(serde_json::json!({
+            "apiVersion": "atelier.dev/v1alpha1",
+            "kind": "Workshop",
+            "metadata": { "name": "w" },
+            "spec": {
+                "devcontainer": { "repo": "https://example.invalid/r.git" },
+                "resources": { "cpu": "1", "memory": "1Gi" },
+                "ownerGroup": "g",
+                "ownerSubject": "s"
+            }
+        }))
+        .expect("Workshop minimal");
+        workshop.status = Some(WorkshopStatus {
+            phase: WorkshopPhase::Running,
+            guest_ports: Some(ports),
+            ..Default::default()
+        });
+        let carried = carry_forward_status(&workshop, WorkshopPhase::Suspending, None);
+        assert_eq!(carried.guest_ports, Some(ports));
+
+        // Workshop d'avant ces ports : rien a reporter, rien d'invente.
+        workshop.status = Some(WorkshopStatus::default());
+        let carried = carry_forward_status(&workshop, WorkshopPhase::Running, None);
+        assert_eq!(carried.guest_ports, None);
     }
 
     #[test]

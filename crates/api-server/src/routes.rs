@@ -739,6 +739,11 @@ struct CreateWorkshopRequest {
     /// sur `WorkshopSpec`).
     #[serde(default)]
     campaign_id: Option<String>,
+    /// Services d'acces a installer dans l'image en plus de `sshd` : par
+    /// defaut le terminal web et l'IDE web. Ex: `{"terminal": false, "ide":
+    /// false}` pour un Workshop qui ne sert qu'a `exec_in_workshop`.
+    #[serde(default)]
+    guest_services: atelier_common::GuestServices,
 }
 
 async fn create_workshop(
@@ -777,6 +782,7 @@ async fn create_workshop(
             exported_services: req.exported_services,
             allowed_internal_targets: req.allowed_internal_targets,
             campaign_id: req.campaign_id,
+            guest_services: req.guest_services,
         },
     );
 

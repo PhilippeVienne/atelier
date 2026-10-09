@@ -81,6 +81,21 @@ spec:
                   - port
                   type: object
                 type: array
+              guestServices:
+                default:
+                  ide: true
+                  terminal: true
+                description: 'Services d''acces injectes dans l''image en plus de `sshd` (spec `docs/specs/19-sessions-pour-apprenants.md` §3.3, tache 14.4). Absent : terminal web et IDE web, comme avant que ce champ existe.'
+                properties:
+                  ide:
+                    default: true
+                    description: IDE web (`code-server`), ouvert depuis le tableau de bord.
+                    type: boolean
+                  terminal:
+                    default: true
+                    description: Terminal web (`ttyd`), ouvert depuis le tableau de bord.
+                    type: boolean
+                type: object
               identityInjectionRules:
                 default: []
                 description: 'Regles d''injection de credentials appliquees par `identity-proxy` aux appels sortants de l''agent (jamais exposees en clair a la VM, voir `docs/architecture/network-security.md`). Vide : identity-proxy relaie sans jamais injecter.'
@@ -185,6 +200,33 @@ spec:
                 additionalProperties:
                   type: string
                 default: {}
+                type: object
+              guestPorts:
+                description: |-
+                  Ports des services injectes dans l'image de ce Workshop, inscrits par `image-builder` en meme temps que `image_digest` (tache 14.4). Lire [`WorkshopStatus::guest_ports`] plutot que ce champ : il rend les ports historiques quand le statut n'en dit rien.
+
+                  Meme `skip_serializing_if` que `image_digest`, pour la meme raison : ecrit par `image-builder`, il ne doit pas etre efface par un patch du controller qui ne le renseigne pas.
+                nullable: true
+                properties:
+                  ide:
+                    description: '`code-server`. Absent : IDE web non installe.'
+                    format: uint16
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  ssh:
+                    description: '`sshd`, canal de `exec_in_workshop`.'
+                    format: uint16
+                    minimum: 0.0
+                    type: integer
+                  terminal:
+                    description: '`ttyd`. Absent : terminal web non installe.'
+                    format: uint16
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                required:
+                - ssh
                 type: object
               imageDigest:
                 description: |-

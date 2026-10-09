@@ -57,6 +57,34 @@ export interface WorkshopSpec {
    *  `crates/net-proxy/src/internal.rs`, table `squad`. Toujours present,
    *  meme convention que `exportedServices`. */
   allowedInternalTargets: string[];
+  /** Services d'acces installes dans l'image en plus de `sshd`. Absent d'un
+   *  Workshop cree avant que ce choix existe : terminal et IDE installes. */
+  guestServices?: GuestServices;
+}
+
+export interface GuestServices {
+  terminal: boolean;
+  ide: boolean;
+}
+
+/** Ports des services injectes dans l'invite, inscrits par `image-builder`
+ *  a la fin du build. `terminal`/`ide` absents : service non installe. */
+export interface GuestPorts {
+  ssh: number;
+  terminal?: number | null;
+  ide?: number | null;
+}
+
+/** Le terminal web et l'IDE web sont-ils installes dans ce Workshop ?
+ *  `status.guestPorts` fait foi une fois l'image construite (c'est ce que
+ *  l'image contient reellement) ; avant, ou pour un Workshop d'avant ce
+ *  champ, `spec.guestServices`, dont l'absence vaut « tout installe ». */
+export function installedGuestServices(workshop: Workshop): GuestServices {
+  const ports = workshop.status?.guestPorts;
+  if (ports) {
+    return { terminal: ports.terminal != null, ide: ports.ide != null };
+  }
+  return workshop.spec.guestServices ?? { terminal: true, ide: true };
 }
 
 export interface WorkshopStatus {
@@ -64,6 +92,7 @@ export interface WorkshopStatus {
   podName?: string | null;
   imageDigest?: string | null;
   snapshotDigest?: string | null;
+  guestPorts?: GuestPorts | null;
   conditions: Record<string, string>;
 }
 

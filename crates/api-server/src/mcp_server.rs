@@ -192,6 +192,14 @@ struct CreateWorkshopParams {
     /// paquets (`NetworkPolicy` generee par le controller).
     #[serde(default)]
     campaign_id: Option<String>,
+    /// Installer le terminal web (`ttyd`) dans l'image. Vrai par defaut ;
+    /// `false` pour un Workshop pilote uniquement par `exec_in_workshop`.
+    #[serde(default)]
+    install_terminal: Option<bool>,
+    /// Installer l'IDE web (`code-server`) dans l'image. Vrai par defaut ;
+    /// `false` allege l'image de plusieurs centaines de Mio.
+    #[serde(default)]
+    install_ide: Option<bool>,
 }
 
 /// Miroir local d'`atelier_common::ExportedService` : ce module derive
@@ -297,6 +305,10 @@ impl WorkshopMcpServer {
                     .collect(),
                 allowed_internal_targets: params.allowed_internal_targets,
                 campaign_id: params.campaign_id,
+                guest_services: atelier_common::GuestServices {
+                    terminal: params.install_terminal.unwrap_or(true),
+                    ide: params.install_ide.unwrap_or(true),
+                },
             },
         );
 
@@ -490,7 +502,10 @@ impl WorkshopMcpServer {
             // la meme frontiere que l'acces au Workshop lui-meme.
             crate::routes::workshop_tenant(&workshop),
             name.clone(),
-            pod_ip,
+            crate::exec::GuestAddr {
+                pod_ip,
+                ssh_port: crate::exec::ssh_port(&workshop),
+            },
             private_key,
             command,
             workshop.spec.devcontainer.repo.clone(),
