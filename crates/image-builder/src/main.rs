@@ -32,7 +32,9 @@
 //!    docs/ARCHITECTURE.md).
 
 use anyhow::{ensure, Context, Result};
-use atelier_common::{patch_workshop_status, DevcontainerSource, OpenBaoClient};
+use atelier_common::{
+    patch_workshop_status, DevcontainerSource, GuestPorts, GuestServices, OpenBaoClient,
+};
 use atelier_firecracker::network::setup_link_local_tap;
 use atelier_firecracker::vm::{Vm, VmConfig};
 use kube::Client;
@@ -114,11 +116,15 @@ async fn main() -> Result<()> {
     tracing::info!("installing the boot-time workspace refresh service");
     inject_workspace_refresh(&rootfs_dir, &source).await?;
 
-    tracing::info!("installing terminal (ttyd) and web IDE (code-server)");
-    inject_terminal_and_ide(&rootfs_dir, &source).await?;
+    let guest_ports = GuestPorts::reserved(guest_services_from_env());
+    tracing::info!(
+        ?guest_ports,
+        "installing terminal (ttyd) and web IDE (code-server), as requested by the Workshop"
+    );
+    inject_terminal_and_ide(&rootfs_dir, &source, guest_ports).await?;
 
     tracing::info!("installing sshd");
-    inject_sshd(&rootfs_dir).await?;
+    inject_sshd(&rootfs_dir, guest_ports.ssh).await?;
 
     tracing::info!("checking for an init system, installing a minimal fallback if absent");
     ensure_init_system(&rootfs_dir).await?;
@@ -164,7 +170,10 @@ async fn main() -> Result<()> {
         &client,
         &workshop_namespace,
         &workshop_name,
-        serde_json::json!({ "imageDigest": digest }),
+        // Les ports vont avec l'image : ils y sont figes, et c'est ici
+        // seulement qu'on sait lesquels. Publies dans le meme patch que le
+        // digest, pour qu'aucun lecteur ne voie l'un sans l'autre.
+        status_after_build(&digest, guest_ports),
     )
     .await
     .context("echec de la mise a jour de status.imageDigest sur le Workshop")?;
@@ -1208,7 +1217,14 @@ exit 0
 /// password` pour l'IDE — `code-server` IGNORE le Basic Auth (mesure le
 /// 2026-09-01, voir docs/architecture/pieges.md), c'est sa propre variable
 /// d'environnement qui compte.
-async fn inject_terminal_and_ide(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
+async fn inject_terminal_and_ide(
+    rootfs_dir: &Path,
+    source: &DevcontainerSource,
+    ports: GuestPorts,
+) -> Result<()> {
+    if ports.terminal.is_none() && ports.ide.is_none() {
+        return Ok(());
+    }
     let (Ok(ttyd_bin), Ok(code_server_dir)) = (
         std::env::var("ATELIER_TTYD_BIN"),
         std::env::var("ATELIER_CODE_SERVER_DIR"),
@@ -1230,27 +1246,6 @@ async fn inject_terminal_and_ide(rootfs_dir: &Path, source: &DevcontainerSource)
     let bin_dir = rootfs_dir.join("usr/local/bin");
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    let ttyd_dest = bin_dir.join("ttyd");
-    tokio::fs::copy(&ttyd_bin, &ttyd_dest)
-        .await
-        .with_context(|| format!("copie de {ttyd_bin} vers {ttyd_dest:?}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&ttyd_dest, std::fs::Permissions::from_mode(0o755)).await?;
-    }
-
-    let code_server_dest = rootfs_dir.join("opt/atelier-code-server");
-    let status = Command::new("cp")
-        .args(["-a", &code_server_dir, &code_server_dest.to_string_lossy()])
-        .status()
-        .await
-        .context("copie de code-server")?;
-    ensure!(status.success(), "cp -a code-server a echoue");
-    chown_recursive(&code_server_dest);
-
-    let ws_path = format!("/workspaces/{}", workspace_name(source));
-
     // Boucle de retry : le secret `session_auth` (OpenBao) n'est
     // provisionne par le controller qu'apres la creation du pod parent,
     // pas garanti pret au premier `systemctl start` — `net-proxy` renvoie
@@ -1258,39 +1253,105 @@ async fn inject_terminal_and_ide(rootfs_dir: &Path, source: &DevcontainerSource)
     // du devcontainer de demo).
     let fetch_password = "PASSWORD=\"\"\nfor i in $(seq 1 60); do\n    PASSWORD=$(curl -fsS http://169.254.0.1:3132/session-auth 2>/dev/null) && [ -n \"$PASSWORD\" ] && break\n    sleep 2\ndone\n";
 
-    let ttyd_script = format!(
-        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexec /usr/local/bin/ttyd --writable --credential \"atelier:$PASSWORD\" -p 7681 bash\n"
-    );
-    write_executable(&bin_dir.join("atelier-start-ttyd.sh"), &ttyd_script).await?;
+    if let Some(port) = ports.terminal {
+        let ttyd_dest = bin_dir.join("ttyd");
+        tokio::fs::copy(&ttyd_bin, &ttyd_dest)
+            .await
+            .with_context(|| format!("copie de {ttyd_bin} vers {ttyd_dest:?}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&ttyd_dest, std::fs::Permissions::from_mode(0o755)).await?;
+        }
 
-    let code_server_script = format!(
-        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexport PASSWORD\nexec /opt/atelier-code-server/bin/code-server --auth password --bind-addr 0.0.0.0:8080 {ws_path}\n"
-    );
-    write_executable(
-        &bin_dir.join("atelier-start-code-server.sh"),
-        &code_server_script,
-    )
-    .await?;
+        write_executable(
+            &bin_dir.join("atelier-start-ttyd.sh"),
+            &ttyd_start_script(fetch_password, port),
+        )
+        .await?;
 
-    install_and_enable_unit(
-        rootfs_dir,
-        "atelier-terminal.service",
-        "[Unit]\nDescription=Terminal web atelier (ttyd)\nAfter=network.target\n\n\
-         [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
-         ExecStart=/usr/local/bin/atelier-start-ttyd.sh\n\n[Install]\nWantedBy=multi-user.target\n",
-    )
-    .await?;
+        install_and_enable_unit(
+            rootfs_dir,
+            "atelier-terminal.service",
+            "[Unit]\nDescription=Terminal web atelier (ttyd)\nAfter=network.target\n\n\
+             [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
+             ExecStart=/usr/local/bin/atelier-start-ttyd.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+        )
+        .await?;
+    }
 
-    install_and_enable_unit(
-        rootfs_dir,
-        "atelier-code-server.service",
-        "[Unit]\nDescription=IDE web atelier (code-server)\nAfter=network.target\n\n\
-         [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
-         ExecStart=/usr/local/bin/atelier-start-code-server.sh\n\n[Install]\nWantedBy=multi-user.target\n",
-    )
-    .await?;
+    if let Some(port) = ports.ide {
+        let code_server_dest = rootfs_dir.join("opt/atelier-code-server");
+        let status = Command::new("cp")
+            .args(["-a", &code_server_dir, &code_server_dest.to_string_lossy()])
+            .status()
+            .await
+            .context("copie de code-server")?;
+        ensure!(status.success(), "cp -a code-server a echoue");
+        chown_recursive(&code_server_dest);
+
+        let ws_path = format!("/workspaces/{}", workspace_name(source));
+        write_executable(
+            &bin_dir.join("atelier-start-code-server.sh"),
+            &code_server_start_script(fetch_password, port, &ws_path),
+        )
+        .await?;
+
+        install_and_enable_unit(
+            rootfs_dir,
+            "atelier-code-server.service",
+            "[Unit]\nDescription=IDE web atelier (code-server)\nAfter=network.target\n\n\
+             [Service]\nType=simple\nRestart=on-failure\nRestartSec=2\nUser=vscode\nGroup=vscode\n\
+             ExecStart=/usr/local/bin/atelier-start-code-server.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+        )
+        .await?;
+    }
 
     Ok(())
+}
+
+fn ttyd_start_script(fetch_password: &str, port: u16) -> String {
+    format!(
+        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexec /usr/local/bin/ttyd --writable --credential \"atelier:$PASSWORD\" -p {port} bash\n"
+    )
+}
+
+fn code_server_start_script(fetch_password: &str, port: u16, ws_path: &str) -> String {
+    format!(
+        "#!/usr/bin/env bash\nset -u\n{fetch_password}\nexport PASSWORD\nexec /opt/atelier-code-server/bin/code-server --auth password --bind-addr 0.0.0.0:{port} {ws_path}\n"
+    )
+}
+
+/// Services d'acces demandes par le Workshop (`spec.guestServices`),
+/// transmis par le controller au Job de build. Une variable absente vaut
+/// « installe », comme avant que ce choix existe ; seul `false` retire un
+/// service.
+fn guest_services_from_env() -> GuestServices {
+    let wanted =
+        |name: &str| std::env::var(name).map_or(true, |value| guest_service_wanted(&value));
+    GuestServices {
+        terminal: wanted("ATELIER_GUEST_TERMINAL"),
+        ide: wanted("ATELIER_GUEST_IDE"),
+    }
+}
+
+fn guest_service_wanted(value: &str) -> bool {
+    !value.trim().eq_ignore_ascii_case("false")
+}
+
+/// Ce qu'`image-builder` inscrit dans `status` a la fin d'un build.
+/// `terminal` et `ide` sont ecrits meme absents (`null`) : dans un patch
+/// JSON merge, c'est ce qui EFFACE la valeur d'un build precedent du meme
+/// Workshop, qui avait pu installer le service.
+fn status_after_build(digest: &str, ports: GuestPorts) -> serde_json::Value {
+    serde_json::json!({
+        "imageDigest": digest,
+        "guestPorts": {
+            "ssh": ports.ssh,
+            "terminal": ports.terminal,
+            "ide": ports.ide,
+        },
+    })
 }
 
 /// `vscode`/uid 1000 est une convention des images `mcr.microsoft.com/
@@ -1487,15 +1548,26 @@ async fn install_and_enable_unit(rootfs_dir: &Path, name: &str, unit_content: &s
 /// l'image CIBLE ni supposer que ses bibliotheques systeme sont compatibles.
 /// `UsePAM no` dans la config generee ci-dessous evite d'avoir a embarquer
 /// toute la pile PAM (modules charges par `dlopen`, jamais vus par `ldd`).
-async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
+async fn inject_sshd(rootfs_dir: &Path, port: u16) -> Result<()> {
     let Ok(sshd_dir) = std::env::var("ATELIER_SSHD_DIR") else {
         tracing::warn!("ATELIER_SSHD_DIR absent, sshd non installe");
         return Ok(());
     };
+    install_sshd(rootfs_dir, &sshd_dir, port).await
+}
+
+async fn install_sshd(rootfs_dir: &Path, sshd_dir: &str, port: u16) -> Result<()> {
+    // Le compte sous lequel `exec_in_workshop` se connecte. Il doit exister
+    // et ne pas etre verrouille dans `/etc/shadow`, sans quoi `sshd` refuse
+    // toute authentification, cle publique comprise. `inject_terminal_and_ide`
+    // s'en chargeait seul : un Workshop sans terminal ni IDE
+    // (`spec.guestServices`) demarrait donc, annoncait `Running`, et
+    // refusait chaque exec (« authentification SSH refusee »).
+    ensure_vscode_user(rootfs_dir).await?;
 
     let dest = rootfs_dir.join("opt/atelier-sshd");
     let status = Command::new("cp")
-        .args(["-a", &sshd_dir, &dest.to_string_lossy()])
+        .args(["-a", sshd_dir, &dest.to_string_lossy()])
         .status()
         .await
         .context("copie de sshd")?;
@@ -1505,7 +1577,8 @@ async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
     // ne suffit plus sur les versions recentes d'OpenSSH.
     ensure_sshd_user(rootfs_dir).await?;
 
-    let sshd_config = "Port 2222\n\
+    let sshd_config = format!(
+        "Port {port}\n\
          HostKey /etc/atelier-sshd/ssh_host_rsa_key\n\
          HostKey /etc/atelier-sshd/ssh_host_ed25519_key\n\
          PermitRootLogin no\n\
@@ -1514,7 +1587,8 @@ async fn inject_sshd(rootfs_dir: &Path) -> Result<()> {
          UsePAM no\n\
          AuthorizedKeysFile /home/vscode/.ssh/authorized_keys\n\
          PermitUserEnvironment yes\n\
-         PidFile /run/atelier-sshd.pid\n";
+         PidFile /run/atelier-sshd.pid\n"
+    );
     tokio::fs::create_dir_all(rootfs_dir.join("etc/atelier-sshd")).await?;
     tokio::fs::write(rootfs_dir.join("etc/atelier-sshd/sshd_config"), sshd_config).await?;
 
@@ -1918,9 +1992,12 @@ async fn publish_to_cache(cache_dir: &str, digest: &str, ext4_path: &Path) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        append_pem_to_bundle_file, check_boot_prerequisites, exists_in_rootfs,
-        inject_enterprise_ca_bundle, render_ssh_environment,
+        append_pem_to_bundle_file, check_boot_prerequisites, code_server_start_script,
+        exists_in_rootfs, guest_service_wanted, inject_enterprise_ca_bundle,
+        inject_terminal_and_ide, install_sshd, render_ssh_environment, status_after_build,
+        ttyd_start_script,
     };
+    use atelier_common::{DevcontainerSource, GuestPorts, GuestServices};
     use std::path::Path;
     use tokio::sync::Mutex;
 
@@ -2093,6 +2170,129 @@ mod tests {
         let file = rootfs.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, "").unwrap();
+    }
+
+    /// Le cas « exec seul » (`guestServices: {terminal: false, ide: false}`) :
+    /// `sshd` est alors le SEUL service installe, et il doit suffire a
+    /// rendre l'exec possible. Constate en Workshop reel : sans le compte
+    /// `vscode`, ou avec un compte verrouille, chaque exec etait refuse.
+    #[tokio::test]
+    async fn sshd_alone_brings_an_unlocked_vscode_account_and_its_port() {
+        let sshd_source = tempfile::tempdir().unwrap();
+        touch(sshd_source.path(), "bin/sshd");
+        let sshd_dir = sshd_source.path().to_string_lossy().into_owned();
+
+        // Image sans compte `vscode` : il est cree.
+        let bare = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(bare.path().join("etc")).unwrap();
+        std::fs::create_dir_all(bare.path().join("opt")).unwrap();
+        std::fs::write(
+            bare.path().join("etc/passwd"),
+            "root:x:0:0:root:/root:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(
+            bare.path().join("etc/shadow"),
+            "root:*:19000:0:99999:7:::\n",
+        )
+        .unwrap();
+        install_sshd(bare.path(), &sshd_dir, 61022).await.unwrap();
+        // Pas de contenu dans les messages d'echec de ce test ni du
+        // suivant : l'analyse statique prend l'affichage de `/etc/passwd` ou
+        // d'un script qui lit un mot de passe pour une fuite de secret.
+        let accounts = std::fs::read_to_string(bare.path().join("etc/passwd")).unwrap();
+        assert!(accounts.contains("vscode:x:1000:1000:"));
+        let config =
+            std::fs::read_to_string(bare.path().join("etc/atelier-sshd/sshd_config")).unwrap();
+        assert!(config.starts_with("Port 61022\n"), "{config}");
+        assert!(bare.path().join("opt/atelier-sshd/bin/sshd").exists());
+        assert!(bare
+            .path()
+            .join("usr/local/bin/atelier-start-sshd.sh")
+            .exists());
+
+        // Image dont le compte existe mais est verrouille (`!`) : deverrouille.
+        let locked = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(locked.path().join("etc")).unwrap();
+        std::fs::create_dir_all(locked.path().join("opt")).unwrap();
+        std::fs::write(
+            locked.path().join("etc/passwd"),
+            "vscode:x:1000:1000::/home/vscode:/bin/bash\n",
+        )
+        .unwrap();
+        std::fs::write(
+            locked.path().join("etc/shadow"),
+            "vscode:!:19000:0:99999:7:::\n",
+        )
+        .unwrap();
+        install_sshd(locked.path(), &sshd_dir, 61022).await.unwrap();
+        let shadow = std::fs::read_to_string(locked.path().join("etc/shadow")).unwrap();
+        assert!(shadow.starts_with("vscode:*:"), "{shadow}");
+    }
+
+    #[test]
+    fn start_scripts_listen_on_the_ports_they_are_given() {
+        let ttyd = ttyd_start_script("PASSWORD=x\n", 61081);
+        assert!(ttyd.starts_with("#!/usr/bin/env bash\n"));
+        assert!(ttyd.contains(" -p 61081 bash"));
+        assert!(!ttyd.contains("7681"));
+
+        let ide = code_server_start_script("PASSWORD=x\n", 61080, "/workspaces/repo");
+        assert!(ide.contains("--bind-addr 0.0.0.0:61080 /workspaces/repo"));
+        assert!(!ide.contains("8080"));
+    }
+
+    #[test]
+    fn only_an_explicit_false_removes_a_guest_service() {
+        for kept in ["true", "", "1", "oui"] {
+            assert!(guest_service_wanted(kept), "{kept:?}");
+        }
+        for removed in ["false", "FALSE", " false\n"] {
+            assert!(!guest_service_wanted(removed), "{removed:?}");
+        }
+    }
+
+    #[test]
+    fn the_build_publishes_digest_and_ports_together() {
+        let all = GuestPorts::reserved(GuestServices::default());
+        let status = status_after_build("sha256:abc", all);
+        assert_eq!(status["imageDigest"], "sha256:abc");
+        assert_eq!(status["guestPorts"]["ssh"], all.ssh);
+        assert_eq!(status["guestPorts"]["ide"], all.ide.unwrap());
+
+        // Service retire : `null` explicite, qui efface dans un patch JSON
+        // merge le port laisse par un build precedent.
+        let exec_only = GuestPorts::reserved(GuestServices {
+            terminal: false,
+            ide: false,
+        });
+        let status = status_after_build("sha256:abc", exec_only);
+        let ports = status["guestPorts"].as_object().unwrap();
+        assert!(
+            ports["terminal"].is_null() && ports["ide"].is_null(),
+            "{status}"
+        );
+        assert_eq!(ports["ssh"], exec_only.ssh);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_installed_when_neither_terminal_nor_ide_is_wanted() {
+        // Aucune variable `ATELIER_TTYD_BIN` requise : la fonction sort
+        // avant de chercher les binaires, et ne touche pas au rootfs.
+        let rootfs = tempfile::tempdir().unwrap();
+        let source = DevcontainerSource {
+            repo: "https://example.invalid/repo.git".into(),
+            revision: "HEAD".into(),
+            config_path: ".devcontainer/devcontainer.json".into(),
+        };
+        let exec_only = GuestPorts::reserved(GuestServices {
+            terminal: false,
+            ide: false,
+        });
+        inject_terminal_and_ide(rootfs.path(), &source, exec_only)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_dir(rootfs.path()).unwrap().count(), 0);
     }
 
     #[test]

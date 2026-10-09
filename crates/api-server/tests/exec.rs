@@ -205,8 +205,6 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
     wait_for_port(control_port).await;
     // SAFETY (test) : seul ce test de ce binaire touche cette variable.
     unsafe { std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string()) };
-    // SAFETY (test) : redirige le port SSH cible vers notre serveur mock.
-    unsafe { std::env::set_var("ATELIER_SSH_PORT", ssh_server_port.to_string()) };
 
     let namespace = "default".to_string();
     let owner_subject = "exec-owner@test.atelier".to_string();
@@ -229,7 +227,11 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         state.clone(),
         owner_subject.clone(),
         workshop_name,
-        "127.0.0.1".to_string(),
+        // Le port SSH cible est celui de notre serveur mock.
+        atelier_api_server::exec::GuestAddr {
+            pod_ip: "127.0.0.1".to_string(),
+            ssh_port: ssh_server_port,
+        },
         private_key_pem,
         "echo hello".to_string(),
         "https://example.invalid/repo.git".to_string(),

@@ -86,6 +86,23 @@ export function NewWorkshopForm({
         </span>
       </label>
 
+      <fieldset className="flex flex-col gap-2 text-sm">
+        <legend className="font-medium mb-1">Services d&apos;accès installés dans l&apos;image</legend>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" name="guestTerminal" defaultChecked />
+          <span>Terminal web</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" name="guestIde" defaultChecked />
+          <span>IDE web (VS Code)</span>
+        </label>
+        <span className="text-xs text-muted">
+          L&apos;exécution de commandes reste toujours disponible. Sans terminal ni
+          IDE, l&apos;image est plus légère (environ 430 Mio de moins). Ce choix est
+          figé à la création.
+        </span>
+      </fieldset>
+
       {state.error && (
         <p className="text-sm text-red-600 dark:text-red-400 border border-red-500/30 bg-red-500/10 rounded-lg px-3 py-2">
           {state.error}

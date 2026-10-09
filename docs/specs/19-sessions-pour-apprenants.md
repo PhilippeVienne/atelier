@@ -81,6 +81,16 @@ L'init propre à Atelier (images sans systemd) lance `ttyd` et `code-server` sou
 - Les ports de `sshd`, `ttyd` et `code-server` quittent les valeurs courantes (8080 en premier lieu) pour une plage réservée et documentée.
 - L'injection du terminal web et de l'IDE devient optionnelle par Workshop : un appelant qui n'utilise que l'exec n'a pas à les porter.
 
+Réalisé par la tâche 14.4 :
+
+- **Plage réservée 61000 à 61099**, au-dessus des ports éphémères de Linux : `sshd` sur 61022, `code-server` sur 61080, `ttyd` sur 61081. Le reste des ports appartient à l'environnement.
+- **`spec.guestServices {terminal, ide}`**, vrais par défaut ; `sshd` est toujours installé. Le choix est figé dans l'image au build. L'API REST l'accepte à la création (`guestServices`), l'outil MCP aussi (`install_terminal`, `install_ide`), et le formulaire de création du tableau de bord par deux cases à cocher.
+- **`status.guestPorts`**, inscrit par `image-builder` dans le même patch que `imageDigest` : la sonde du controller et les ponts de l'api-server y lisent les ports. Un statut qui n'en dit rien désigne une image d'avant cette tâche, sur 2222, 7681 et 8080 : les Workshops existants ne changent pas. Un pont vers un service non installé répond 404.
+
+Vérifié dans l'invité le 2026-10-09 (septième et huitième passages) : 8080, 7681 et 2222 fermés, un serveur de l'invité répond sur 8080 ; les deux cours Docker de Mentor passent en entier (19 étapes sur 19 et 27 sur 27, contre 12 et 23) ; sans terminal ni IDE, l'image pèse 430 Mio de moins, l'invité utilise 41 Mo au repos contre 83, et `docker-hello` y passe aussi 19 sur 19 ; suspension et reprise conservent `guestPorts`. Un défaut trouvé au premier de ces passages est corrigé : le compte de session n'était préparé que par l'installation du terminal, et un Workshop sans terminal ni IDE refusait chaque exec.
+
+Restent ouverts : la sonde de readiness ne vérifie que la bannière SSH, pas qu'une authentification aboutit ; le repli sur les ports historiques n'a été vérifié que par tests unitaires, faute d'un Workshop construit avec l'ancien `image-builder` ; le `ssh.service` d'une image qui installe `openssh-server` écoute toujours sur 22, ce qui ne gêne pas mais n'est pas le canal d'Atelier.
+
 ### 3.4. Un appel « exécuter une commande »
 
 Un appel de l'API (REST, à côté de l'outil MCP) dont les paramètres sont : la commande, le compte, le dossier de travail, l'environnement, une durée maximale **par appel**, une taille maximale de sortie. Il ferme l'entrée standard, attend la fin de la commande et rend en une réponse : le code de sortie **ou** le signal, la sortie standard et la sortie d'erreur séparées et intactes (octets nuls compris), et un indicateur de troncature. Il ne reste pas ouvert quand un processus d'arrière-plan garde un descripteur hérité.

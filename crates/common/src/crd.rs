@@ -97,6 +97,89 @@ pub struct WorkshopSpec {
     /// generee par ce mecanisme).
     #[serde(default)]
     pub campaign_id: Option<String>,
+    /// Services d'acces injectes dans l'image en plus de `sshd` (spec
+    /// `docs/specs/19-sessions-pour-apprenants.md` §3.3, tache 14.4).
+    /// Absent : terminal web et IDE web, comme avant que ce champ existe.
+    #[serde(default)]
+    pub guest_services: GuestServices,
+}
+
+/// Services d'acces qu'`image-builder` installe dans l'image d'un Workshop.
+/// `sshd` n'y figure pas : c'est le canal de `exec_in_workshop`, sans lequel
+/// un Workshop ne sert a rien, il est toujours installe.
+///
+/// Un appelant qui ne fait que lancer des commandes n'a besoin ni du
+/// terminal ni de l'IDE : les retirer allege l'image de plusieurs centaines
+/// de Mio et laisse a l'invite sa memoire et ses ports.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestServices {
+    /// Terminal web (`ttyd`), ouvert depuis le tableau de bord.
+    #[serde(default = "enabled")]
+    pub terminal: bool,
+    /// IDE web (`code-server`), ouvert depuis le tableau de bord.
+    #[serde(default = "enabled")]
+    pub ide: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+impl Default for GuestServices {
+    fn default() -> Self {
+        Self {
+            terminal: true,
+            ide: true,
+        }
+    }
+}
+
+/// Ports d'ecoute, dans l'invite, des services injectes par `image-builder`.
+///
+/// Ils sont figes dans l'image au build : c'est donc `image-builder` qui
+/// les inscrit dans `status.guestPorts`, et tout ce qui parle a l'invite
+/// (sonde de readiness du controller, ponts de l'api-server) les y lit.
+/// Un Workshop dont le statut n'en dit rien a ete construit avant la tache
+/// 14.4 : ses services ecoutent sur [`GuestPorts::LEGACY`].
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestPorts {
+    /// `sshd`, canal de `exec_in_workshop`.
+    pub ssh: u16,
+    /// `ttyd`. Absent : terminal web non installe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<u16>,
+    /// `code-server`. Absent : IDE web non installe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ide: Option<u16>,
+}
+
+impl GuestPorts {
+    /// Ports d'avant la tache 14.4. `code-server` sur 8080 empechait tout
+    /// service de l'invite d'ecouter sur le port HTTP de developpement le
+    /// plus courant (spec 19, constat 2).
+    pub const LEGACY: GuestPorts = GuestPorts {
+        ssh: 2222,
+        terminal: Some(7681),
+        ide: Some(8080),
+    };
+
+    /// Plage reservee a atelier dans l'invite : 61000 a 61099. Elle est
+    /// au-dessus de la plage des ports ephemeres de Linux (32768 a 60999,
+    /// `ip_local_port_range`) : ni un service de l'image ni une connexion
+    /// sortante ne s'y installe par hasard.
+    pub const RESERVED_RANGE: std::ops::RangeInclusive<u16> = 61000..=61099;
+
+    /// Ports des images construites depuis la tache 14.4, selon les
+    /// services demandes par le Workshop.
+    pub fn reserved(services: GuestServices) -> GuestPorts {
+        GuestPorts {
+            ssh: 61022,
+            terminal: services.terminal.then_some(61081),
+            ide: services.ide.then_some(61080),
+        }
+    }
 }
 
 /// Un port applicatif expose aux autres Workshops de la meme campagne — voir
@@ -268,8 +351,35 @@ pub struct WorkshopStatus {
     /// `docs/specs/02-helm-deployment-admin-doc.md`, section 1.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrade_state: Option<WorkshopUpgradeState>,
+    /// Ports des services injectes dans l'image de ce Workshop, inscrits
+    /// par `image-builder` en meme temps que `image_digest` (tache 14.4).
+    /// Lire [`WorkshopStatus::guest_ports`] plutot que ce champ : il rend
+    /// les ports historiques quand le statut n'en dit rien.
+    ///
+    /// Meme `skip_serializing_if` que `image_digest`, pour la meme raison :
+    /// ecrit par `image-builder`, il ne doit pas etre efface par un patch du
+    /// controller qui ne le renseigne pas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_ports: Option<GuestPorts>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
+}
+
+impl WorkshopStatus {
+    /// Ports des services de l'invite : ceux du statut, sinon les ports
+    /// historiques des images construites avant qu'ils y soient inscrits.
+    pub fn guest_ports(&self) -> GuestPorts {
+        self.guest_ports.unwrap_or(GuestPorts::LEGACY)
+    }
+}
+
+impl Workshop {
+    /// Voir [`WorkshopStatus::guest_ports`]. Sans statut : ports historiques.
+    pub fn guest_ports(&self) -> GuestPorts {
+        self.status
+            .as_ref()
+            .map_or(GuestPorts::LEGACY, WorkshopStatus::guest_ports)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -324,6 +434,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn guest_services_default_to_terminal_and_ide() {
+        // Champ absent, objet vide, et un seul des deux interrupteurs.
+        assert_eq!(
+            GuestServices::default(),
+            GuestServices {
+                terminal: true,
+                ide: true
+            }
+        );
+        let empty: GuestServices = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, GuestServices::default());
+        let no_ide: GuestServices = serde_json::from_str(r#"{"ide": false}"#).unwrap();
+        assert_eq!(
+            no_ide,
+            GuestServices {
+                terminal: true,
+                ide: false
+            }
+        );
+    }
+
+    #[test]
+    fn reserved_ports_leave_the_usual_ones_free() {
+        let all = GuestPorts::reserved(GuestServices::default());
+        let ports = [Some(all.ssh), all.terminal, all.ide];
+        for port in ports.into_iter().flatten() {
+            assert!(GuestPorts::RESERVED_RANGE.contains(&port), "{port}");
+        }
+        // Tous distincts, et aucun des ports historiques (8080 en tete).
+        assert_ne!(all.terminal, all.ide);
+        assert_ne!(Some(all.ssh), all.terminal);
+        assert_ne!(Some(all.ssh), all.ide);
+        for legacy in [2222, 7681, 8080] {
+            assert!(!ports.contains(&Some(legacy)), "{legacy}");
+        }
+
+        // Un service non demande n'a pas de port ; `sshd` en a toujours un.
+        let exec_only = GuestPorts::reserved(GuestServices {
+            terminal: false,
+            ide: false,
+        });
+        assert_eq!(
+            exec_only,
+            GuestPorts {
+                ssh: all.ssh,
+                terminal: None,
+                ide: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_status_without_guest_ports_means_the_legacy_ones() {
+        let old: WorkshopStatus = serde_json::from_str(r#"{"phase": "Running"}"#).unwrap();
+        assert_eq!(old.guest_ports, None);
+        assert_eq!(old.guest_ports(), GuestPorts::LEGACY);
+        assert_eq!(GuestPorts::LEGACY.ide, Some(8080));
+
+        // Ecrit par image-builder : sshd seul, terminal et IDE a `null`.
+        let built: WorkshopStatus = serde_json::from_str(
+            r#"{"phase": "Running", "guestPorts": {"ssh": 61022, "terminal": null, "ide": null}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            built.guest_ports(),
+            GuestPorts {
+                ssh: 61022,
+                terminal: None,
+                ide: None
+            }
+        );
+
+        // Un patch du controller qui ne les connait pas ne doit pas les
+        // effacer : le champ est omis, jamais serialise a `null`.
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("guestPorts").is_none(), "{json}");
+    }
+
     /// Round-trip JSON et YAML sur un `Workshop` complet (spec + status),
     /// garantissant que ce que le controller ecrit reste lisible par
     /// `kube-rs` (et reciproquement) apres le nettoyage Kanidm.
@@ -353,6 +542,7 @@ mod tests {
                 exported_services: vec![],
                 allowed_internal_targets: vec![],
                 campaign_id: None,
+                guest_services: Default::default(),
             },
         );
 

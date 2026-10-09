@@ -42,29 +42,30 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Port sur lequel `sshd` ecoute dans la microVM agent — canal separe de
-/// `ttyd`/`code-server`, dedie a `exec_in_workshop`.
+/// Port sur lequel `sshd` ecoute dans la microVM agent de CE Workshop —
+/// canal separe de `ttyd`/`code-server`, dedie a `exec_in_workshop`.
 ///
-/// `2222`, et non plus `22` : `crates/image-builder` injecte desormais son
-/// propre `sshd` dans TOUT devcontainer (`inject_sshd`), sur un port dedie
-/// choisi pour ne jamais entrer en conflit avec un `sshd` systeme
-/// preexistant. Le defaut `22` datait de l'epoque ou seul le devcontainer de
-/// demo (`atelier-workspace`) fournissait SSH, via le service systeme. Il ne
-/// vaut plus : sur toute image de base ordinaire, l'exec se connectait a un
-/// port que plus personne n'ecoutait, et echouait en `connexion SSH echouee:
-/// Disconnected` — un message qui donne a croire a un refus de `sshd` alors
-/// que c'est le port qui est faux.
-fn ssh_port() -> u16 {
+/// `crates/image-builder` injecte son propre `sshd` dans TOUT devcontainer
+/// (`inject_sshd`), sur un port dedie qui ne peut pas entrer en conflit
+/// avec un `sshd` systeme preexistant, et l'inscrit dans
+/// `status.guestPorts` ; un statut qui n'en dit rien designe une image
+/// d'avant la tache 14.4, sur le port historique (`atelier_common::
+/// GuestPorts`). Se tromper de port donne `connexion SSH echouee:
+/// Disconnected`, un message qui fait croire a un refus de `sshd` alors
+/// que plus personne n'ecoute.
+///
+/// `ATELIER_SSH_PORT` l'emporte quand elle est definie : elle ne sert
+/// qu'aux tests, qui remplacent l'invite par un serveur SSH local.
+pub fn ssh_port(workshop: &atelier_common::Workshop) -> u16 {
     std::env::var("ATELIER_SSH_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2222)
+        .unwrap_or(workshop.guest_ports().ssh)
 }
 
 /// Utilisateur systeme du devcontainer (voir
 /// `atelier-fetch-ssh-authorized-key.sh` : `authorized_keys` de
-/// `~vscode/.ssh/`) — meme convention fixe que `code_server_port()`/
-/// `terminal_port()`, pas encore configurable dans le CRD.
+/// `~vscode/.ssh/`) — convention fixe, pas configurable dans le CRD.
 const SSH_USER: &str = "vscode";
 
 struct ExecClientHandler;
@@ -87,7 +88,7 @@ pub async fn spawn(
     state: AppState,
     tenant: String,
     workshop_name: String,
-    pod_ip: String,
+    guest: GuestAddr,
     private_key_pem: String,
     command: String,
     devcontainer_repo: String,
@@ -105,7 +106,7 @@ pub async fn spawn(
         state,
         id,
         tenant,
-        pod_ip,
+        guest,
         private_key_pem,
         command,
         workspace_dir(&devcontainer_repo),
@@ -114,11 +115,18 @@ pub async fn spawn(
     Ok(id)
 }
 
+/// Ou joindre le `sshd` d'un invite : son pod parent, et le port ou il
+/// ecoute dans la microVM.
+pub struct GuestAddr {
+    pub pod_ip: String,
+    pub ssh_port: u16,
+}
+
 async fn run_and_persist(
     state: AppState,
     id: Uuid,
     tenant: String,
-    pod_ip: String,
+    guest: GuestAddr,
     private_key_pem: String,
     command: String,
     workspace_dir: String,
@@ -127,7 +135,7 @@ async fn run_and_persist(
         &state,
         id,
         &tenant,
-        &pod_ip,
+        &guest,
         &private_key_pem,
         &command,
         &workspace_dir,
@@ -138,7 +146,7 @@ async fn run_and_persist(
             finalize(&state.db_pool, id, &tenant, "Completed", exit_code).await;
         }
         Err(err) => {
-            tracing::warn!(%err, %id, workshop = %pod_ip, "exec_in_workshop echoue");
+            tracing::warn!(%err, %id, pod_ip = %guest.pod_ip, ssh_port = guest.ssh_port, "exec_in_workshop echoue");
             append_chunk(
                 &state.db_pool,
                 id,
@@ -238,12 +246,12 @@ async fn run_over_ssh(
     state: &AppState,
     id: Uuid,
     tenant: &str,
-    pod_ip: &str,
+    guest: &GuestAddr,
     private_key_pem: &str,
     command: &str,
     workspace_dir: &str,
 ) -> anyhow::Result<Option<i32>> {
-    let stream = crate::vscode::open_forwarded_tcp_stream(pod_ip, ssh_port()).await?;
+    let stream = crate::vscode::open_forwarded_tcp_stream(&guest.pod_ip, guest.ssh_port).await?;
     let key = decode_secret_key(private_key_pem, None)
         .map_err(|err| anyhow::anyhow!("cle SSH privee invalide: {err}"))?;
 

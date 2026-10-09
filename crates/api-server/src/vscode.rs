@@ -17,6 +17,7 @@
 
 use crate::auth::AuthenticatedUser;
 use crate::routes::{ensure_owner, resolve_running_pod_ip, workshops_api, ApiError, AppState};
+use atelier_common::Workshop;
 use axum::body::Body;
 use axum::extract::{Extension, Path, State};
 use axum::http::{self, Request, StatusCode};
@@ -27,16 +28,45 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message as TsMessage;
 
-/// Port sur lequel `code-server` ecoute dans la microVM agent (voir
-/// github.com/PhilippeVienne/atelier-workspace `.devcontainer/atelier-code-server.service`) —
-/// convention fixe par Workshop pour ce lot (pas encore configurable dans
-/// le CRD). `ATELIER_VSCODE_PORT` reste overridable pour les tests
-/// (eviter un conflit avec un vrai port 8080 deja occupe sur la machine).
-fn code_server_port() -> u16 {
-    std::env::var("ATELIER_VSCODE_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8080)
+/// Service de la microVM agent vise par un pont HTTP+WebSocket (voir
+/// [`proxy_to_guest_port`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuestService {
+    /// `code-server`.
+    Ide,
+    /// `ttyd`.
+    Terminal,
+}
+
+impl GuestService {
+    /// Port d'ecoute du service dans l'invite de CE Workshop.
+    ///
+    /// Les ports sont figes dans l'image au build : `image-builder` les
+    /// inscrit dans `status.guestPorts`, et un statut qui n'en dit rien
+    /// designe une image d'avant la tache 14.4, sur les ports historiques
+    /// (`atelier_common::GuestPorts`). `None` : le service n'a pas ete
+    /// installe dans l'image (`spec.guestServices`).
+    ///
+    /// `ATELIER_VSCODE_PORT`/`ATELIER_TERMINAL_PORT` l'emportent quand elles
+    /// sont definies : elles ne servent qu'aux tests, qui remplacent
+    /// l'invite par un serveur local sur un port libre.
+    pub(crate) fn port(self, workshop: &Workshop) -> Option<u16> {
+        let (override_var, port) = match self {
+            GuestService::Ide => ("ATELIER_VSCODE_PORT", workshop.guest_ports().ide),
+            GuestService::Terminal => ("ATELIER_TERMINAL_PORT", workshop.guest_ports().terminal),
+        };
+        std::env::var(override_var)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(port)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            GuestService::Ide => "l'IDE web",
+            GuestService::Terminal => "le terminal web",
+        }
+    }
 }
 
 pub async fn vscode_proxy_root(
@@ -51,7 +81,7 @@ pub async fn vscode_proxy_root(
         GuestProxyTarget {
             name,
             path: String::new(),
-            port: code_server_port(),
+            service: GuestService::Ide,
             url_prefix: "vscode",
             record_session: false,
             auth: GuestAuth::CodeServerCookie,
@@ -73,7 +103,7 @@ pub async fn vscode_proxy(
         GuestProxyTarget {
             name,
             path,
-            port: code_server_port(),
+            service: GuestService::Ide,
             url_prefix: "vscode",
             record_session: false,
             auth: GuestAuth::CodeServerCookie,
@@ -91,7 +121,7 @@ pub async fn vscode_proxy(
 pub(crate) struct GuestProxyTarget {
     pub name: String,
     pub path: String,
-    pub port: u16,
+    pub service: GuestService,
     pub url_prefix: &'static str,
     /// Si vrai, la sortie du tunnel (direction serveur->client) est
     /// dupliquee vers `crate::session_recorder` et archivee sur S3 (voir ce
@@ -185,9 +215,8 @@ fn urlencode(value: &str) -> String {
 }
 
 /// Pont HTTP+WebSocket generique vers un port de la microVM agent, reutilise
-/// pour tous les services embarques dans le devcontainer (`code-server` sur
-/// `code_server_port()`, terminal `ttyd` sur `crate::terminal::terminal_port()`,
-/// voir `crate::terminal`) : meme mecanisme de bout en bout (portforward ->
+/// pour tous les services embarques dans le devcontainer (`code-server` et
+/// le terminal `ttyd`, voir [`GuestService`] et `crate::terminal`) : meme mecanisme de bout en bout (portforward ->
 /// duplex -> hyper client avec upgrades), seul le port cible et le prefixe
 /// d'URL a retirer/reecrire (voir `Location` plus bas) changent.
 pub(crate) async fn proxy_to_guest_port(
@@ -199,14 +228,20 @@ pub(crate) async fn proxy_to_guest_port(
     let GuestProxyTarget {
         name,
         path,
-        port,
+        service,
         url_prefix,
         record_session,
         auth,
     } = target;
-    tracing::debug!(name = %name, path = %path, port, user = %user.subject, "proxy_to_guest_port appele");
+    tracing::debug!(name = %name, path = %path, ?service, user = %user.subject, "proxy_to_guest_port appele");
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
+    let port = service.port(&workshop).ok_or_else(|| {
+        ApiError::not_found_generic(&format!(
+            "{} n'est pas installe dans ce Workshop (spec.guestServices)",
+            service.label()
+        ))
+    })?;
     let pod_ip = resolve_running_pod_ip(&state, &workshop).await?;
 
     let stream = open_forwarded_tcp_stream(&pod_ip, port)
@@ -528,6 +563,49 @@ pub(crate) async fn open_forwarded_tcp_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workshop_with_ports(ports: Option<atelier_common::GuestPorts>) -> Workshop {
+        let mut workshop: Workshop = serde_json::from_value(serde_json::json!({
+            "apiVersion": "atelier.dev/v1alpha1",
+            "kind": "Workshop",
+            "metadata": { "name": "w" },
+            "spec": {
+                "devcontainer": { "repo": "https://example.invalid/r.git" },
+                "resources": { "cpu": "1", "memory": "1Gi" },
+                "ownerGroup": "g",
+                "ownerSubject": "s"
+            }
+        }))
+        .expect("Workshop minimal");
+        workshop.status = Some(atelier_common::WorkshopStatus {
+            guest_ports: ports,
+            ..Default::default()
+        });
+        workshop
+    }
+
+    /// Ces tests lisent les ports SANS les variables `ATELIER_*_PORT`, que
+    /// seuls les tests d'integration (autre binaire) definissent.
+    #[test]
+    fn guest_ports_come_from_the_status_of_the_workshop() {
+        use atelier_common::GuestPorts;
+
+        // Image d'avant la tache 14.4 : ports historiques.
+        let old = workshop_with_ports(None);
+        assert_eq!(GuestService::Ide.port(&old), Some(8080));
+        assert_eq!(GuestService::Terminal.port(&old), Some(7681));
+        assert_eq!(crate::exec::ssh_port(&old), 2222);
+
+        let new = workshop_with_ports(Some(GuestPorts {
+            ssh: 61022,
+            terminal: Some(61081),
+            ide: None,
+        }));
+        assert_eq!(GuestService::Terminal.port(&new), Some(61081));
+        assert_eq!(crate::exec::ssh_port(&new), 61022);
+        // IDE non installe : pas de port, le pont repondra 404.
+        assert_eq!(GuestService::Ide.port(&new), None);
+    }
 
     /// Ouvre un `SendRequest` branche sur un serveur factice qui repond la
     /// reponse brute fournie — assez pour exercer `code_server_login` sans

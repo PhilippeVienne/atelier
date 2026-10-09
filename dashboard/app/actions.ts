@@ -93,6 +93,12 @@ export async function createWorkshopAction(
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Cases a cocher : une case decochee est ABSENTE du formulaire.
+  const guestServices = {
+    terminal: formData.get("guestTerminal") === "on",
+    ide: formData.get("guestIde") === "on",
+  };
+
   if (!name || !repo) {
     return { error: "nom et depot devcontainer requis" };
   }
@@ -103,6 +109,7 @@ export async function createWorkshopAction(
       devcontainer: { repo, revision, configPath },
       resources: { cpu, memory, maxLlmBudgetUsd },
       egressAllowlist,
+      guestServices,
     });
   } catch (err) {
     const message = err instanceof ApiServerError ? err.message : "erreur inattendue";
