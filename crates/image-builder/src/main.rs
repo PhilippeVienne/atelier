@@ -1587,8 +1587,15 @@ async fn install_sshd(rootfs_dir: &Path, sshd_dir: &str, port: u16) -> Result<()
          UsePAM no\n\
          AuthorizedKeysFile /home/vscode/.ssh/authorized_keys\n\
          PermitUserEnvironment yes\n\
-         PidFile /run/atelier-sshd.pid\n"
+         PidFile /run/atelier-sshd.pid\n\
+         MaxStartups 100:30:200\n"
     );
+    // `MaxStartups` : par defaut (10:30:100) OpenSSH ecarte au hasard des
+    // connexions non encore authentifiees des qu'il y en a dix. Chaque exec
+    // ouvre sa connexion : une rafale d'appels sur un meme Workshop en
+    // perdait, et a travers le tunnel `portforward` l'appelant ne voyait
+    // qu'un silence (constate dans une microVM, tache 14.6). Seul
+    // l'api-server atteint ce port, par le tunnel interne au pod.
     tokio::fs::create_dir_all(rootfs_dir.join("etc/atelier-sshd")).await?;
     tokio::fs::write(rootfs_dir.join("etc/atelier-sshd/sshd_config"), sshd_config).await?;
 
@@ -2205,6 +2212,7 @@ mod tests {
         let config =
             std::fs::read_to_string(bare.path().join("etc/atelier-sshd/sshd_config")).unwrap();
         assert!(config.starts_with("Port 61022\n"), "{config}");
+        assert!(config.contains("\nMaxStartups 100:30:200\n"), "{config}");
         assert!(bare.path().join("opt/atelier-sshd/bin/sshd").exists());
         assert!(bare
             .path()

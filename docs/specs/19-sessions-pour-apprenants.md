@@ -109,9 +109,25 @@ Réalisé par la tâche 14.6 : `POST /v1/workshops/{name}/exec` (`crates/api-ser
 
 La réponse porte `exitCode` **ou** `signal`, `timedOut`, `stdoutBase64` et `stderrBase64` (les octets tels quels, nuls compris), `stdoutTruncated`, `stderrTruncated` et `durationMs`. Une commande qui échoue, dépasse son délai ou meurt d'un signal est une réponse `200` : c'est un résultat. Seul un échec du canal (invité injoignable, clé refusée) est une erreur de l'API.
 
-Vérifié le 2026-10-09 contre un vrai `sshd` OpenSSH lancé sans privilège sur la machine de test, avec un vrai shell (`crates/api-server/tests/run.rs`) : flux séparés, octets nuls, signaux `TERM`, `KILL` et `SEGV`, délai (y compris une commande qui ignore `TERM`), entrée standard fermée, retour immédiat malgré un processus d'arrière-plan qui garde la sortie ouverte, dossier et variables non interprétés, troncature. **Pas encore essayé dans un invité** : ni le tunnel de `net-proxy`, ni le `sshd` injecté dans une microVM ne sont couverts par ces tests.
+Vérifié d'abord contre un vrai `sshd` OpenSSH lancé sans privilège sur la machine de test, avec un vrai shell (`crates/api-server/tests/run.rs`), puis **dans l'invité** le 2026-10-10 (neuvième et dixième passages), à travers l'API, le tunnel de `net-proxy` et le `sshd` injecté, sur trois images dont une sans systemd :
 
-Restent ouverts : le **compte** ne se choisit pas par appel, la commande tourne sous le compte de session du `sshd` injecté (à traiter avec la tâche 14.7, qui applique `remoteUser`) ; l'appel n'est pas inscrit dans l'historique `exec_commands`, seulement journalisé ; les défauts de l'outil MCP restent ceux du constat 7 (tâche 14.5).
+- flux séparés, octets nuls, signaux `TERM`, `KILL` et `SEGV`, délai (y compris une commande qui ignore `TERM`, et le processus est bien tué dans l'invité), entrée standard fermée, dossier et variables non interprétés, troncature ;
+- `sleep 15 & echo lance` revient en 0,34 s : un processus d'arrière-plan ne retient pas la réponse ;
+- 0,159 s par appel en médiane, contre 0,344 s par l'outil MCP ;
+- le cours `git-basics` de Mentor rejoué par cet appel seul, avec les commandes que le serveur Mentor envoie : 31 étapes sur 31 (27 sur 27 et 19 sur 19 pour deux autres cours) ;
+- jusqu'à 100 appels simultanés sur un même Workshop répondent tous. Au-delà, l'invité ne peut plus créer de processus : les appels en trop reçoivent un `502` en 10 s, quelques-uns un `200` dont la commande a échoué sur `fork`, et aucun ne reste sans réponse.
+
+Ce dernier point a demandé deux corrections, trouvées par ces passages : l'ouverture de la session SSH n'avait pas de délai, et le `sshd` injecté gardait le `MaxStartups` par défaut d'OpenSSH, qui écarte des connexions dès qu'il y en a dix en attente. À travers le tunnel, ce rejet ne fermait pas la connexion vue par l'api-server : l'appel attendait sans fin, sans une ligne de journal.
+
+Restent ouverts :
+
+- le **compte** ne se choisit pas par appel : la commande tourne sous le compte de session du `sshd` injecté (tâche 14.7, qui applique `remoteUser`). Conséquence observée : `HOME` vaut `/home/vscode` et `USER` vaut `vscode` alors que `id` rend le compte de l'image (même uid) ; l'appelant qui en dépend doit passer `HOME` dans `env` ;
+- sur une image où le compte `vscode` a un autre dossier personnel (`docker-hello`), les variables de `/etc/environment` n'arrivent pas dans l'environnement de la commande. Cause non établie ; piste : `~/.ssh/environment` écrit sous `/home/vscode` ;
+- un invité saturé rend des `200` dont la commande a échoué sur `fork` (codes 125 ou 2) : rien ne les distingue d'un échec ordinaire de la commande ;
+- un champ inconnu dans la requête est refusé en `422`, pas en `400` ;
+- chaque appel ouvre sa connexion SSH ; une session réutilisée par Workshop réduirait la latence et la charge de l'invité ;
+- l'appel n'est pas inscrit dans l'historique `exec_commands`, seulement journalisé ; les défauts de l'outil MCP restent ceux du constat 7 (tâche 14.5) ;
+- non essayé : une image dont `timeout` vient de busybox.
 
 ### 3.5. Le dépôt source dans l'invité
 

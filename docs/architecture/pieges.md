@@ -1232,3 +1232,10 @@
   - *Cause reelle* : le compte `vscode` (création, et déverrouillage de son entrée `shadow`, sans lequel `sshd` refuse même une clé publique) n'était préparé que par `inject_terminal_and_ide`, qui ne fait plus rien quand aucun des deux services n'est demandé. `sshd` s'installait donc pour un compte absent ou verrouillé.
   - *Solution* : `install_sshd` (`crates/image-builder/src/main.rs`) prépare lui-même le compte. Chaque injection doit être autonome : la tester seule, sur un rootfs nu.
   - *A quoi le reconnaitre* : la sonde de readiness ne voit que la bannière SSH. `Running` ne prouve pas qu'un exec aboutira.
+
+- **Un `sshd` saturé écarte des connexions, et le tunnel `portforward` n'en dit rien (tache 14.6, spec 19).**
+  - *Symptome observable* : à partir d'une dizaine d'appels d'exec simultanés sur un même Workshop, quelques requêtes ne répondent jamais. Aucune ligne dans les journaux de l'api-server, rien qui tourne dans l'invité.
+  - *Cause reelle* : OpenSSH écarte au hasard des connexions non encore authentifiées dès qu'il y en a dix (`MaxStartups 10:30:100` par défaut). Le rejet ferme la connexion côté invité, mais pas celle que voit l'api-server à travers `net-proxy` ; et l'ouverture de la session SSH n'avait pas de délai.
+  - *Solution* : `MaxStartups 100:30:200` dans le `sshd_config` injecté (`crates/image-builder`), et `ESTABLISH_TIMEOUT` autour de l'ouverture de session (`crates/api-server/src/run.rs`), qui rend un `502` explicite.
+  - *A quoi le reconnaitre* : tout appel réseau vers l'invité passe par ce tunnel, qui ne propage pas une fermeture côté invité. Chaque étape d'un échange avec l'invité doit porter son propre délai. `crate::exec` (l'outil MCP) n'en a toujours pas à l'ouverture de session.
+

@@ -54,6 +54,12 @@ const SERVER_MARGIN: Duration = Duration::from_secs(10);
 /// sortie pour arriver. Sans processus d'arriere-plan le canal se ferme
 /// avant ; avec, il ne se fermerait jamais, et on n'attend pas plus.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(300);
+/// Temps laisse a l'ouverture de la session SSH (connexion, authentification,
+/// canal, envoi de la commande). Un `sshd` sature ecarte des connexions
+/// sans que le tunnel `portforward` ne les ferme : sans ce delai, l'appel
+/// attendait alors indefiniment, sans une ligne de journal (constate dans
+/// une microVM a partir d'une dizaine d'appels simultanes).
+pub const ESTABLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Plafond du delai par appel : celui de `exec_in_workshop`
 /// (`ATELIER_EXEC_CEILING_SECS`, 20 minutes par defaut).
@@ -255,34 +261,69 @@ pub async fn run_over<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    run_over_within(
+        stream,
+        user,
+        private_key_pem,
+        request,
+        default_dir,
+        ESTABLISH_TIMEOUT,
+    )
+    .await
+}
+
+/// [`run_over`], avec le delai d'ouverture de session donne par l'appelant
+/// (les tests n'attendent pas dix secondes un serveur muet).
+pub async fn run_over_within<S>(
+    stream: S,
+    user: &str,
+    private_key_pem: &str,
+    request: &RunRequest,
+    default_dir: &str,
+    establish_timeout: Duration,
+) -> anyhow::Result<RunOutcome>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let key = decode_secret_key(private_key_pem, None)
         .map_err(|err| anyhow::anyhow!("cle SSH privee invalide: {err}"))?;
-    let config = Arc::new(client::Config::default());
-    let mut session = client::connect_stream(config, stream, AcceptAnyHostKey)
+    let script = request.script(default_dir);
+    let establish = async {
+        let config = Arc::new(client::Config::default());
+        let mut session = client::connect_stream(config, stream, AcceptAnyHostKey)
+            .await
+            .map_err(|err| anyhow::anyhow!("connexion SSH echouee: {err}"))?;
+        let hash_alg = session
+            .best_supported_rsa_hash()
+            .await
+            .map_err(|err| anyhow::anyhow!("negociation SSH echouee: {err}"))?
+            .flatten();
+        let auth = session
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
+            .await
+            .map_err(|err| anyhow::anyhow!("authentification SSH echouee: {err}"))?;
+        if !auth.success() {
+            anyhow::bail!("authentification SSH refusee (cle non autorisee cote guest ?)");
+        }
+        let channel = session
+            .channel_open_session()
+            .await
+            .map_err(|err| anyhow::anyhow!("ouverture du canal SSH echouee: {err}"))?;
+        let started = Instant::now();
+        channel
+            .exec(true, script)
+            .await
+            .map_err(|err| anyhow::anyhow!("exec SSH echoue: {err}"))?;
+        Ok((session, channel, started))
+    };
+    let (session, mut channel, started) = tokio::time::timeout(establish_timeout, establish)
         .await
-        .map_err(|err| anyhow::anyhow!("connexion SSH echouee: {err}"))?;
-    let hash_alg = session
-        .best_supported_rsa_hash()
-        .await
-        .map_err(|err| anyhow::anyhow!("negociation SSH echouee: {err}"))?
-        .flatten();
-    let auth = session
-        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
-        .await
-        .map_err(|err| anyhow::anyhow!("authentification SSH echouee: {err}"))?;
-    if !auth.success() {
-        anyhow::bail!("authentification SSH refusee (cle non autorisee cote guest ?)");
-    }
-
-    let mut channel = session
-        .channel_open_session()
-        .await
-        .map_err(|err| anyhow::anyhow!("ouverture du canal SSH echouee: {err}"))?;
-    let started = Instant::now();
-    channel
-        .exec(true, request.script(default_dir))
-        .await
-        .map_err(|err| anyhow::anyhow!("exec SSH echoue: {err}"))?;
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "le sshd du guest n'a pas ouvert de session en {} s (sature ou injoignable)",
+                establish_timeout.as_secs_f32()
+            )
+        })??;
     // Entree standard fermee des le depart (le script la redirige aussi
     // vers /dev/null : ceinture et bretelles, `sshd` et le shell de session
     // ne reagissent pas tous de la meme facon a un EOF de canal).

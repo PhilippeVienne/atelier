@@ -11,7 +11,7 @@
 //! Ce que ce test ne couvre pas : le tunnel `portforward` de `net-proxy` et
 //! le `sshd` injecte dans une microVM (compte `vscode`, `PermitUserEnvironment`).
 
-use atelier_api_server::run::{run_over, RunOutcome, RunRequest};
+use atelier_api_server::run::{run_over, run_over_within, RunOutcome, RunRequest};
 use russh::keys::{Algorithm, PrivateKey};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -365,5 +365,45 @@ async fn a_key_the_guest_does_not_know_is_an_error_of_the_channel() {
     assert!(
         error.to_string().contains("authentification SSH refusee"),
         "{error}"
+    );
+}
+
+/// Un `sshd` sature ecarte des connexions sans les fermer du point de vue
+/// de l'api-server (constate a travers le tunnel `portforward`, a partir
+/// d'une dizaine d'appels simultanes sur un meme Workshop) : l'appel doit
+/// alors echouer, pas attendre sans fin.
+#[tokio::test]
+async fn a_guest_that_never_answers_is_an_error_not_a_wait() {
+    // Un serveur qui accepte la connexion et ne dit jamais rien.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let started = Instant::now();
+    let error = run_over_within(
+        stream,
+        "personne",
+        &pem(&new_key()),
+        &request("true"),
+        "/tmp",
+        Duration::from_millis(300),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("n'a pas ouvert de session"),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
     );
 }
