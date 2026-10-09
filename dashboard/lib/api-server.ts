@@ -111,6 +111,8 @@ export interface CreateWorkshopInput {
   resources: WorkshopResources;
   egressAllowlist?: string[];
   tools?: string[];
+  /** Absent : terminal et IDE installes. Fige dans l'image a la creation. */
+  guestServices?: GuestServices;
 }
 
 export class ApiServerError extends Error {
