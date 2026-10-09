@@ -2321,16 +2321,23 @@ async fn ensure_parent_pod(
                     // alors qu'il s'agissait d'une simple course. Un
                     // Workshop n'est utilisable que quand SES DEUX portes
                     // d'entree repondent : le terminal et l'exec.
-                    crate::guest_probe::guest_tcp_port_open(
+                    //
+                    // Et « repondent » veut dire des octets recus de
+                    // l'invite, pas l'absence de refus : a la reprise, tant
+                    // que la microVM n'existe pas, rien ne refuse (tache
+                    // 14.14, voir `guest_probe`).
+                    crate::guest_probe::guest_port_answers(
                         &pod_ip,
                         NET_PROXY_CONTROL_PORT,
                         GUEST_TERMINAL_PORT,
+                        crate::guest_probe::Expect::HttpResponse,
                     )
                     .await
-                        && crate::guest_probe::guest_tcp_port_open(
+                        && crate::guest_probe::guest_port_answers(
                             &pod_ip,
                             NET_PROXY_CONTROL_PORT,
                             GUEST_SSH_PORT,
+                            crate::guest_probe::Expect::SshBanner,
                         )
                         .await
                 }
