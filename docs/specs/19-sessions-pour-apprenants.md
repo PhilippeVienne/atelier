@@ -97,6 +97,22 @@ Un appel de l'API (REST, à côté de l'outil MCP) dont les paramètres sont : l
 
 Les défauts du constat 7 sont à corriger aussi pour l'outil MCP existant, indépendamment de ce nouvel appel.
 
+Réalisé par la tâche 14.6 : `POST /v1/workshops/{name}/exec` (`crates/api-server/src/run.rs`).
+
+| Champ de la requête | Rôle | Défaut |
+|---|---|---|
+| `command` | commande, interprétée par `sh -c` | requis |
+| `workingDir` | dossier de travail ; s'il est donné et absent, la commande n'est pas lancée (code 126) | le workspace du Workshop |
+| `env` | variables d'environnement ajoutées à celles de la session | aucune |
+| `timeoutSeconds` | délai de la commande, plafonné par `ATELIER_EXEC_CEILING_SECS` | 60 |
+| `maxOutputBytes` | octets gardés par flux de sortie, plafonnés à 8 Mio | 1 Mio |
+
+La réponse porte `exitCode` **ou** `signal`, `timedOut`, `stdoutBase64` et `stderrBase64` (les octets tels quels, nuls compris), `stdoutTruncated`, `stderrTruncated` et `durationMs`. Une commande qui échoue, dépasse son délai ou meurt d'un signal est une réponse `200` : c'est un résultat. Seul un échec du canal (invité injoignable, clé refusée) est une erreur de l'API.
+
+Vérifié le 2026-10-09 contre un vrai `sshd` OpenSSH lancé sans privilège sur la machine de test, avec un vrai shell (`crates/api-server/tests/run.rs`) : flux séparés, octets nuls, signaux `TERM`, `KILL` et `SEGV`, délai (y compris une commande qui ignore `TERM`), entrée standard fermée, retour immédiat malgré un processus d'arrière-plan qui garde la sortie ouverte, dossier et variables non interprétés, troncature. **Pas encore essayé dans un invité** : ni le tunnel de `net-proxy`, ni le `sshd` injecté dans une microVM ne sont couverts par ces tests.
+
+Restent ouverts : le **compte** ne se choisit pas par appel, la commande tourne sous le compte de session du `sshd` injecté (à traiter avec la tâche 14.7, qui applique `remoteUser`) ; l'appel n'est pas inscrit dans l'historique `exec_commands`, seulement journalisé ; les défauts de l'outil MCP restent ceux du constat 7 (tâche 14.5).
+
 ### 3.5. Le dépôt source dans l'invité
 
 `ensure_workspace_clone` devient optionnel (`spec.source.cloneWorkspace`, vrai par défaut pour ne rien changer aux usages actuels). À faux, rien du dépôt n'entre dans l'image hors ce que le build y a copié, et l'exec comme VS Code s'ouvrent sur le dossier de travail déclaré.

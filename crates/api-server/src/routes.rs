@@ -136,6 +136,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             "/v1/admin/llm/models/{id}",
             patch(admin_llm_update_model).delete(admin_llm_delete_model),
         )
+        .route("/v1/workshops/{name}/exec", post(crate::run::run_handler))
         .route(
             "/v1/workshops/{name}/exec/{id}/stream",
             get(crate::exec::stream_handler),

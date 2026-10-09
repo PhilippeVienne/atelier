@@ -66,7 +66,7 @@ pub fn ssh_port(workshop: &atelier_common::Workshop) -> u16 {
 /// Utilisateur systeme du devcontainer (voir
 /// `atelier-fetch-ssh-authorized-key.sh` : `authorized_keys` de
 /// `~vscode/.ssh/`) — convention fixe, pas configurable dans le CRD.
-const SSH_USER: &str = "vscode";
+pub(crate) const SSH_USER: &str = "vscode";
 
 struct ExecClientHandler;
 

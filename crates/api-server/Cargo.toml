@@ -57,6 +57,8 @@ russh = { version = "0.63", default-features = false, features = ["ring", "flate
 http = "1"
 
 [dev-dependencies]
+# Dossier jetable du vrai `sshd` de `tests/run.rs`.
+tempfile = "3"
 tower = "0.5"
 # Genere une paire de cles SSH de test (tests/exec.rs) et fait tourner un
 # serveur SSH minimal (`russh::server`) pour valider `crate::exec` sans

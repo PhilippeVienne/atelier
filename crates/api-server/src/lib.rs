@@ -8,6 +8,7 @@ pub mod llm_budget;
 pub mod mcp_server;
 pub mod portforward;
 pub mod routes;
+pub mod run;
 pub mod session_auth;
 pub mod session_recorder;
 pub mod terminal;

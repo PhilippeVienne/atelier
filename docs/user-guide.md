@@ -115,6 +115,31 @@ curl -X POST "$ATELIER_API/v1/workshops" -H "Authorization: Bearer $TOKEN" -H "C
 
 Le choix se fait à la création : il est figé dans l'image. Les ports effectivement installés sont dans `status.guestPorts` ; un Workshop créé avant l'introduction de cette plage garde ses anciens ports (2222, 7681, 8080) jusqu'à sa suppression.
 
+### Exécuter une commande et lire son résultat
+
+Pour un programme qui vérifie quelque chose dans un Workshop (une étape de labo, un test), un appel suffit : il lance la commande, attend sa fin et rend le résultat.
+
+```bash
+curl -X POST "$ATELIER_API/v1/workshops/verif-labo/exec" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "command": "git rev-parse --git-dir",
+  "workingDir": "/workspace",
+  "timeoutSeconds": 30
+}'
+```
+
+```json
+{"exitCode": 0, "signal": null, "timedOut": false,
+ "stdoutBase64": "LmdpdAo=", "stderrBase64": "",
+ "stdoutTruncated": false, "stderrTruncated": false, "durationMs": 41}
+```
+
+- La commande est interprétée par `sh -c`, entrée standard fermée.
+- `exitCode` ou `signal` : jamais les deux. Au-delà de `timeoutSeconds`, la commande est arrêtée et `timedOut` vaut `true`.
+- Les sorties sont en base64 : les octets exacts, y compris ceux qui ne sont pas du texte.
+- Une commande qui échoue est une réponse `200`. Les erreurs de l'API (`4xx`, `5xx`) signalent que la commande n'a pas pu être lancée.
+
+L'outil MCP `exec_in_workshop` reste le bon choix pour une commande longue dont on suit la sortie au fil de l'eau.
+
 ---
 
 ## 🔄 3. Suspendre et Reprendre un Workshop
