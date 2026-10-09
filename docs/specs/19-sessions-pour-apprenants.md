@@ -9,7 +9,7 @@
 
 ## 1. Constat, vérifié empiriquement
 
-Atelier a été essayé comme plan d'exécution d'un autre produit, [Mentor](https://github.com/PhilippeVienne/mentor), une plateforme de formation : chaque apprenant·e y reçoit un environnement (un dossier devcontainer) dans lequel un serveur lance des commandes et **vérifie** le résultat (code de sortie, sortie standard, fichiers). Deux passages ont eu lieu le 2026-10-06 sur `kind-atelier-dev` (controller et api-server lancés depuis les sources, commit `9eece24`, noyau invité 5.10.223). Le détail, les commandes et les journaux sont dans le dépôt de Mentor : [`doc/atelier-lab-validation.md`](https://github.com/PhilippeVienne/mentor/blob/main/doc/atelier-lab-validation.md).
+Atelier a été essayé comme plan d'exécution d'un autre produit, [Mentor](https://github.com/PhilippeVienne/mentor), une plateforme de formation : chaque apprenant·e y reçoit un environnement (un dossier devcontainer) dans lequel un serveur lance des commandes et **vérifie** le résultat (code de sortie, sortie standard, fichiers). Deux passages ont eu lieu le 2026-10-06 sur `kind-atelier-dev` (controller et api-server lancés depuis les sources, commit `9eece24`, noyau invité 5.10.223). Un troisième passage, le 2026-10-09, a vérifié dans l'invité le dimensionnement du disque (§3.1, tâche 14.1) et mis au jour le constat 16. Le détail, les commandes et les journaux sont dans le dépôt de Mentor : [`doc/atelier-lab-validation.md`](https://github.com/PhilippeVienne/mentor/blob/main/doc/atelier-lab-validation.md).
 
 **Ce qui marche.** Des commandes lancées par `exec_in_workshop` tournent sous l'uid 1000 dans une microVM, sans capacité, sans `sudo`, sans accès aux autres Workshops, au nœud ni aux services du cluster. Au second passage, cinq environnements de Mentor ont démarré sans modification et 27 labos sur 34 y ont été rejoués, étape par étape (vérifications en échec, solution, vérifications réussies) :
 
@@ -40,6 +40,7 @@ Atelier a été essayé comme plan d'exécution d'un autre produit, [Mentor](htt
 | 13 | Le cloisonnement s'arrête à l'API : tout est dans l'espace de noms `default`, sans `NetworkPolicy`, et `GET /v1/workshops` rend les Workshops de tous les groupes, spec comprise, à qui porte le rôle `admin`. Le port de redirection d'un Workshop a répondu à une requête HTTP venue d'un pod sans rapport ; l'ouverture d'un tunnel par ce chemin n'a pas été essayée. | observé |
 | 14 | L'api-server écoute sur `0.0.0.0:8080`, codé en dur (`crates/api-server/src/main.rs`) : il ne démarre pas sur une machine où ce port est pris. | observé |
 | 15 | Après une reprise, l'horloge de l'invité retarde d'environ 46 s (déjà relevé par la spec 18, §5). | observé |
+| 16 | **Une mise en veille perd tout ce qui a été écrit sur le disque racine.** À la reprise, la mémoire vient de l'instantané mais le disque est recopié depuis le cache d'images (`restore_persisted`, `crates/firecracker/src/vm.rs`). Un fichier de 200 Mio écrit et synchronisé avant la suspension se relit correctement tant qu'il est dans le cache de pages de l'invité, puis comme des zéros en lecture directe ; une fois le cache évincé, `ls` rend `Bad message` et le noyau journalise `EXT4-fs error … Directory block failed checksum`. Le système de fichiers reste monté en écriture. Indépendant de la taille du disque. | observé (troisième passage, 2026-10-09) |
 
 Mesures utiles : image prête → `Running` et reprise, 15,5 à 16,6 s (12 mesures) ; un aller-retour d'exec, 0,34 s en médiane sur 25, dont 0,03 s pour l'appel et le reste pour le sondage ; dix exec de `sleep 1` en parallèle, 1,3 s ; mémoire du superviseur et de la VM, 268 à 379 Mo pour un invité de 768 Mio, 969 Mo pour 2 Gio avec Docker.
 
@@ -101,6 +102,10 @@ Deux listes : celle du build, portée par l'image (elle rejoint la question ouve
 - Reconstruire le noyau invité avec `CONFIG_NF_TABLES` et `CONFIG_IP_NF_RAW` (et évaluer les autres options du constat 11).
 - Exposer la console de l'invité par Workshop, sur demande.
 - Rendre l'adresse d'écoute de l'api-server configurable.
+
+### 3.8. Le disque survit à la mise en veille
+
+Un instantané ne vaut que avec le disque qu'il décrit (constat 16). `snapshot_and_publish` (`crates/vm-supervisor/src/main.rs`) enregistre le disque racine de la microVM avec `snapshot.state` et `snapshot.mem`, et `restore_persisted` repart de cette copie, jamais du cache d'images. Tant que ce n'est pas fait, toute reprise d'un Workshop qui a écrit sur son disque le corrompt en silence : c'est le défaut le plus grave relevé par ces essais, et il rend aussi dangereux le contournement du constat 9 (suspendre et reprendre pour appliquer une liste d'egress).
 
 ---
 
