@@ -110,6 +110,32 @@ fn max_disk_mib() -> u32 {
         .unwrap_or(DEFAULT_MAX_DISK_MIB)
 }
 
+/// Delai par defaut accorde a `vm-supervisor` pour figer une microVM et
+/// publier son instantane, quand `ATELIER_SNAPSHOT_TIMEOUT_SECS` n'est pas
+/// defini : 5 minutes.
+const DEFAULT_SNAPSHOT_TIMEOUT_SECS: u64 = 300;
+
+/// Delai de l'appel `POST /snapshot` (spec 19, §3.8, tache 14.13).
+/// `vm-supervisor` ne repond qu'une fois l'instantane publie sur le cache
+/// ET televerse vers S3, memoire et disque compris : plusieurs dizaines de
+/// secondes pour un Workshop de quelques Gio. Trop court, ce delai fait
+/// supprimer le pod en plein televersement et laisse `snapshotDigest` vide.
+fn snapshot_timeout() -> std::time::Duration {
+    snapshot_timeout_from(
+        std::env::var("ATELIER_SNAPSHOT_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn snapshot_timeout_from(value: Option<&str>) -> std::time::Duration {
+    let secs = value
+        .and_then(|v| v.parse().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(DEFAULT_SNAPSHOT_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Convertit `Workshop.spec.resources.disk` en Mio pour
 /// `ATELIER_VM_DISK_MIB`, plafonne a `max_mib` (spec
 /// `docs/specs/19-sessions-pour-apprenants.md`, §3.1). `None` si le champ
@@ -307,6 +333,21 @@ mod component_image_tests {
         // la taille de l'image.
         for absent in [None, Some("0"), Some("0Gi"), Some("beaucoup"), Some("")] {
             assert_eq!(disk_to_mib(absent, cap), None, "{absent:?}");
+        }
+    }
+
+    #[test]
+    fn snapshot_timeout_defaults_to_five_minutes_and_ignores_nonsense() {
+        use super::snapshot_timeout_from;
+        use std::time::Duration;
+        assert_eq!(snapshot_timeout_from(None), Duration::from_secs(300));
+        assert_eq!(snapshot_timeout_from(Some("90")), Duration::from_secs(90));
+        for nonsense in ["0", "-5", "vite", ""] {
+            assert_eq!(
+                snapshot_timeout_from(Some(nonsense)),
+                Duration::from_secs(300),
+                "{nonsense:?}"
+            );
         }
     }
 
@@ -673,6 +714,11 @@ async fn ensure_suspended(
         .and_then(|s| s.snapshot_digest.clone());
 
     let phase = match existing_pod {
+        // Pod deja en cours de suppression : l'instantane a ete demande a
+        // la reconciliation precedente, et `vm-supervisor` est en train de
+        // s'arreter. Le lui redemander echouerait a coup sur, en
+        // journalisant a tort une « suspension sans snapshot ».
+        Some(pod) if pod.metadata.deletion_timestamp.is_some() => WorkshopPhase::Suspending,
         Some(pod) => {
             if let Some(digest) = request_snapshot(&pod).await {
                 snapshot_digest = Some(digest);
@@ -706,7 +752,7 @@ async fn request_snapshot(pod: &Pod) -> Option<String> {
     let url = format!("http://{pod_ip}:{VM_CONTROL_PORT}/snapshot");
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(snapshot_timeout())
         .build()
         .ok()?;
     let response = match client.post(&url).send().await {

@@ -336,6 +336,12 @@ workshops:
   # cette valeur. Le fichier est creux : seul ce que l'invite ecrit
   # reellement consomme le stockage ephemere du noeud.
   maxDiskGi: 20
+  # Delai (secondes) accorde a une microVM pour publier son instantane a la
+  # mise en veille, televersement S3 compris. Au-dela, le pod est libere
+  # sans attendre : l'instantane local reste utilisable, mais
+  # `status.snapshotDigest` n'est pas renseigne et la copie S3 peut etre
+  # incomplete (elle est alors ignoree a la reprise).
+  snapshotTimeoutSeconds: 300
 
 # ------------------------------------------------------------------------
 # Cache d'images (PVC partage) : eviction LRU (spec

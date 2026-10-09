@@ -171,6 +171,8 @@ spec:
             # docs/specs/19-sessions-pour-apprenants.md §3.1).
             - name: ATELIER_VM_MAX_DISK_MIB
               value: {{ mul .Values.workshops.maxDiskGi 1024 | quote }}
+            - name: ATELIER_SNAPSHOT_TIMEOUT_SECS
+              value: {{ .Values.workshops.snapshotTimeoutSeconds | quote }}
             {{- range $k, $v := .Values.controller.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

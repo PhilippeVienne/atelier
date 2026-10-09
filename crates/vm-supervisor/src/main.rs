@@ -448,9 +448,29 @@ async fn snapshot_and_publish(vm: &mut Vm, snapshot_dir: Option<&Path>) -> Snaps
 
     // Le disque n'entre pas dans ce digest, qui reste informatif : le lire
     // en entier doublerait le temps de la suspension.
+    snapshot_digest(&[&published.state, &published.mem]).await
+}
+
+/// sha256 de fichiers lus bout a bout, par blocs : la memoire d'une microVM
+/// fait plusieurs Gio, qu'il n'est pas question de charger d'un seul tenant
+/// dans celle du superviseur.
+async fn snapshot_digest(files: &[&Path]) -> anyhow::Result<String> {
+    use tokio::io::AsyncReadExt;
+
     let mut hasher = Sha256::new();
-    hasher.update(tokio::fs::read(&published.state).await?);
-    hasher.update(tokio::fs::read(&published.mem).await?);
+    let mut buffer = vec![0u8; 1024 * 1024];
+    for path in files {
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("ouverture de {path:?} pour son empreinte"))?;
+        loop {
+            let read = file.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
@@ -640,6 +660,30 @@ mod tests {
         std::fs::write(&files.disk, b"disk").unwrap();
         files.remove().await;
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_digest_is_the_sha256_of_the_files_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a");
+        let second = dir.path().join("b");
+        // Plus d'un bloc de lecture, et une fin qui ne tombe pas juste.
+        let content: Vec<u8> = (0..(2 * 1024 * 1024 + 123))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        std::fs::write(&first, &content).unwrap();
+        std::fs::write(&second, b"suite").unwrap();
+
+        let mut expected = Sha256::new();
+        expected.update(&content);
+        expected.update(b"suite");
+        assert_eq!(
+            snapshot_digest(&[&first, &second]).await.unwrap(),
+            format!("sha256:{:x}", expected.finalize())
+        );
+        assert!(snapshot_digest(&[&dir.path().join("absent")])
+            .await
+            .is_err());
     }
 
     #[test]

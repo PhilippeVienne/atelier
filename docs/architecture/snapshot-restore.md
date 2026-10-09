@@ -39,6 +39,14 @@ etat fige (`ensure_suspended`/`request_snapshot`,
 `desired_state: Suspended` sans snapshot que rester bloque dessus
 indefiniment.
 
+Le controller attend la reponse de `POST /snapshot` pendant
+`ATELIER_SNAPSHOT_TIMEOUT_SECS` (300 s par defaut, valeur
+`workshops.snapshotTimeoutSeconds` du chart). Ce delai couvre la copie du
+disque, la publication sur le cache **et le televersement vers S3** :
+`vm-supervisor` ne repond qu'une fois tout cela fait, et le pod est supprime
+des la reponse. Pendant que le pod s'arrete, le controller ne lui redemande
+plus d'instantane.
+
 ## Le disque fait partie de l'instantane
 
 `snapshot/create` ne fige que l'etat de la VM et sa memoire. Or cette
