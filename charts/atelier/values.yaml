@@ -327,6 +327,17 @@ squadToken:
   signingKey: ""
 
 # ------------------------------------------------------------------------
+# Limites appliquees a tout Workshop (spec
+# docs/specs/19-sessions-pour-apprenants.md §3.1)
+# ------------------------------------------------------------------------
+workshops:
+  # Plafond (Gio) de `spec.resources.disk` : le disque racine d'une microVM
+  # est agrandi a la taille demandee par son Workshop, sans jamais depasser
+  # cette valeur. Le fichier est creux : seul ce que l'invite ecrit
+  # reellement consomme le stockage ephemere du noeud.
+  maxDiskGi: 20
+
+# ------------------------------------------------------------------------
 # Cache d'images (PVC partage) : eviction LRU (spec
 # docs/specs/13-image-cache-offload.md §3.1/8.5)
 # ------------------------------------------------------------------------

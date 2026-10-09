@@ -160,6 +160,7 @@ async fn boots_builder_vm_and_pushes_image_to_registry() {
         mem_mib: 1024,
         boot_args,
         vsock: None,
+        rootfs_size_mib: None,
     };
 
     eprintln!(

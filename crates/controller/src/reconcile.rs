@@ -95,6 +95,31 @@ fn memory_to_mib(memory: &str) -> Option<u32> {
     Some((value * mebibytes_per_unit).round() as u32)
 }
 
+/// Plafond par defaut de `resources.disk`, en Mio, quand
+/// `ATELIER_VM_MAX_DISK_MIB` n'est pas defini : 20 Gio.
+const DEFAULT_MAX_DISK_MIB: u32 = 20 * 1024;
+
+/// Plafond de cluster applique a `resources.disk` : un Workshop ne peut pas
+/// reserver plus de disque que ce que l'operateur autorise, quelle que soit
+/// la valeur ecrite dans sa spec.
+fn max_disk_mib() -> u32 {
+    std::env::var("ATELIER_VM_MAX_DISK_MIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|mib| *mib > 0)
+        .unwrap_or(DEFAULT_MAX_DISK_MIB)
+}
+
+/// Convertit `Workshop.spec.resources.disk` en Mio pour
+/// `ATELIER_VM_DISK_MIB`, plafonne a `max_mib` (spec
+/// `docs/specs/19-sessions-pour-apprenants.md`, §3.1). `None` si le champ
+/// est absent, nul ou mal forme : `vm-supervisor` laisse alors le disque a
+/// la taille de l'image, comme avant que ce champ soit lu.
+fn disk_to_mib(disk: Option<&str>, max_mib: u32) -> Option<u32> {
+    let requested = memory_to_mib(disk?).filter(|mib| *mib > 0)?;
+    Some(requested.min(max_mib))
+}
+
 /// Convertit `Workshop.spec.resources.cpu` (format quantite Kubernetes,
 /// ex. `"2"`/`"500m"`) en nombre de vCPU Firecracker (`ATELIER_VM_VCPU_COUNT`) —
 /// arrondi au superieur, au moins 1.
@@ -268,6 +293,22 @@ fn component_image_ref(registry: Option<&str>, name: &str) -> String {
 #[cfg(test)]
 mod component_image_tests {
     use super::component_image_ref;
+
+    #[test]
+    fn disk_is_converted_and_capped_by_the_cluster_limit() {
+        use super::disk_to_mib;
+        let cap = 20 * 1024;
+        assert_eq!(disk_to_mib(Some("2Gi"), cap), Some(2048));
+        assert_eq!(disk_to_mib(Some("512Mi"), cap), Some(512));
+        // Au-dela du plafond : la valeur du cluster, jamais celle de la spec.
+        assert_eq!(disk_to_mib(Some("500Gi"), cap), Some(cap));
+        assert_eq!(disk_to_mib(Some("4Gi"), 1024), Some(1024));
+        // Absent, nul ou mal forme : rien n'est transmis, le disque garde
+        // la taille de l'image.
+        for absent in [None, Some("0"), Some("0Gi"), Some("beaucoup"), Some("")] {
+            assert_eq!(disk_to_mib(absent, cap), None, "{absent:?}");
+        }
+    }
 
     #[test]
     fn falls_back_to_the_bare_dev_tag_without_a_registry() {
@@ -1803,6 +1844,10 @@ async fn ensure_parent_pod(
                         .chain(
                             cpu_to_vcpu_count(&workshop.spec.resources.cpu)
                                 .map(|vcpus| env_var("ATELIER_VM_VCPU_COUNT", &vcpus.to_string())),
+                        )
+                        .chain(
+                            disk_to_mib(workshop.spec.resources.disk.as_deref(), max_disk_mib())
+                                .map(|mib| env_var("ATELIER_VM_DISK_MIB", &mib.to_string())),
                         )
                         // Offload S3 des snapshots (spec docs/specs/13-image-
                         // cache-offload.md, tache 8.4) : meme retransmission

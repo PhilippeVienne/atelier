@@ -124,6 +124,7 @@ async fn agent_devcontainer_boots_without_custom_init() {
         mem_mib: 2048,
         boot_args,
         vsock: None,
+        rootfs_size_mib: None,
     };
 
     eprintln!(

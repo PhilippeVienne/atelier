@@ -42,7 +42,7 @@ use fctools::vmm::id::VmmId;
 use fctools::vmm::installation::VmmInstallation;
 use fctools::vmm::ownership::VmmOwnershipModel;
 use fctools::vmm::resource::system::ResourceSystem;
-use fctools::vmm::resource::{MovedResourceType, ResourceType};
+use fctools::vmm::resource::{MovedResourceType, Resource, ResourceType};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -70,7 +70,7 @@ fn build_configuration_data(
     kernel_path: &Path,
     rootfs_path: &Path,
     network: Option<&NetworkSetup>,
-) -> Result<VmConfigurationData> {
+) -> Result<(VmConfigurationData, Resource)> {
     let kernel = resource_system
         .create_resource(
             kernel_path.to_path_buf(),
@@ -83,6 +83,10 @@ fn build_configuration_data(
             ResourceType::Moved(MovedResourceType::Copied),
         )
         .context("declaration de la ressource rootfs")?;
+    // Poignee conservee sur la copie privee du rootfs : son chemin dans le
+    // jail n'est connu qu'une fois les ressources initialisees (voir
+    // `grow_rootfs`).
+    let rootfs_handle = rootfs.clone();
 
     let network_interfaces = network
         .map(|net| {
@@ -119,7 +123,7 @@ fn build_configuration_data(
         })
         .transpose()?;
 
-    Ok(VmConfigurationData {
+    let data = VmConfigurationData {
         boot_source: BootSource {
             kernel_image: kernel,
             boot_args: Some(config.boot_args.clone()),
@@ -153,7 +157,35 @@ fn build_configuration_data(
         memory_hotplug_configuration: None,
         mmds_configuration: None,
         entropy_device: None,
-    })
+    };
+    Ok((data, rootfs_handle))
+}
+
+/// Agrandit la copie privee du rootfs a `config.rootfs_size_mib`, une fois
+/// qu'elle est dans le jail et avant que Firecracker ne demarre (spec 19,
+/// §3.1). Sans effet si aucune taille n'est demandee.
+async fn grow_rootfs(config: &VmConfig, rootfs: &Resource) -> Result<()> {
+    let Some(size_mib) = config.rootfs_size_mib else {
+        return Ok(());
+    };
+    let path = rootfs
+        .get_effective_path()
+        .context("le rootfs n'a pas de chemin dans le jail apres preparation")?;
+    match crate::rootfs::grow_ext4(path, size_mib).await? {
+        crate::rootfs::Resized::Grown { from_mib, to_mib } => {
+            tracing::info!(from_mib, to_mib, "disque racine de la microVM agrandi");
+        }
+        crate::rootfs::Resized::AlreadyLargeEnough {
+            size_mib: image_mib,
+        } => {
+            tracing::warn!(
+                requested_mib = size_mib,
+                image_mib,
+                "taille de disque demandee inferieure a celle de l'image : disque laisse a la taille de l'image"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub struct VmConfig {
@@ -179,6 +211,10 @@ pub struct VmConfig {
     /// defaut (`None`), la microVM builder et les tests existants n'en ont
     /// pas besoin.
     pub vsock: Option<VsockConfig>,
+    /// Taille du disque racine de l'invite, en Mio (`resources.disk` du
+    /// Workshop). `None`, ou une valeur inferieure a la taille de l'image :
+    /// le disque garde la taille de l'image. Voir [`crate::rootfs`].
+    pub rootfs_size_mib: Option<u64>,
 }
 
 /// `guest_cid` : identifiant du guest sur le "reseau" vsock, doit etre >= 3
@@ -286,7 +322,7 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(
+        let (data, rootfs) = build_configuration_data(
             &mut resource_system,
             config,
             kernel_path,
@@ -308,6 +344,8 @@ impl Vm {
         )
         .await
         .map_err(to_anyhow("preparation de la microVM (jail, ressources)"))?;
+
+        grow_rootfs(config, &rootfs).await?;
 
         inner
             .start(Duration::from_secs(5))
@@ -351,7 +389,7 @@ impl Vm {
     ) -> Result<Self> {
         let mut resource_system =
             ResourceSystem::new(config.spawner(), TokioRuntime, config.ownership_model());
-        let data = build_configuration_data(
+        let (data, rootfs) = build_configuration_data(
             &mut resource_system,
             config,
             kernel_path,
@@ -399,6 +437,10 @@ impl Vm {
         .map_err(to_anyhow(
             "preparation de la microVM depuis un snapshot persiste",
         ))?;
+
+        // Meme taille qu'au boot d'origine : l'invite restaure a en memoire
+        // un peripherique de cette taille-la.
+        grow_rootfs(config, &rootfs).await?;
 
         inner
             .start(Duration::from_secs(5))

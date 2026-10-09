@@ -482,6 +482,7 @@ async fn run_builder_vm(args: RunBuilderVmArgs<'_>) -> Result<()> {
         mem_mib: args.mem_mib,
         boot_args,
         vsock: None,
+        rootfs_size_mib: None,
     };
 
     tracing::info!("booting builder microVM");

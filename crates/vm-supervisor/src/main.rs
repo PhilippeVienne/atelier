@@ -131,6 +131,13 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "console=ttyS0 reboot=k panic=1 pci=off".to_string());
     let boot_args = format!("{base_boot_args} {}", kernel_ip_boot_arg(&network));
 
+    // Taille du disque racine demandee par le Workshop (`resources.disk`),
+    // deja plafonnee par le controller. Absente : disque a la taille de
+    // l'image, comme avant.
+    let rootfs_size_mib = std::env::var("ATELIER_VM_DISK_MIB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+
     let config = VmConfig {
         firecracker_bin: env_path("ATELIER_FIRECRACKER_BIN", "firecracker"),
         jailer_bin: env_path("ATELIER_JAILER_BIN", "jailer"),
@@ -160,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|_| "vsock.sock".to_string())
             ),
         }),
+        rootfs_size_mib,
     };
     let kernel_path = env_path("ATELIER_VM_KERNEL_PATH", "");
     let rootfs_path = env_path("ATELIER_VM_ROOTFS_PATH", "");
