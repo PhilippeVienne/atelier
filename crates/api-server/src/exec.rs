@@ -249,10 +249,15 @@ fn exec_ceiling_secs() -> u64 {
 /// images de devcontainer Debian/Ubuntu ; une image minimale qui en serait
 /// depourvue perdrait ce filet, pas la commande elle-meme (`timeout`
 /// absent produirait juste une erreur `not found`, remontee normalement).
+///
+/// `exec` remplace le shell de session par `timeout` : le statut que voit
+/// `sshd`, signal compris, est celui de la commande, et non le `139` d'un
+/// shell intermediaire qui a constate qu'un de ses fils est mort (tache 14.5,
+/// constate dans une microVM avec `kill -SEGV $$`).
 fn with_ceiling(command: &str) -> String {
     let escaped = command.replace('\'', "'\\''");
     format!(
-        "timeout --kill-after=30s {}s bash -c '{escaped}' </dev/null",
+        "exec timeout --kill-after=30s {}s bash -c '{escaped}' </dev/null",
         exec_ceiling_secs()
     )
 }
@@ -731,7 +736,7 @@ mod workspace_tests {
     fn wraps_the_command_in_a_hard_timeout_escaping_single_quotes() {
         let wrapped = with_ceiling("echo 'hello world' && exit 1");
         assert!(
-            wrapped.starts_with("timeout --kill-after=30s "),
+            wrapped.starts_with("exec timeout --kill-after=30s "),
             "{wrapped}"
         );
         assert!(wrapped.contains("bash -c '"), "{wrapped}");

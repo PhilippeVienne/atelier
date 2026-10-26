@@ -265,11 +265,11 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
     // du guest plutot que dans le workspace ne trouverait pas les sources.
     assert_eq!(
         String::from_utf8_lossy(&stdout),
-        "echo timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
+        "echo exec timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
     );
     assert_eq!(
         String::from_utf8_lossy(&stderr),
-        "stderr from timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
+        "stderr from exec timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
     );
 
     net_proxy.start_kill().ok();
