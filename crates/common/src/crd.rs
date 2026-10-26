@@ -245,6 +245,17 @@ pub struct DevcontainerSource {
     /// Chemin vers le fichier devcontainer.json dans le depot.
     #[serde(default = "default_devcontainer_path")]
     pub config_path: String,
+    /// Cloner le depot dans l'image, sous `/workspaces/<depot>` (vrai par
+    /// defaut). A faux, rien du depot n'entre dans l'invite hors ce que le
+    /// build y a copie : pour un produit de formation, le depot contient les
+    /// solutions (tache 14.7). Le dossier de travail reste cree et donne au
+    /// compte de la session.
+    #[serde(default = "default_true")]
+    pub clone_workspace: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_revision() -> String {
@@ -525,6 +536,7 @@ mod tests {
                     repo: "https://example.invalid/repo.git".into(),
                     revision: "HEAD".into(),
                     config_path: ".devcontainer/devcontainer.json".into(),
+                    clone_workspace: true,
                 },
                 resources: WorkshopResources {
                     cpu: "500m".into(),

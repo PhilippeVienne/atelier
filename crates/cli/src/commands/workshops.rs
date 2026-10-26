@@ -52,6 +52,7 @@ pub async fn create(
         repo,
         revision: revision.unwrap_or_else(|| "HEAD".to_string()),
         config_path: config_path.unwrap_or_else(|| ".devcontainer/devcontainer.json".to_string()),
+        clone_workspace: true,
     };
     let resources = WorkshopResources {
         cpu,

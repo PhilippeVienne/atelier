@@ -64,6 +64,7 @@ fn sample_spec() -> WorkshopSpec {
             repo: "https://example.invalid/repo.git".into(),
             revision: "HEAD".into(),
             config_path: ".devcontainer/devcontainer.json".into(),
+            clone_workspace: true,
         },
         resources: WorkshopResources {
             cpu: "100m".into(),

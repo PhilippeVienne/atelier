@@ -1067,6 +1067,10 @@ async fn ensure_image_build_job(
             "ATELIER_DEVCONTAINER_CONFIG_PATH",
             &workshop.spec.devcontainer.config_path,
         ),
+        env_var(
+            "ATELIER_CLONE_WORKSPACE",
+            &workshop.spec.devcontainer.clone_workspace.to_string(),
+        ),
         env_var("ATELIER_WORKSHOP_NAME", name),
         env_var("ATELIER_WORKSHOP_NAMESPACE", ns),
         // Services d'acces a installer dans l'image, en plus de `sshd`
@@ -3061,6 +3065,7 @@ mod template_hash_tests {
                     repo: "https://example.invalid/repo.git".into(),
                     revision: "HEAD".into(),
                     config_path: ".devcontainer/devcontainer.json".into(),
+                    clone_workspace: true,
                 },
                 resources: WorkshopResources {
                     cpu: "100m".into(),

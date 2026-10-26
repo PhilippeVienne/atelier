@@ -42,6 +42,10 @@ spec:
               devcontainer:
                 description: Definition de l'environnement au format devcontainer.json (spec VS Code Dev Containers). C'est cette source qui est construite en rootfs bootable par le composant `image-builder`.
                 properties:
+                  cloneWorkspace:
+                    default: true
+                    description: 'Cloner le depot dans l''image, sous `/workspaces/<depot>` (vrai par defaut). A faux, rien du depot n''entre dans l''invite hors ce que le build y a copie : pour un produit de formation, le depot contient les solutions (tache 14.7). Le dossier de travail reste cree et donne au compte de la session.'
+                    type: boolean
                   configPath:
                     default: .devcontainer/devcontainer.json
                     description: Chemin vers le fichier devcontainer.json dans le depot.

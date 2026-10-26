@@ -284,6 +284,7 @@ impl WorkshopMcpServer {
                     config_path: params
                         .devcontainer_config_path
                         .unwrap_or_else(|| ".devcontainer/devcontainer.json".to_string()),
+                    clone_workspace: true,
                 },
                 resources: WorkshopResources {
                     cpu: params.cpu,

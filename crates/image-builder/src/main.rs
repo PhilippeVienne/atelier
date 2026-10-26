@@ -111,6 +111,10 @@ async fn run() -> Result<()> {
         revision: std::env::var("ATELIER_DEVCONTAINER_REVISION").unwrap_or_else(|_| "HEAD".into()),
         config_path: std::env::var("ATELIER_DEVCONTAINER_CONFIG_PATH")
             .unwrap_or_else(|_| ".devcontainer/devcontainer.json".into()),
+        // Seul `false` retire le clone ; une variable absente vaut « clone »,
+        // comme avant que ce choix existe (tache 14.7).
+        clone_workspace: std::env::var("ATELIER_CLONE_WORKSPACE")
+            .map_or(true, |value| value != "false"),
     };
     let workshop_name =
         std::env::var("ATELIER_WORKSHOP_NAME").context("ATELIER_WORKSHOP_NAME manquant")?;
@@ -155,11 +159,18 @@ async fn run() -> Result<()> {
     tracing::info!("injecting the opencode binary");
     inject_opencode_binary(&rootfs_dir).await?;
 
-    tracing::info!("cloning target repository into the workspace");
-    ensure_workspace_clone(&rootfs_dir, &source, git_credentials.as_ref()).await?;
+    if source.clone_workspace {
+        tracing::info!("cloning target repository into the workspace");
+        ensure_workspace_clone(&rootfs_dir, &source, git_credentials.as_ref()).await?;
 
-    tracing::info!("installing the boot-time workspace refresh service");
-    inject_workspace_refresh(&rootfs_dir, &source).await?;
+        tracing::info!("installing the boot-time workspace refresh service");
+        inject_workspace_refresh(&rootfs_dir, &source).await?;
+    } else {
+        // Ni clone ni rafraichissement : rien du depot n'entre dans l'invite.
+        // Le dossier de travail existe quand meme, au compte de la session.
+        tracing::info!("workspace clone disabled, creating an empty workspace directory");
+        ensure_empty_workspace(&rootfs_dir, &source).await?;
+    }
 
     let guest_ports = GuestPorts::reserved(guest_services_from_env());
     tracing::info!(
@@ -1140,6 +1151,17 @@ async fn ensure_workspace_clone(
             .ok();
     }
 
+    chown_recursive(&rootfs_dir.join("workspaces"));
+    Ok(())
+}
+
+/// Dossier de travail vide, pour un Workshop sans clone (tache 14.7) : sans
+/// lui, `cd /workspaces/<depot>` echoue et `mke2fs -d` ne materialise pas un
+/// repertoire vide, d'ou le `.keep`.
+async fn ensure_empty_workspace(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
+    let ws_dir = rootfs_dir.join("workspaces").join(workspace_name(source));
+    tokio::fs::create_dir_all(&ws_dir).await?;
+    tokio::fs::write(ws_dir.join(".keep"), "atelier workspace\n").await?;
     chown_recursive(&rootfs_dir.join("workspaces"));
     Ok(())
 }
@@ -2337,6 +2359,7 @@ mod tests {
             repo: "https://example.invalid/repo.git".into(),
             revision: "HEAD".into(),
             config_path: ".devcontainer/devcontainer.json".into(),
+            clone_workspace: true,
         };
         let exec_only = GuestPorts::reserved(GuestServices {
             terminal: false,

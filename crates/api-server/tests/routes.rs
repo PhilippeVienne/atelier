@@ -570,6 +570,7 @@ async fn portforward_relays_through_api_server_to_net_proxy() {
                 repo: "https://example.invalid/repo.git".to_string(),
                 revision: "HEAD".to_string(),
                 config_path: ".devcontainer/devcontainer.json".to_string(),
+                clone_workspace: true,
             },
             resources: atelier_common::WorkshopResources {
                 cpu: "1".into(),
@@ -825,6 +826,7 @@ async fn vscode_proxy_relays_http_through_api_server_to_test_server() {
                 repo: "https://example.invalid/repo.git".to_string(),
                 revision: "HEAD".to_string(),
                 config_path: ".devcontainer/devcontainer.json".to_string(),
+                clone_workspace: true,
             },
             resources: atelier_common::WorkshopResources {
                 cpu: "1".into(),
@@ -1020,6 +1022,7 @@ async fn vscode_proxy_relays_websocket_upgrade_through_api_server() {
                 repo: "https://example.invalid/repo.git".to_string(),
                 revision: "HEAD".to_string(),
                 config_path: ".devcontainer/devcontainer.json".to_string(),
+                clone_workspace: true,
             },
             resources: atelier_common::WorkshopResources {
                 cpu: "1".into(),
@@ -1477,6 +1480,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
                 repo: "https://example.invalid/repo.git".to_string(),
                 revision: "HEAD".to_string(),
                 config_path: ".devcontainer/devcontainer.json".to_string(),
+                clone_workspace: true,
             },
             resources: atelier_common::WorkshopResources {
                 cpu: "1".into(),
