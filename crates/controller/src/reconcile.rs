@@ -1479,6 +1479,20 @@ async fn ensure_image_build_job(
     Ok(status)
 }
 
+/// Annotation d'un Workshop qui demande sa console dans les journaux du pod
+/// (`kubectl logs <workshop>-parent -c vm-supervisor`), pour diagnostiquer un
+/// invite qui ne demarre pas ou un service qui echoue (tache 14.9).
+const CONSOLE_LOG_ANNOTATION: &str = "atelier.dev/console-log";
+
+fn console_log_requested(workshop: &Workshop) -> bool {
+    workshop
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(CONSOLE_LOG_ANNOTATION))
+        .is_some_and(|v| v == "true")
+}
+
 /// Message de terminaison du dernier conteneur `image-builder` en echec.
 fn build_failure_message(pods: &[Pod]) -> Option<String> {
     pods.iter()
@@ -1991,6 +2005,14 @@ async fn ensure_parent_pod(
                         .chain(
                             disk_to_mib(workshop.spec.resources.disk.as_deref(), max_disk_mib())
                                 .map(|mib| env_var("ATELIER_VM_DISK_MIB", &mib.to_string())),
+                        )
+                        // Console de l'invite dans les journaux du pod, sur
+                        // demande (tache 14.9) : annotation du Workshop, lue
+                        // a la creation du pod (l'environnement d'un pod est
+                        // immuable).
+                        .chain(
+                            console_log_requested(workshop)
+                                .then(|| env_var("ATELIER_VM_CONSOLE_LOG", "true")),
                         )
                         // Offload S3 des snapshots (spec docs/specs/13-image-
                         // cache-offload.md, tache 8.4) : meme retransmission

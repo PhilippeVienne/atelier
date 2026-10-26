@@ -76,3 +76,13 @@ ATELIER_VM_CHROOT_BASE_DIR=/var/tmp/atelier-jailer \
 ATELIER_VM_UID=$(id -u) ATELIER_VM_GID=$(id -g) \
 cargo run -p atelier-vm-supervisor
 ```
+
+## Noyau invité d'Atelier
+
+`vmlinux.bin` du script `fetch-test-assets.sh` est le noyau de CI de
+Firecracker : sans `nf_tables` ni la table `raw`. `kernel/build.sh` construit
+à la place un noyau 5.10.223 dans Docker (`kernel/Dockerfile`, options
+ajoutées dans `kernel/atelier.config`) et le dépose dans `assets/vmlinux.bin`,
+le noyau de CI étant conservé sous `assets/vmlinux-ci.bin`. Les images
+`vm-supervisor` et `image-builder` embarquent `assets/vmlinux.bin` : les
+reconstruire après ce script.

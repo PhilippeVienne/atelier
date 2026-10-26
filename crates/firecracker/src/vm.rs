@@ -283,9 +283,17 @@ fn drain_console_pipes(inner: &mut FcVm) {
 }
 
 async fn drain_lines<R: tokio::io::AsyncRead + Unpin>(stream_name: &'static str, reader: R) {
+    // Journalisee au niveau info sur demande (`ATELIER_VM_CONSOLE_LOG`, pose
+    // par le controller pour un Workshop annote `atelier.dev/console-log`),
+    // sinon au niveau debug (tache 14.9).
+    let visible = std::env::var("ATELIER_VM_CONSOLE_LOG").is_ok_and(|v| v == "true" || v == "1");
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        tracing::debug!(console = stream_name, %line, "sortie console du guest");
+        if visible {
+            tracing::info!(console = stream_name, %line, "sortie console du guest");
+        } else {
+            tracing::debug!(console = stream_name, %line, "sortie console du guest");
+        }
     }
 }
 

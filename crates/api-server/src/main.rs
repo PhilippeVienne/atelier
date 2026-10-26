@@ -85,8 +85,17 @@ async fn main() -> anyhow::Result<()> {
         auth,
     );
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("atelier-api-server listening on 0.0.0.0:8080");
+    // Adresse d'ecoute configurable (tache 14.9) : le port 8080 en dur
+    // empechait de demarrer sur une machine ou il est pris, ce qui est le cas
+    // d'un poste de dev qui heberge d'autres services.
+    let listen_addr =
+        std::env::var("ATELIER_API_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .with_context(|| {
+            format!("ecoute sur {listen_addr} impossible (ATELIER_API_LISTEN_ADDR)")
+        })?;
+    tracing::info!("atelier-api-server listening on {listen_addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -149,6 +149,8 @@ Deux listes : celle du build, portée par l'image (elle rejoint la question ouve
 - Exposer la console de l'invité par Workshop, sur demande.
 - Rendre l'adresse d'écoute de l'api-server configurable.
 
+Réalisé en partie par la tâche 14.9 : `deploy/dev/firecracker/kernel/build.sh` construit le noyau 5.10.223 dans Docker à partir de la configuration de référence de Firecracker et de `atelier.config` ; `ATELIER_API_LISTEN_ADDR` règle l'écoute de l'api-server (défaut `0.0.0.0:8080`) ; l'annotation `atelier.dev/console-log: "true"`, lue à la création du pod parent, journalise la console de l'invité au niveau info. Le critère « Docker démarre sans réglage particulier » reste à prouver avec une image qui ne pose pas `DOCKER_INSECURE_NO_IPTABLES_RAW`.
+
 ### 3.8. Le disque survit à la mise en veille
 
 Un instantané ne vaut que avec le disque qu'il décrit (constat 16). `snapshot_and_publish` (`crates/vm-supervisor/src/main.rs`) enregistre le disque racine de la microVM avec `snapshot.state` et `snapshot.mem`, et `restore_persisted` repart de cette copie, jamais du cache d'images. Sans cela, toute reprise d'un Workshop qui a écrit sur son disque le corrompt en silence : c'était le défaut le plus grave relevé par ces essais, et il rendait aussi dangereux le contournement du constat 9 (suspendre et reprendre pour appliquer une liste d'egress).
