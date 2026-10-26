@@ -30,6 +30,7 @@ use nix::unistd::Pid;
 use std::fs;
 use std::io::Write;
 use std::net::TcpStream;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -38,11 +39,74 @@ use std::time::{Duration, Instant};
 /// correspondant a tourne pour ce Workshop (`inject_terminal_and_ide`,
 /// `inject_sshd`) — un binaire absent est simplement ignore, pas une
 /// erreur.
-const SUPERVISED_SERVICES: &[&str] = &[
-    "/usr/local/bin/atelier-start-ttyd.sh",
-    "/usr/local/bin/atelier-start-code-server.sh",
-    "/usr/local/bin/atelier-start-sshd.sh",
+///
+/// Le booleen dit si le service tourne sous le compte de la session (comme
+/// `User=vscode` des unites systemd) ou en root. Seul `sshd` a besoin de
+/// root, pour ouvrir des sessions sous un autre compte ; un terminal et un
+/// IDE en root donnaient a l'utilisateur un acces qu'il n'a pas ailleurs
+/// (tache 14.3, spec 19 constat 4).
+const SUPERVISED_SERVICES: &[(&str, bool)] = &[
+    ("/usr/local/bin/atelier-start-ttyd.sh", true),
+    ("/usr/local/bin/atelier-start-code-server.sh", true),
+    ("/usr/local/bin/atelier-start-sshd.sh", false),
 ];
+
+/// Le compte de la session : `vscode`, que `image-builder` cree ou complete
+/// avec l'uid 1000 (`ensure_vscode_user`).
+const SESSION_USER: &str = "vscode";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionAccount {
+    uid: u32,
+    gid: u32,
+    home: String,
+}
+
+/// Cherche `name` dans le contenu d'un `/etc/passwd`.
+fn parse_passwd_entry(passwd: &str, name: &str) -> Option<SessionAccount> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != name {
+            return None;
+        }
+        let _password = fields.next()?;
+        let uid = fields.next()?.parse().ok()?;
+        let gid = fields.next()?.parse().ok()?;
+        let _gecos = fields.next()?;
+        let home = fields.next()?.to_string();
+        Some(SessionAccount { uid, gid, home })
+    })
+}
+
+/// Le compte de la session. A defaut d'entree lisible, l'uid 1000 que
+/// `image-builder` garantit : jamais root.
+fn session_account() -> SessionAccount {
+    fs::read_to_string("/etc/passwd")
+        .ok()
+        .and_then(|passwd| parse_passwd_entry(&passwd, SESSION_USER))
+        .unwrap_or(SessionAccount {
+            uid: 1000,
+            gid: 1000,
+            home: format!("/home/{SESSION_USER}"),
+        })
+}
+
+fn command_for(path: &str, as_session: bool) -> Command {
+    let mut command = Command::new(path);
+    // `uid` seul laisserait les groupes supplementaires de root : la
+    // bibliotheque standard les vide quand un processus root change d'uid
+    // sans liste explicite.
+    if as_session {
+        let account = session_account();
+        command
+            .uid(account.uid)
+            .gid(account.gid)
+            .env("HOME", &account.home)
+            .env("USER", SESSION_USER)
+            .env("LOGNAME", SESSION_USER);
+    }
+    command
+}
 
 /// Adresse du serveur metadata de `net-proxy`, cote guest — meme convention
 /// que les scripts de demarrage `atelier-start-*.sh` (`session-auth`,
@@ -82,12 +146,12 @@ fn main() {
     // Une seule fois, avant les services persistants — meme script que sous
     // systemd (`inject_workspace_refresh`), lance en synchrone : les
     // services ci-dessous ouvrent le workspace, il doit etre a jour avant.
-    run_once("/usr/local/bin/atelier-refresh-workspace.sh");
+    run_once("/usr/local/bin/atelier-refresh-workspace.sh", true);
     step("rafraichissement du workspace termine");
 
-    let mut children: Vec<(&str, Option<Child>)> = SUPERVISED_SERVICES
+    let mut children: Vec<(&str, bool, Option<Child>)> = SUPERVISED_SERVICES
         .iter()
-        .map(|&path| (path, spawn_if_present(path)))
+        .map(|&(path, as_session)| (path, as_session, spawn_if_present(path, as_session)))
         .collect();
     step("services demarres");
 
@@ -107,12 +171,12 @@ fn main() {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::Exited(pid, _)) | Ok(WaitStatus::Signaled(pid, _, _)) => {
                 zombies_reaped_total += 1;
-                for (path, child) in children.iter_mut() {
+                for (path, as_session, child) in children.iter_mut() {
                     let matches = child.as_ref().map(|c| c.id() as i32) == Some(pid.as_raw());
                     if matches {
                         eprintln!("atelier-guest-init: {path} s'est arrete, relance dans 2s");
                         std::thread::sleep(Duration::from_secs(2));
-                        *child = spawn_if_present(path);
+                        *child = spawn_if_present(path, *as_session);
                     }
                 }
             }
@@ -126,7 +190,7 @@ fn main() {
             last_heartbeat = Instant::now();
             let supervised_pids: Vec<i32> = children
                 .iter()
-                .filter_map(|(_, c)| c.as_ref().map(|c| c.id() as i32))
+                .filter_map(|(_, _, c)| c.as_ref().map(|c| c.id() as i32))
                 .collect();
             let killed = kill_stale_orphans(&supervised_pids, STALE_ORPHAN_AGE);
             for orphan in &killed {
@@ -160,18 +224,18 @@ fn mount_pseudo_filesystems() {
     }
 }
 
-fn run_once(path: &str) {
+fn run_once(path: &str, as_session: bool) {
     if !Path::new(path).exists() {
         return;
     }
-    let _ = Command::new(path).status();
+    let _ = command_for(path, as_session).status();
 }
 
-fn spawn_if_present(path: &str) -> Option<Child> {
+fn spawn_if_present(path: &str, as_session: bool) -> Option<Child> {
     if !Path::new(path).exists() {
         return None;
     }
-    Command::new(path).spawn().ok()
+    command_for(path, as_session).spawn().ok()
 }
 
 /// Parcourt `/proc` a la recherche de processus DIRECTEMENT rattaches a
@@ -301,7 +365,24 @@ fn json_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::json_escape;
+    use super::{json_escape, parse_passwd_entry, SessionAccount};
+
+    #[test]
+    fn the_session_account_is_read_from_passwd() {
+        let passwd =
+            "root:x:0:0:root:/root:/bin/bash\nvscode:x:1000:1000:vscode:/home/vscode:/bin/bash\n";
+        assert_eq!(
+            parse_passwd_entry(passwd, "vscode"),
+            Some(SessionAccount {
+                uid: 1000,
+                gid: 1000,
+                home: "/home/vscode".into()
+            })
+        );
+        assert_eq!(parse_passwd_entry(passwd, "absent"), None);
+        // Une entree tronquee ne donne jamais un compte a moitie lu.
+        assert_eq!(parse_passwd_entry("vscode:x:1000", "vscode"), None);
+    }
 
     #[test]
     fn json_escape_handles_quotes_backslashes_and_control_chars() {

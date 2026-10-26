@@ -1251,3 +1251,9 @@
   - *Cause reelle* : un autre service (OpenBao/Vault étranger au projet) écoute sur `127.0.0.1:8200` ; le script voit le port ouvert et ne lance pas son `kubectl port-forward`. Le jeton `root` est refusé par ce service-là.
   - *Solution* : `kubectl port-forward --address 127.0.0.1 svc/atelier-openbao-dev 18200:8200` et `OPENBAO_ADDR=http://127.0.0.1:18200` pour le controller et l'api-server. 8201 est pris aussi.
   - *A quoi le reconnaitre* : `ss -ltnp | grep 8200` ne montre aucun `kubectl`. Pour l'exec MCP en local, retirer aussi `ATELIER_LLM_PROXY_ADDR` si LiteLLM ne tourne pas (sinon « Security dependencies unreachable »).
+
+- **L'init d'Atelier ne démarre pas sur une image musl (tache 14.3, spec 19).**
+  - *Symptome observable* : un Workshop sur `mcr.microsoft.com/devcontainers/base:alpine-3.17` reste en `Provisioning` indéfiniment, la sonde ne voit jamais la bannière SSH, et aucune erreur n'apparaît.
+  - *Cause reelle* : sans systemd, `image-builder` copie `atelier-guest-init` sur `/sbin/init`. Ce binaire est lié dynamiquement à glibc ; sur Alpine le noyau ne peut pas l'exécuter, essaie `/etc/init`, `/bin/init`, puis tombe sur `/bin/sh`. La console (`atelier.dev/console-log: "true"` sur le Workshop) le montre : `Run /sbin/init as init process` suivi de `Run /bin/sh as init process`.
+  - *Solution* : aucune pour l'instant. Un binaire musl statique ne suffit pas, le `code-server` embarqué (Node, glibc) ne tournerait pas non plus sur musl.
+  - *A quoi le reconnaitre* : `check_boot_prerequisites` ne vérifie pas que l'init choisi peut s'exécuter dans l'image. Pour diagnostiquer un invité muet, annoter le Workshop avant la création du pod (l'environnement d'un pod est immuable) et lire `kubectl logs <workshop>-parent -c vm-supervisor`.
