@@ -74,6 +74,8 @@ Le controller lit `resources.disk` et le superviseur donne à l'invité un syst�
 - systemd présent **et** `/sbin/init` absent : erreur (aujourd'hui, non-démarrage silencieux) ;
 - `bash` ou `curl` absents : erreur, ou injection d'un binaire statique.
 
+Le refus est remonté (tâche 14.12) : `image-builder` sort avec le code 65 (`IMAGE_BUILD_REFUSED_EXIT_CODE`) et écrit le message dans `/dev/termination-log` ; la `podFailurePolicy` du Job de build arrête les nouvelles tentatives pour ce code ; le controller lit le message du conteneur et l'inscrit dans `status.conditions["ImageBuildFailed"]`. Les autres échecs de build gardent leurs deux nouvelles tentatives, et leur message (fin du journal, `FallbackToLogsOnError`) est remonté de la même façon. Constaté : une image `alpine:3` est refusée en environ 35 s, avec `bash` et `curl` nommés, au lieu de trois builds en 3 min 17 s.
+
 L'init propre à Atelier (images sans systemd) lance `ttyd` et `code-server` sous le compte de la session, jamais en root.
 
 ### 3.3. Ports et services injectés

@@ -4,7 +4,9 @@ use atelier_common::{
     WorkshopUpgradeState,
 };
 use futures::StreamExt;
-use k8s_openapi::api::batch::v1::{Job, JobSpec};
+use k8s_openapi::api::batch::v1::{
+    Job, JobSpec, PodFailurePolicy, PodFailurePolicyOnExitCodesRequirement, PodFailurePolicyRule,
+};
 use k8s_openapi::api::core::v1::{
     Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
     HostAlias, PersistentVolumeClaimVolumeSource, Pod, PodSpec, PodTemplateSpec,
@@ -1253,6 +1255,21 @@ async fn ensure_image_build_job(
         },
         spec: Some(JobSpec {
             backoff_limit: Some(2),
+            // Un refus que rien ne changera (l'image ne peut pas demarrer)
+            // arrete le Job tout de suite : sans cette regle, trois builds
+            // complets etaient refaits pour obtenir le meme refus (tache
+            // 14.12). Les autres echecs gardent leurs nouvelles tentatives.
+            pod_failure_policy: Some(PodFailurePolicy {
+                rules: vec![PodFailurePolicyRule {
+                    action: "FailJob".to_string(),
+                    on_exit_codes: Some(PodFailurePolicyOnExitCodesRequirement {
+                        container_name: Some("image-builder".to_string()),
+                        operator: "In".to_string(),
+                        values: vec![atelier_common::IMAGE_BUILD_REFUSED_EXIT_CODE],
+                    }),
+                    on_pod_conditions: None,
+                }],
+            }),
             template: PodTemplateSpec {
                 spec: Some(PodSpec {
                     restart_policy: Some("Never".into()),
@@ -1324,6 +1341,10 @@ async fn ensure_image_build_job(
                     ]),
                     containers: vec![Container {
                         name: "image-builder".into(),
+                        // Le message d'echec ecrit dans `/dev/termination-log`
+                        // (ou, a defaut, la fin du journal) est lu plus bas et
+                        // inscrit dans `status.conditions`.
+                        termination_message_policy: Some("FallbackToLogsOnError".into()),
                         image: Some(ctx.component_image("image-builder")),
                         env: Some(env),
                         volume_mounts: Some(
@@ -1369,12 +1390,19 @@ async fn ensure_image_build_job(
             jobs.get_opt(&job_name).await?
         }
     };
+    // Termine en echec = condition `Failed` du Job, pas le premier pod en
+    // erreur : `status.failed` compte aussi les tentatives que le Job va
+    // encore refaire, et le Workshop passait `Failed` pendant qu'un second
+    // build tournait.
     let job_failed = current
         .as_ref()
         .and_then(|j| j.status.as_ref())
-        .and_then(|s| s.failed)
-        .unwrap_or(0)
-        > 0;
+        .and_then(|s| s.conditions.as_ref())
+        .is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|c| c.type_ == "Failed" && c.status == "True")
+        });
     let job_succeeded = current
         .as_ref()
         .and_then(|j| j.status.as_ref())
@@ -1409,7 +1437,54 @@ async fn ensure_image_build_job(
         WorkshopPhase::BuildingImage
     };
 
-    Ok(carry_forward_status(workshop, phase, None))
+    let mut status = carry_forward_status(workshop, phase, None);
+    if job_failed {
+        // La raison de l'echec, lisible sans aller chercher les journaux du
+        // Job : le refus de `check_boot_prerequisites` nomme le manque.
+        let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), ns);
+        let message = match pods
+            .list(&kube::api::ListParams::default().labels(&format!("job-name={job_name}")))
+            .await
+        {
+            Ok(list) => build_failure_message(&list.items),
+            Err(err) => {
+                tracing::warn!(%err, "lecture des pods du build echouee, raison d'echec omise");
+                None
+            }
+        };
+        status.conditions.insert(
+            atelier_common::IMAGE_BUILD_CONDITION.to_string(),
+            message.unwrap_or_else(|| {
+                format!("le Job {job_name} a echoue sans message (voir ses journaux)")
+            }),
+        );
+    }
+    Ok(status)
+}
+
+/// Message de terminaison du dernier conteneur `image-builder` en echec.
+fn build_failure_message(pods: &[Pod]) -> Option<String> {
+    pods.iter()
+        .filter_map(|pod| {
+            let terminated = pod
+                .status
+                .as_ref()?
+                .container_statuses
+                .as_ref()?
+                .iter()
+                .find(|c| c.name == "image-builder")?
+                .state
+                .as_ref()?
+                .terminated
+                .as_ref()?;
+            if terminated.exit_code == 0 {
+                return None;
+            }
+            let message = terminated.message.as_deref()?.trim();
+            (!message.is_empty()).then(|| (terminated.finished_at.clone(), message.to_string()))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, message)| message)
 }
 
 #[tracing::instrument(skip_all)]
@@ -2843,7 +2918,7 @@ async fn update_status(
 
 #[cfg(test)]
 mod template_hash_tests {
-    use super::{carry_forward_status, pod_spec_template_hash};
+    use super::{build_failure_message, carry_forward_status, pod_spec_template_hash};
     use atelier_common::crd::{
         DevcontainerSource, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,
         WorkshopSpec, WorkshopStatus,
@@ -2856,6 +2931,59 @@ mod template_hash_tests {
     /// de Service doit donner `None`, pour que l'appelant retombe sur le
     /// comportement anterieur (alias direct, jeton statique) plutot que de
     /// deviner un nom de Service inexistant.
+    fn builder_pod(
+        exit_code: i32,
+        message: Option<&str>,
+        finished: &str,
+    ) -> k8s_openapi::api::core::v1::Pod {
+        use k8s_openapi::api::core::v1::{
+            ContainerState, ContainerStateTerminated, ContainerStatus, PodStatus,
+        };
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+        k8s_openapi::api::core::v1::Pod {
+            status: Some(PodStatus {
+                container_statuses: Some(vec![ContainerStatus {
+                    name: "image-builder".into(),
+                    state: Some(ContainerState {
+                        terminated: Some(ContainerStateTerminated {
+                            exit_code,
+                            message: message.map(str::to_string),
+                            finished_at: Some(Time(finished.parse().unwrap())),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Tache 14.12 : la raison du refus vient du dernier pod en echec.
+    #[test]
+    fn the_build_failure_message_is_the_latest_terminated_one() {
+        let pods = [
+            builder_pod(1, Some("ancien"), "2026-10-26T07:00:00Z"),
+            builder_pod(
+                65,
+                Some("`curl` est absent de l'image\n"),
+                "2026-10-26T07:05:00Z",
+            ),
+            builder_pod(0, Some("ignore"), "2026-10-26T07:09:00Z"),
+        ];
+        assert_eq!(
+            build_failure_message(&pods).as_deref(),
+            Some("`curl` est absent de l'image")
+        );
+        assert_eq!(build_failure_message(&[]), None);
+        assert_eq!(
+            build_failure_message(&[builder_pod(1, None, "2026-10-26T07:00:00Z")]),
+            None
+        );
+    }
+
     #[test]
     fn llm_service_is_derived_from_the_cluster_address() {
         use super::llm_service_ref;

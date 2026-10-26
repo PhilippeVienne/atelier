@@ -45,8 +45,53 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// Refus d'une image qu'aucune nouvelle tentative ne rendra bonne (tache
+/// 14.12) : le Job de build ne la refait pas, et le message est lu par le
+/// controller dans le journal de terminaison du conteneur.
+#[derive(Debug)]
+struct BuildRefused(String);
+
+impl std::fmt::Display for BuildRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BuildRefused {}
+
+/// Fichier que Kubernetes relit pour `state.terminated.message`. 4 Kio au
+/// plus : au-dela le kubelet tronque.
+const TERMINATION_LOG: &str = "/dev/termination-log";
+const TERMINATION_MESSAGE_MAX_BYTES: usize = 4096;
+
+fn write_termination_message(message: &str) {
+    let mut end = message.len().min(TERMINATION_MESSAGE_MAX_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Hors Kubernetes (tests, execution a la main) le fichier n'existe pas.
+    let _ = std::fs::write(TERMINATION_LOG, &message[..end]);
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            let refused = err.downcast_ref::<BuildRefused>().is_some();
+            let message = format!("{err:#}");
+            eprintln!("Error: {message}");
+            write_termination_message(&message);
+            if refused {
+                std::process::ExitCode::from(atelier_common::IMAGE_BUILD_REFUSED_EXIT_CODE as u8)
+            } else {
+                std::process::ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let _telemetry = atelier_common::telemetry::init("atelier-image-builder");
 
     // Avant tout appel reseau (notamment `git clone` plus bas,
@@ -1868,10 +1913,10 @@ fn check_boot_prerequisites(rootfs_dir: &Path) -> Result<()> {
     if missing.is_empty() {
         return Ok(());
     }
-    anyhow::bail!(
+    Err(anyhow::Error::new(BuildRefused(format!(
         "l'image ne peut pas demarrer comme Workshop :\n- {}",
         missing.join("\n- ")
-    )
+    ))))
 }
 
 /// Nom du repertoire de travail dans `/workspaces`, derive du depot.
@@ -2002,7 +2047,7 @@ mod tests {
         append_pem_to_bundle_file, check_boot_prerequisites, code_server_start_script,
         exists_in_rootfs, guest_service_wanted, inject_enterprise_ca_bundle,
         inject_terminal_and_ide, install_sshd, render_ssh_environment, status_after_build,
-        ttyd_start_script,
+        ttyd_start_script, write_termination_message, BuildRefused, TERMINATION_MESSAGE_MAX_BYTES,
     };
     use atelier_common::{DevcontainerSource, GuestPorts, GuestServices};
     use std::path::Path;
@@ -2327,6 +2372,24 @@ mod tests {
         assert!(error.contains("`/sbin/init` n'existe pas"), "{error}");
         assert!(error.contains("systemd-sysv"), "{error}");
         assert!(!error.contains("`curl`"), "{error}");
+    }
+
+    /// Tache 14.12 : le refus est reconnaissable (code de sortie dedie), les
+    /// autres echecs de build ne le sont pas.
+    #[test]
+    fn a_boot_refusal_is_distinguishable_from_other_build_failures() {
+        let rootfs = tempfile::tempdir().unwrap();
+        let refused = check_boot_prerequisites(rootfs.path()).unwrap_err();
+        assert!(refused.downcast_ref::<BuildRefused>().is_some());
+        assert!(anyhow::anyhow!("crane a echoue")
+            .downcast_ref::<BuildRefused>()
+            .is_none());
+    }
+
+    #[test]
+    fn the_termination_message_is_cut_on_a_character_boundary() {
+        // Ne doit pas paniquer sur un caractere coupe en deux.
+        write_termination_message(&"é".repeat(TERMINATION_MESSAGE_MAX_BYTES));
     }
 
     #[test]
