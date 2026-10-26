@@ -30,7 +30,7 @@ attendus et font partie du processus, ils sont consignes dans
 | `crates/builder-vm-init` | Fonctionnel | Cycle boot+reseau+`envbuilder`+extinction verifie de bout en bout |
 | Boucle Workshop → pod → microVM `Running` | Fonctionnel (automatique) | `kubectl apply` declenche build + boot sans peuplage manuel du cache |
 | Cache d'images/snapshots — offload S3 + eviction LRU | Fonctionnel | PVC local = cache chaud, S3 = source durable ; correctif d'une fuite reelle (snapshots orphelins a la suppression d'un Workshop) — `docs/specs/13-image-cache-offload.md` |
-| `api-server` | Fonctionnel | JWT OIDC (JWKS), CRUD/suspend/resume `Workshop`, port-forward WS, ponts `code-server`/`ttyd` |
+| `api-server` | Fonctionnel | JWT OIDC (JWKS), CRUD/suspend/resume `Workshop`, port-forward WS, ponts `code-server`/`ttyd`, exec REST (`/exec`, verifie contre un vrai `sshd` et dans l'invite, tache 14.6) |
 | `net-proxy` — egress/port-forward/DNS | Fonctionnel | Allowlist + passerelle transparente + websocket port-forward + resolveur DNS, testes reellement |
 | `identity-proxy` | Fonctionnel | Injection d'en-tete depuis OpenBao, verifie contre un vrai pod |
 | `mcp-gateway` | Fonctionnel (HTTP/SSE + vsock) | 3 tools verifies contre OpenBao/net-proxy/LocalStack reels |
@@ -46,9 +46,16 @@ attendus et font partie du processus, ils sont consignes dans
 
 ## Prochaines etapes
 
-Jalons M1 a M8 entierement `[x]`. Voir `docs/specs/PLAN-ACTION-GLOBAL.md`
-pour le jalon M9 (Experience Dev CLI/Pont IDE, simulateurs in-VM, HITL),
-pas encore commence.
+Jalons M1 a M8 entierement `[x]`. Le jalon M14 (sessions pour apprenants,
+`docs/specs/19-sessions-pour-apprenants.md`) est en cours : disque configurable,
+verification de fin de build, ports injectes hors des valeurs courantes,
+appel REST d'exec (`POST /v1/workshops/{name}/exec`), disque conserve a la
+mise en veille, suspension et `Running` fiabilises (14.1, 14.2, 14.4, 14.6,
+14.11, 14.13, 14.14). Reste, dans l'ordre utile : 14.5 (resultat d'exec),
+14.12 (refus de build remonte), 14.15 (instantanes S3), puis 14.3, 14.7 a
+14.10. Le jalon M13 (reutilisation des images par source) et le jalon M9
+(CLI/Pont IDE, simulateurs in-VM, HITL) ne sont pas commences. Detail dans
+`docs/specs/PLAN-ACTION-GLOBAL.md`.
 
 > Le récit complet des jalons 1 à 6 (microVM builder, canal suspend/resume,
 > reseau du pod parent, OAuth2/OIDC, `mcp-gateway`, device plugin `/dev/kvm`,
