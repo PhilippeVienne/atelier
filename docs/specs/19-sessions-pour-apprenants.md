@@ -145,6 +145,8 @@ Les champs du `devcontainer.json` qui décrivent la session sont appliqués : `r
 
 ### 3.6. Egress de build et egress d'exécution
 
+Réalisé par la tâche 14.8 : `spec.buildEgressAllowlist` pour le build, `spec.egressAllowlist` pour l'exécution, relue à chaud par `net-proxy` depuis une ConfigMap (60 à 70 s mesurées, par kubelet). Conception d'origine :
+
 Deux listes : celle du build, portée par l'image (elle rejoint la question ouverte de la spec 18, §4), et celle de l'exécution, portée par le Workshop. Une modification de la seconde s'applique à un Workshop en marche sans suspension. Constaté au passage : une liste étroite suffit au build (hôtes de Docker Hub, `deb.debian.org`, `download.docker.com`, PyPI), `*` n'est pas nécessaire.
 
 ### 3.7. Noyau invité, console, écoute de l'API

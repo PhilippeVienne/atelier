@@ -1230,7 +1230,14 @@ async fn ensure_image_build_job(
     // figurer : il est joignable via l'alias `registry` de net-proxy (hors
     // allowlist, voir `ATELIER_REGISTRY_ALIAS_ADDR` plus bas et
     // `crates/net-proxy::internal`).
-    let egress_allowlist = workshop.spec.egress_allowlist.join(",");
+    // Liste propre au build quand le Workshop en declare une (tache 14.8) ;
+    // sinon celle de l'execution, comme avant.
+    let egress_allowlist = workshop
+        .spec
+        .build_egress_allowlist
+        .as_ref()
+        .unwrap_or(&workshop.spec.egress_allowlist)
+        .join(",");
 
     // Alias `git.atelier.internal` pour LE BUILD (2026-09-01, correction
     // d'un bug reel constate en validant le chantier planificateur puis en
@@ -1825,6 +1832,20 @@ async fn ensure_parent_pod(
         // pas l'injection elle-meme.
         tracing::warn!(%err, "publication des regles d'injection echouee, rechargement a chaud indisponible");
     }
+    // Egress d'execution, publie lui aussi a CHAQUE reconciliation : modifier
+    // `spec.egressAllowlist` d'un Workshop en marche prend effet sans
+    // suspension (tache 14.8). `net-proxy` relit le fichier monte.
+    if let Err(err) = ensure_egress_config_map(
+        &ctx.client,
+        ns,
+        workshop,
+        name,
+        &workshop.spec.egress_allowlist,
+    )
+    .await
+    {
+        tracing::warn!(%err, "publication de l'egress d'execution echouee, rechargement a chaud indisponible");
+    }
     let tools = workshop.spec.tools.join(",");
     // IP guest fixe et deterministe : `vm-supervisor` cree toujours son TAP
     // avec le sous-reseau link-local d'index 0 (une seule microVM par pod),
@@ -1961,6 +1982,18 @@ async fn ensure_parent_pod(
                 // puis une reprise du Workshop — donc apres avoir eteint la
                 // microVM de l'agent. kubelet met a jour ce volume sans
                 // redemarrage, et `identity-proxy` le relit periodiquement.
+                // Egress d'execution, en fichier pour la meme raison que les
+                // regles d'injection : une variable est figee a la creation
+                // du pod (tache 14.8).
+                Volume {
+                    name: "egress-allowlist".to_string(),
+                    config_map: Some(ConfigMapVolumeSource {
+                        name: egress_config_map(name),
+                        optional: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
                 Volume {
                     name: "injection-rules".to_string(),
                     config_map: Some(ConfigMapVolumeSource {
@@ -2213,6 +2246,10 @@ async fn ensure_parent_pod(
                         // ingress.rs`/`internal.rs`. `ATELIER_WORKSHOP_NAME`
                         // (identite emise dans un jeton mint) est deja
                         // transmise plus haut dans ce meme vecteur.
+                        .chain(std::iter::once(env_var(
+                            "ATELIER_EGRESS_ALLOWLIST_FILE",
+                            EGRESS_PATH,
+                        )))
                         .chain(
                             squad_token_key
                                 .as_ref()
@@ -2220,6 +2257,12 @@ async fn ensure_parent_pod(
                         )
                         .collect::<Vec<_>>(),
                     ),
+                    volume_mounts: Some(vec![VolumeMount {
+                        name: "egress-allowlist".to_string(),
+                        mount_path: EGRESS_DIR.to_string(),
+                        read_only: Some(true),
+                        ..Default::default()
+                    }]),
                     ports: (!workshop.spec.exported_services.is_empty()).then(|| {
                         workshop
                             .spec
@@ -2575,6 +2618,51 @@ const INJECTION_RULES_KEY: &str = "rules.json";
 
 fn injection_rules_config_map(workshop_name: &str) -> String {
     format!("{workshop_name}-injection-rules")
+}
+
+/// Repertoire de montage de l'egress d'execution dans `net-proxy`.
+const EGRESS_DIR: &str = "/etc/atelier/egress";
+/// Fichier lu par `net-proxy` (`ATELIER_EGRESS_ALLOWLIST_FILE`), un hote par
+/// ligne.
+const EGRESS_PATH: &str = "/etc/atelier/egress/allowlist";
+const EGRESS_KEY: &str = "allowlist";
+
+fn egress_config_map(workshop_name: &str) -> String {
+    format!("{workshop_name}-egress")
+}
+
+/// Publie l'egress d'execution dans une ConfigMap, un hote par ligne. Meme
+/// schema que [`ensure_injection_rules_config_map`].
+async fn ensure_egress_config_map(
+    client: &Client,
+    namespace: &str,
+    workshop: &Workshop,
+    name: &str,
+    allowlist: &[String],
+) -> Result<(), kube::Error> {
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let cm_name = egress_config_map(name);
+    let config_map = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(cm_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: workshop.controller_owner_ref(&()).map(|r| vec![r]),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            EGRESS_KEY.to_string(),
+            allowlist.join("\n"),
+        )])),
+        ..Default::default()
+    };
+    match api.create(&PostParams::default(), &config_map).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(err)) if err.code == 409 => api
+            .replace(&cm_name, &PostParams::default(), &config_map)
+            .await
+            .map(|_| ()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Publie les regles d'injection dans une ConfigMap, que kubelet propage au
@@ -3076,6 +3164,7 @@ mod template_hash_tests {
                     max_llm_budget_usd: None,
                 },
                 egress_allowlist: vec![],
+                build_egress_allowlist: None,
                 tools: vec![],
                 identity_injection_rules: vec![],
                 owner_group: "atelier-core".into(),

@@ -28,6 +28,12 @@ spec:
                 items:
                   type: string
                 type: array
+              buildEgressAllowlist:
+                description: 'Politique reseau de sortie du BUILD de l''image (gestionnaires de paquets, registres), distincte de celle de l''execution (tache 14.8). Absente : le build reprend `egress_allowlist`, comme avant ce champ.'
+                items:
+                  type: string
+                nullable: true
+                type: array
               campaignId:
                 description: 'Identifiant de campagne multi-Workshops (spec 16 §3.2/§4) : les Workshops d''une meme campagne (meme valeur ici) ET du meme `owner_group` peuvent s''echanger des paquets au niveau reseau K8s (`NetworkPolicy` generee par le controller, voir `crates/controller/src/reconcile.rs::campaign_network_policy`) — tout le reste du trafic inter-pod est detruit au niveau noyau. `None` : Workshop solitaire, comportement inchange (aucune `NetworkPolicy` generee par ce mecanisme).'
                 nullable: true
@@ -62,7 +68,10 @@ spec:
                 type: object
               egressAllowlist:
                 default: []
-                description: Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
+                description: |-
+                  Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
+
+                  S'applique a l'execution, et se modifie sur un Workshop en marche sans suspension (tache 14.8).
                 items:
                   type: string
                 type: array

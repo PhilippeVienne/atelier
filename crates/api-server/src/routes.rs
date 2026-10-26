@@ -715,6 +715,8 @@ struct CreateWorkshopRequest {
     #[serde(default)]
     egress_allowlist: Vec<String>,
     #[serde(default)]
+    build_egress_allowlist: Option<Vec<String>>,
+    #[serde(default)]
     tools: Vec<String>,
     #[serde(default)]
     identity_injection_rules: Vec<atelier_common::IdentityInjectionRule>,
@@ -771,6 +773,7 @@ async fn create_workshop(
             devcontainer: req.devcontainer,
             resources: req.resources,
             egress_allowlist: req.egress_allowlist,
+            build_egress_allowlist: req.build_egress_allowlist,
             tools: req.tools,
             identity_injection_rules: req.identity_injection_rules,
             // Jamais depuis le corps de la requete : c'est l'identite

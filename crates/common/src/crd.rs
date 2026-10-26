@@ -24,8 +24,16 @@ pub struct WorkshopSpec {
     /// Ressources allouees au pod parent (qui heberge la microVM + le tooling).
     pub resources: WorkshopResources,
     /// Politique reseau de sortie appliquee par le net-proxy (domaines autorises).
+    ///
+    /// S'applique a l'execution, et se modifie sur un Workshop en marche sans
+    /// suspension (tache 14.8).
     #[serde(default)]
     pub egress_allowlist: Vec<String>,
+    /// Politique reseau de sortie du BUILD de l'image (gestionnaires de
+    /// paquets, registres), distincte de celle de l'execution (tache 14.8).
+    /// Absente : le build reprend `egress_allowlist`, comme avant ce champ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_egress_allowlist: Option<Vec<String>>,
     /// Outils/simulateurs a exposer via le mcp-gateway (ex: "aws-sim", "identity").
     #[serde(default)]
     pub tools: Vec<String>,
@@ -569,6 +577,7 @@ mod tests {
                     max_llm_budget_usd: Some(2.5),
                 },
                 egress_allowlist: vec!["github.com".into()],
+                build_egress_allowlist: None,
                 tools: vec![],
                 identity_injection_rules: vec![],
                 owner_group: "atelier-core".into(),

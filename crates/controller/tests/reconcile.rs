@@ -73,6 +73,7 @@ fn sample_spec() -> WorkshopSpec {
             max_llm_budget_usd: None,
         },
         egress_allowlist: vec![],
+        build_egress_allowlist: None,
         tools: vec![],
         identity_injection_rules: vec![],
         owner_group: "atelier-core".into(),

@@ -112,6 +112,12 @@ async fn main() -> anyhow::Result<()> {
 
     let allowlist: Arc<RwLock<Vec<String>>> =
         Arc::new(RwLock::new(parse_csv_env("ATELIER_EGRESS_ALLOWLIST")));
+    // Egress d'execution relu a chaud (tache 14.8) : le controller publie la
+    // liste dans une ConfigMap montee en fichier, que kubelet met a jour sans
+    // redemarrer le pod. Sans fichier, la liste de l'environnement reste.
+    if let Ok(path) = std::env::var("ATELIER_EGRESS_ALLOWLIST_FILE") {
+        spawn_allowlist_reload(path, Arc::clone(&allowlist));
+    }
     let no_proxy: Arc<Vec<String>> = Arc::new(upstream::no_proxy_from_env());
     let upstream_proxy = UpstreamProxy::from_env().map(Arc::new);
     let internal_routes = Arc::new(InternalRoutes::from_env()?);
@@ -372,6 +378,29 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+}
+
+/// Relit `path` toutes les quelques secondes et aligne `allowlist` dessus.
+/// Un fichier absent ou illisible ne change rien : la liste en memoire reste.
+fn spawn_allowlist_reload(path: String, allowlist: Arc<RwLock<Vec<String>>>) {
+    tokio::spawn(async move {
+        let mut previous_file = allowlist.read().await.clone();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let Ok(content) = tokio::fs::read_to_string(&path).await else {
+                continue;
+            };
+            let new_file = allowlist::parse_file(&content);
+            if new_file == previous_file {
+                continue;
+            }
+            let mut current = allowlist.write().await;
+            let merged = allowlist::merge_reload(&current, &previous_file, &new_file);
+            tracing::info!(allowlist = ?merged, "allowlist egress rechargee depuis le fichier");
+            *current = merged;
+            previous_file = new_file;
+        }
+    });
 }
 
 fn parse_csv_env(name: &str) -> Vec<String> {

@@ -7,6 +7,36 @@
 //!   `example.com` lui-meme).
 //! - `*` : autorise tout (a n'utiliser qu'en dev).
 
+/// Nouvelle liste apres relecture du fichier d'egress (tache 14.8) : les hotes
+/// du fichier, plus ceux qu'un ajout a chaud (`request_egress`) a mis dans la
+/// liste courante sans qu'ils figurent dans l'ancien fichier. Un hote retire
+/// du fichier disparait ; un ajout a chaud survit a la relecture.
+pub fn merge_reload(
+    current: &[String],
+    previous_file: &[String],
+    new_file: &[String],
+) -> Vec<String> {
+    let mut merged: Vec<String> = new_file.to_vec();
+    for entry in current {
+        let from_file = previous_file.iter().any(|f| f.eq_ignore_ascii_case(entry));
+        let already = merged.iter().any(|m| m.eq_ignore_ascii_case(entry));
+        if !from_file && !already {
+            merged.push(entry.clone());
+        }
+    }
+    merged
+}
+
+/// Hotes d'un fichier d'egress : un par ligne, lignes vides ignorees.
+pub fn parse_file(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn is_allowed(host: &str, allowlist: &[String]) -> bool {
     let host = normalize(host);
     allowlist.iter().any(|entry| matches_entry(&host, entry))
@@ -33,6 +63,28 @@ fn matches_entry(host: &str, entry: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reload_follows_the_file_and_keeps_hot_additions() {
+        let v = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // `b.com` retire du fichier, `c.com` ajoute au fichier, `hot.com`
+        // ajoute a chaud entre-temps.
+        let merged = merge_reload(
+            &v(&["a.com", "b.com", "hot.com"]),
+            &v(&["a.com", "b.com"]),
+            &v(&["a.com", "c.com"]),
+        );
+        assert_eq!(merged, v(&["a.com", "c.com", "hot.com"]));
+        // Un fichier vide coupe tout, sauf les ajouts a chaud.
+        assert_eq!(
+            merge_reload(&v(&["a.com"]), &v(&["a.com"]), &[]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_file("a.com\n\n  *.b.com \n"),
+            v(&["a.com", "*.b.com"])
+        );
+    }
 
     fn allowlist(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|s| s.to_string()).collect()

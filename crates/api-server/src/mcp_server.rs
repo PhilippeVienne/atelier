@@ -172,6 +172,10 @@ struct CreateWorkshopParams {
     /// wildcard `*.domaine`).
     #[serde(default)]
     egress_allowlist: Vec<String>,
+    /// Domaines autorises pendant le BUILD de l'image ; a defaut, ceux de
+    /// l'execution.
+    #[serde(default)]
+    build_egress_allowlist: Option<Vec<String>>,
     /// Outils/simulateurs a exposer via mcp-gateway (ex: "identity", "egress").
     #[serde(default)]
     tools: Vec<String>,
@@ -293,6 +297,7 @@ impl WorkshopMcpServer {
                     max_llm_budget_usd: params.max_llm_budget_usd,
                 },
                 egress_allowlist: params.egress_allowlist,
+                build_egress_allowlist: params.build_egress_allowlist,
                 tools: params.tools,
                 identity_injection_rules: Vec::new(),
                 owner_group,
