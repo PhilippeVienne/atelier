@@ -68,6 +68,13 @@ pub fn ssh_port(workshop: &atelier_common::Workshop) -> u16 {
 /// `~vscode/.ssh/`) — convention fixe, pas configurable dans le CRD.
 pub(crate) const SSH_USER: &str = "vscode";
 
+/// Compte SSH de l'outil MCP. `ATELIER_SSH_USER` ne sert qu'aux tests, qui
+/// visent un vrai `sshd` sans privilege, lequel n'ouvre de session que pour
+/// le compte qui le lance.
+fn ssh_user() -> String {
+    std::env::var("ATELIER_SSH_USER").unwrap_or_else(|_| SSH_USER.to_string())
+}
+
 struct ExecClientHandler;
 
 impl client::Handler for ExecClientHandler {
@@ -275,7 +282,7 @@ async fn run_over_ssh(
         .flatten();
     let auth = session
         .authenticate_publickey(
-            SSH_USER,
+            ssh_user(),
             PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
         )
         .await
