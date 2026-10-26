@@ -519,6 +519,22 @@ pub async fn cleanup(ctx: &ReconcileCtx, workshop: &Workshop) -> anyhow::Result<
         tracing::warn!(%err, "nettoyage du snapshot en cache (cleanup) echoue, finalizer non bloque");
     }
 
+    // Tache 14.15 : la copie S3 (offload de `vm-supervisor`) n'est pas sur le
+    // PVC, le Job ci-dessus ne la voit pas. Meme discipline : best effort.
+    match atelier_common::storage::S3StorageBackend::from_env() {
+        Ok(Some(storage)) => {
+            let prefix = storage::snapshot_cache_subdir(&ns, &name);
+            match storage.delete_snapshot_prefix(&prefix).await {
+                Ok(count) => tracing::info!(%prefix, count, "objets S3 du snapshot supprimes"),
+                Err(err) => {
+                    tracing::warn!(%err, %prefix, "suppression S3 du snapshot echouee, finalizer non bloque");
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!(%err, "configuration S3 invalide, snapshot S3 non supprime"),
+    }
+
     // Tache 3.2.1 (Jalon M3) : revoque la Virtual Key LiteLLM de ce
     // Workshop avant de liberer le finalizer, sans quoi elle resterait
     // valide (et consommable) au-dela de la duree de vie du Workshop qui
@@ -722,9 +738,10 @@ async fn ensure_suspended(
         // journalisant a tort une « suspension sans snapshot ».
         Some(pod) if pod.metadata.deletion_timestamp.is_some() => WorkshopPhase::Suspending,
         Some(pod) => {
-            if let Some(digest) = request_snapshot(&pod).await {
-                snapshot_digest = Some(digest);
-            }
+            // Une suspension qui n'a pas produit d'instantane n'en laisse pas
+            // l'empreinte de la precedente : elle decrirait un autre etat
+            // (tache 14.15).
+            snapshot_digest = request_snapshot(&pod).await;
             pods.delete(&pod_name, &DeleteParams::default()).await?;
             WorkshopPhase::Suspending
         }

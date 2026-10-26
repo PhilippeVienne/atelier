@@ -231,3 +231,117 @@ async fn upload_snapshot_file_survives_local_eviction_via_download() {
     );
     tokio::fs::remove_file(&local_path).await.ok();
 }
+
+/// Tache 14.15 : un disque de microVM est un fichier creux. Il part compresse
+/// (les trous ne coutent presque rien), revient identique et creux, et les
+/// objets d'un Workshop supprime se retirent d'un coup.
+#[tokio::test]
+async fn sparse_snapshot_file_travels_small_and_comes_back_sparse() {
+    use std::os::unix::fs::MetadataExt;
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    let Ok(Some(backend)) = S3StorageBackend::from_env() else {
+        eprintln!("S3_ENDPOINT absent ou invalide, test ignore (voir l'en-tete de ce fichier)");
+        return;
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("horloge systeme")
+        .as_nanos();
+    let prefix = format!("snapshots/default_sparse-test-{nanos}");
+    let source = std::env::temp_dir().join(format!("atelier-sparse-src-{nanos}"));
+    let dest = std::env::temp_dir().join(format!("atelier-sparse-dst-{nanos}"));
+
+    // 128 Mio apparents, deux zones ecrites et une queue creuse.
+    let data = deterministic_session_payload(300 * 1024);
+    let apparent: u64 = 128 * 1024 * 1024;
+    let mut file = tokio::fs::File::create(&source).await.unwrap();
+    file.write_all(&data).await.unwrap();
+    file.seek(std::io::SeekFrom::Start(64 * 1024 * 1024))
+        .await
+        .unwrap();
+    file.write_all(&data).await.unwrap();
+    file.set_len(apparent).await.unwrap();
+    file.flush().await.unwrap();
+    drop(file);
+
+    backend
+        .upload_snapshot_file(&prefix, "snapshot.rootfs", &source)
+        .await
+        .expect("televersement du disque");
+    backend
+        .download_snapshot_to_file(&prefix, "snapshot.rootfs", &dest)
+        .await
+        .expect("retelechargement du disque");
+
+    let (src_bytes, dst_bytes) = (
+        tokio::fs::read(&source).await.unwrap(),
+        tokio::fs::read(&dest).await.unwrap(),
+    );
+    assert_eq!(
+        dst_bytes.len() as u64,
+        apparent,
+        "taille apparente conservee"
+    );
+    assert_eq!(
+        sha256_hex(&src_bytes),
+        sha256_hex(&dst_bytes),
+        "contenu identique"
+    );
+    let used = std::fs::metadata(&dest).unwrap().blocks() * 512;
+    assert!(
+        used < apparent / 4,
+        "le fichier restaure doit rester creux : {used} octets occupes pour {apparent} apparents"
+    );
+
+    let removed = backend.delete_snapshot_prefix(&prefix).await.unwrap();
+    assert_eq!(removed, 1, "l'objet compresse est le seul sous ce prefixe");
+    assert_eq!(backend.delete_snapshot_prefix(&prefix).await.unwrap(), 0);
+    tokio::fs::remove_file(&source).await.ok();
+    tokio::fs::remove_file(&dest).await.ok();
+}
+
+/// Tache 14.15 : un instantane televerse avant la compression (cle sans
+/// `.zst`) se retelecharge encore, et se supprime avec les autres.
+#[tokio::test]
+async fn snapshot_uploaded_before_compression_is_still_restorable() {
+    let Ok(Some(backend)) = S3StorageBackend::from_env() else {
+        eprintln!("S3_ENDPOINT absent ou invalide, test ignore (voir l'en-tete de ce fichier)");
+        return;
+    };
+    let bucket = std::env::var("S3_BUCKET_SNAPSHOTS").expect("S3_BUCKET_SNAPSHOTS");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("horloge systeme")
+        .as_nanos();
+    let prefix = format!("snapshots/default_legacy-test-{nanos}");
+    let payload = deterministic_session_payload(100 * 1024);
+    backend
+        .upload_stream(
+            &bucket,
+            &format!("{prefix}/snapshot.mem"),
+            Box::pin(Cursor::new(payload.clone())),
+        )
+        .await
+        .expect("televersement a l'ancien format");
+
+    // Dossier de destination absent, comme apres l'eviction du cache local.
+    let dest = std::env::temp_dir()
+        .join(format!("atelier-legacy-dir-{nanos}"))
+        .join("snapshot.mem");
+    backend
+        .download_snapshot_to_file(&prefix, "snapshot.mem", &dest)
+        .await
+        .expect("retelechargement de l'ancien format");
+    assert_eq!(tokio::fs::read(&dest).await.unwrap(), payload);
+
+    backend
+        .delete_snapshot_file(&prefix, "snapshot.mem")
+        .await
+        .unwrap();
+    assert_eq!(backend.delete_snapshot_prefix(&prefix).await.unwrap(), 0);
+    tokio::fs::remove_file(&dest).await.ok();
+    if let Some(dir) = dest.parent() {
+        tokio::fs::remove_dir(dir).await.ok();
+    }
+}

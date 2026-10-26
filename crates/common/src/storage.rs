@@ -41,6 +41,49 @@ use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
+/// Suffixe des fichiers d'instantane compresses sur S3 (tache 14.15).
+const COMPRESSED_SUFFIX: &str = ".zst";
+
+/// Copie `reader` dans `file` sans ecrire les blocs entierement nuls : ils
+/// deviennent des trous, et la taille finale est celle du flux.
+async fn copy_sparse(
+    reader: &mut (impl AsyncRead + Unpin),
+    file: &mut tokio::fs::File,
+) -> Result<u64> {
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut position = 0u64;
+    loop {
+        // Un bloc plein, sauf en fin de flux : un decodeur rend des morceaux
+        // de taille quelconque, et des trous ne se voient que sur de grands blocs.
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let read = reader.read(&mut buffer[filled..]).await?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled == 0 {
+            break;
+        }
+        if buffer[..filled].iter().all(|byte| *byte == 0) {
+            file.seek(std::io::SeekFrom::Current(filled as i64)).await?;
+        } else {
+            file.write_all(&buffer[..filled]).await?;
+        }
+        position += filled as u64;
+        if filled < buffer.len() {
+            break;
+        }
+    }
+    // Fixe la taille : un trou en fin de fichier n'etend rien tout seul.
+    file.set_len(position).await?;
+    file.flush().await?;
+    Ok(position)
+}
+
 /// Un flux d'octets asynchrone, possede et type-efface : c'est le type
 /// commun utilise par [`StorageBackend`] en entree comme en sortie, pour
 /// rester agnostique du type concret du flux source/destination (une
@@ -219,42 +262,114 @@ impl S3StorageBackend {
 
     /// Televerse un fichier de snapshot local vers `S3_BUCKET_SNAPSHOTS`
     /// (tache 8.4, spec `docs/specs/13-image-cache-offload.md`).
+    ///
+    /// Le fichier part compresse en zstd, sous la cle `<nom>.zst` (tache
+    /// 14.15). Le disque d'une microVM est un fichier creux : envoye tel quel
+    /// il occupait sa taille apparente (6,2 Gio pour 2,1 Gio ecrits) et
+    /// faisait l'essentiel de la duree d'une suspension. Les trous se
+    /// compressent presque pour rien, et la memoire figee aussi, en grande
+    /// partie.
     pub async fn upload_snapshot_file(
         &self,
         prefix: &str,
         filename: &str,
         path: &std::path::Path,
     ) -> Result<()> {
-        let key = Self::snapshot_key(prefix, filename);
+        use async_compression::Level;
+
+        let key = Self::snapshot_key(prefix, &format!("{filename}{COMPRESSED_SUFFIX}"));
         let file = tokio::fs::File::open(path)
             .await
             .with_context(|| format!("ouverture de {path:?} pour televersement du snapshot"))?;
-        self.upload_stream(&self.bucket_snapshots, &key, Box::pin(file))
+        let encoder = ZstdEncoder::with_quality(tokio::io::BufReader::new(file), Level::Fastest);
+        self.upload_stream(&self.bucket_snapshots, &key, Box::pin(encoder))
             .await
     }
 
-    /// Supprime un fichier de snapshot de `S3_BUCKET_SNAPSHOTS`. Sans
-    /// erreur s'il n'y est pas (une suppression S3 est idempotente).
+    /// Supprime un fichier de snapshot de `S3_BUCKET_SNAPSHOTS`, sous sa forme
+    /// compressee comme sous l'ancienne, non compressee. Sans erreur s'il
+    /// n'y est pas (une suppression S3 est idempotente).
     pub async fn delete_snapshot_file(&self, prefix: &str, filename: &str) -> Result<()> {
-        let key = Self::snapshot_key(prefix, filename);
-        self.delete_object(&self.bucket_snapshots, &key).await
+        self.delete_object(
+            &self.bucket_snapshots,
+            &Self::snapshot_key(prefix, filename),
+        )
+        .await?;
+        self.delete_object(
+            &self.bucket_snapshots,
+            &Self::snapshot_key(prefix, &format!("{filename}{COMPRESSED_SUFFIX}")),
+        )
+        .await
+    }
+
+    /// Supprime tous les objets d'un Workshop sous `prefix` (tache 14.15) :
+    /// sans cela, les instantanes d'un Workshop supprime restaient sur S3
+    /// (33 Go laisses par les essais). Renvoie le nombre d'objets supprimes.
+    pub async fn delete_snapshot_prefix(&self, prefix: &str) -> Result<usize> {
+        let list_prefix = format!("{}/", prefix.trim_end_matches('/'));
+        let mut deleted = 0;
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket_snapshots)
+                .prefix(&list_prefix)
+                .set_continuation_token(token.take())
+                .send()
+                .await
+                .with_context(|| format!("liste S3 echouee (prefixe={list_prefix})"))?;
+            for object in page.contents() {
+                if let Some(key) = object.key() {
+                    self.delete_object(&self.bucket_snapshots, key).await?;
+                    deleted += 1;
+                }
+            }
+            match page.next_continuation_token() {
+                Some(next) if page.is_truncated() == Some(true) => token = Some(next.to_string()),
+                _ => return Ok(deleted),
+            }
+        }
     }
 
     /// Retelecharge un fichier de snapshot depuis `S3_BUCKET_SNAPSHOTS` vers
     /// un chemin local (tache 8.4) — utilise par `vm-supervisor` quand le
     /// PVC local a ete evince (8.5) mais qu'une reprise est demandee.
+    ///
+    /// Lit la forme compressee (`<nom>.zst`), et a defaut l'ancienne forme,
+    /// televersee avant la tache 14.15. Le fichier est ecrit creux : un bloc
+    /// entierement nul n'est pas ecrit, il laisse un trou.
     pub async fn download_snapshot_to_file(
         &self,
         prefix: &str,
         filename: &str,
         dest: &std::path::Path,
     ) -> Result<()> {
-        let key = Self::snapshot_key(prefix, filename);
-        let mut stream = self.download_stream(&self.bucket_snapshots, &key).await?;
+        let compressed_key = Self::snapshot_key(prefix, &format!("{filename}{COMPRESSED_SUFFIX}"));
+        let mut stream: BoxedAsyncRead = match self
+            .download_stream(&self.bucket_snapshots, &compressed_key)
+            .await
+        {
+            Ok(stream) => Box::pin(ZstdDecoder::new(tokio::io::BufReader::new(stream))),
+            Err(_) => {
+                self.download_stream(
+                    &self.bucket_snapshots,
+                    &Self::snapshot_key(prefix, filename),
+                )
+                .await?
+            }
+        };
+        // Le dossier du Workshop peut avoir disparu avec l'eviction du cache
+        // local : c'est precisement le cas ou l'on vient chercher S3.
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("creation de {parent:?} pour reception du snapshot"))?;
+        }
         let mut file = tokio::fs::File::create(dest)
             .await
             .with_context(|| format!("creation de {dest:?} pour reception du snapshot"))?;
-        tokio::io::copy(&mut stream, &mut file)
+        copy_sparse(&mut stream, &mut file)
             .await
             .with_context(|| format!("ecriture de {dest:?} depuis le flux S3"))?;
         Ok(())
