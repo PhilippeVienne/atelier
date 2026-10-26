@@ -1239,3 +1239,15 @@
   - *Solution* : `MaxStartups 100:30:200` dans le `sshd_config` injecté (`crates/image-builder`), et `ESTABLISH_TIMEOUT` autour de l'ouverture de session (`crates/api-server/src/run.rs`), qui rend un `502` explicite.
   - *A quoi le reconnaitre* : tout appel réseau vers l'invité passe par ce tunnel, qui ne propage pas une fermeture côté invité. Chaque étape d'un échange avec l'invité doit porter son propre délai. `crate::exec` (l'outil MCP) n'en a toujours pas à l'ouverture de session.
 
+
+- **Sans `exec`, `timeout` laisse un shell masquer le signal d'une commande (tache 14.5, spec 19).**
+  - *Symptome observable* : `kill -SEGV $$` lancé par `exec_in_workshop` revient `exitCode 139`, `signal null`, statut `Completed`, avec un message `Segmentation fault` sur la sortie d'erreur. Un test contre un `sshd` local ne le voit pas.
+  - *Cause reelle* : `sshd` lance `sh -c "timeout … bash -c '…'"` ; ce shell reste le processus de session et sort en `128 + n` quand son fils meurt d'un signal, donc `sshd` n'envoie jamais `exit-signal`.
+  - *Solution* : `exec timeout …` dans `with_ceiling` (`crates/api-server/src/exec.rs`), comme `RunRequest::script` le faisait déjà.
+  - *A quoi le reconnaitre* : toute enveloppe de commande distante doit se terminer par `exec`. Le seul contrôle fiable est un signal réel dans l'invité.
+
+- **Un port de dev déjà occupé fait sauter le port-forward de `local-stack.sh` (tache 14.5).**
+  - *Symptome observable* : le controller échoue à `PUT /v1/sys/policy/atelier-api-server` en `403 Forbidden` alors que `env.sh` a `OPENBAO_TOKEN=root`.
+  - *Cause reelle* : un autre service (OpenBao/Vault étranger au projet) écoute sur `127.0.0.1:8200` ; le script voit le port ouvert et ne lance pas son `kubectl port-forward`. Le jeton `root` est refusé par ce service-là.
+  - *Solution* : `kubectl port-forward --address 127.0.0.1 svc/atelier-openbao-dev 18200:8200` et `OPENBAO_ADDR=http://127.0.0.1:18200` pour le controller et l'api-server. 8201 est pris aussi.
+  - *A quoi le reconnaitre* : `ss -ltnp | grep 8200` ne montre aucun `kubectl`. Pour l'exec MCP en local, retirer aussi `ATELIER_LLM_PROXY_ADDR` si LiteLLM ne tourne pas (sinon « Security dependencies unreachable »).
