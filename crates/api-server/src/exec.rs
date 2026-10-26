@@ -39,7 +39,7 @@ use russh::keys::{decode_secret_key, PrivateKeyWithHashAlg};
 use russh::ChannelMsg;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Port sur lequel `sshd` ecoute dans la microVM agent de CE Workshop —
@@ -142,8 +142,9 @@ async fn run_and_persist(
     )
     .await;
     match outcome {
-        Ok(exit_code) => {
-            finalize(&state.db_pool, id, &tenant, "Completed", exit_code).await;
+        Ok(end) => {
+            let status = end.status();
+            finalize(&state.db_pool, id, &tenant, status, &end).await;
         }
         Err(err) => {
             tracing::warn!(%err, %id, pod_ip = %guest.pod_ip, ssh_port = guest.ssh_port, "exec_in_workshop echoue");
@@ -155,7 +156,14 @@ async fn run_and_persist(
                 format!("\n[atelier] execution echouee: {err}\n").as_bytes(),
             )
             .await;
-            finalize(&state.db_pool, id, &tenant, "Failed", None).await;
+            finalize(
+                &state.db_pool,
+                id,
+                &tenant,
+                "Failed",
+                &CommandEnd::default(),
+            )
+            .await;
         }
     }
 }
@@ -237,7 +245,7 @@ fn exec_ceiling_secs() -> u64 {
 fn with_ceiling(command: &str) -> String {
     let escaped = command.replace('\'', "'\\''");
     format!(
-        "timeout --kill-after=30s {}s bash -c '{escaped}'",
+        "timeout --kill-after=30s {}s bash -c '{escaped}' </dev/null",
         exec_ceiling_secs()
     )
 }
@@ -250,7 +258,7 @@ async fn run_over_ssh(
     private_key_pem: &str,
     command: &str,
     workspace_dir: &str,
-) -> anyhow::Result<Option<i32>> {
+) -> anyhow::Result<CommandEnd> {
     let stream = crate::vscode::open_forwarded_tcp_stream(&guest.pod_ip, guest.ssh_port).await?;
     let key = decode_secret_key(private_key_pem, None)
         .map_err(|err| anyhow::anyhow!("cle SSH privee invalide: {err}"))?;
@@ -285,8 +293,24 @@ async fn run_over_ssh(
         .await
         .map_err(|err| anyhow::anyhow!("exec SSH echoue: {err}"))?;
 
-    let mut exit_code = None;
-    while let Some(msg) = channel.wait().await {
+    // Entree standard fermee : une commande qui la lit (`cat`) rend la main
+    // au lieu d'attendre indefiniment (la commande la redirige aussi depuis
+    // /dev/null, voir `with_ceiling`).
+    let _ = channel.eof().await;
+
+    let started = Instant::now();
+    let mut end = CommandEnd::default();
+    // Le plafond est applique dans le guest (`timeout`) ; ce delai-ci ne sert
+    // que si le guest ne repond plus du tout.
+    let mut deadline =
+        started + Duration::from_secs(exec_ceiling_secs()) + HARD_KILL_GRACE + SERVER_MARGIN;
+    while let Ok(msg) = tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        channel.wait(),
+    )
+    .await
+    {
+        let Some(msg) = msg else { break };
         match msg {
             ChannelMsg::Data { data } => {
                 append_chunk(&state.db_pool, id, tenant, OutputStream::Stdout, &data).await;
@@ -295,16 +319,60 @@ async fn run_over_ssh(
                 append_chunk(&state.db_pool, id, tenant, OutputStream::Stderr, &data).await;
             }
             ChannelMsg::ExitStatus { exit_status } => {
-                exit_code = Some(exit_status as i32);
+                end.exit_code = Some(exit_status as i32);
+                deadline = Instant::now() + DRAIN_AFTER_EXIT;
             }
+            ChannelMsg::ExitSignal { signal_name, .. } => {
+                end.signal = Some(match signal_name {
+                    russh::Sig::Custom(name) => name,
+                    known => format!("{known:?}"),
+                });
+                deadline = Instant::now() + DRAIN_AFTER_EXIT;
+            }
+            ChannelMsg::Close => break,
             _ => {}
         }
     }
+    // Un processus d'arriere-plan qui garde la sortie ouverte ne retient plus
+    // l'appel : le statut est connu, on ne l'attend plus.
+    end.timed_out = started.elapsed() >= Duration::from_secs(exec_ceiling_secs())
+        && (matches!(end.exit_code, Some(124 | 137)) || end.signal.as_deref() == Some("KILL"));
 
+    let _ = channel.close().await;
     let _ = session
         .disconnect(russh::Disconnect::ByApplication, "", "en")
         .await;
-    Ok(exit_code)
+    Ok(end)
+}
+
+/// Marge laissee a `timeout --kill-after=30s` pour tuer la commande.
+const HARD_KILL_GRACE: Duration = Duration::from_secs(35);
+const SERVER_MARGIN: Duration = Duration::from_secs(10);
+/// Une fois le statut de sortie recu, temps laisse aux derniers octets pour
+/// arriver (voir `crate::run`).
+const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(300);
+
+/// Comment une commande a fini.
+#[derive(Default)]
+struct CommandEnd {
+    exit_code: Option<i32>,
+    signal: Option<String>,
+    timed_out: bool,
+}
+
+impl CommandEnd {
+    fn status(&self) -> &'static str {
+        if self.timed_out {
+            "Timeout"
+        } else if self.signal.is_some() {
+            "Killed"
+        } else if self.exit_code.is_some() {
+            "Completed"
+        } else {
+            // Ni code ni signal : le guest a coupe sans rien dire.
+            "Failed"
+        }
+    }
 }
 
 enum OutputStream {
@@ -330,7 +398,6 @@ async fn append_chunk(
     if data.is_empty() {
         return;
     }
-    let text = String::from_utf8_lossy(data);
     let Ok(mut tx) = pool.begin().await else {
         return;
     };
@@ -351,20 +418,14 @@ async fn append_chunk(
         }
     };
     let _ = sqlx::query(query)
-        .bind(text.as_ref())
+        .bind(data)
         .bind(id)
         .execute(&mut *tx)
         .await;
     let _ = tx.commit().await;
 }
 
-async fn finalize(
-    pool: &sqlx::PgPool,
-    id: Uuid,
-    tenant: &str,
-    status: &str,
-    exit_code: Option<i32>,
-) {
+async fn finalize(pool: &sqlx::PgPool, id: Uuid, tenant: &str, status: &str, end: &CommandEnd) {
     let Ok(mut tx) = pool.begin().await else {
         return;
     };
@@ -377,10 +438,11 @@ async fn finalize(
         return;
     }
     let _ = sqlx::query(
-        "UPDATE exec_commands SET status = $1, exit_code = $2, updated_at = now() WHERE id = $3",
+        "UPDATE exec_commands SET status = $1, exit_code = $2, signal = $3, updated_at = now() WHERE id = $4",
     )
     .bind(status)
-    .bind(exit_code)
+    .bind(end.exit_code)
+    .bind(&end.signal)
     .bind(id)
     .execute(&mut *tx)
     .await;
@@ -393,8 +455,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(300);
 struct ExecRow {
     status: String,
     exit_code: Option<i32>,
-    stdout_buffer: String,
-    stderr_buffer: String,
+    signal: Option<String>,
+    stdout_buffer: Vec<u8>,
+    stderr_buffer: Vec<u8>,
 }
 
 /// `GET /v1/workshops/{name}/exec/{id}/stream` (tache 4.2.3) : reconnexion
@@ -413,6 +476,20 @@ struct ExecRow {
 /// S'arreter sur le seul `finished` fermait le flux sur un dernier
 /// evenement `stdout` (les branches sont ordonnees stdout -> stderr ->
 /// status), donc sans jamais envoyer `exitCode`.
+/// Octets du tampon pas encore transmis. Tant que la commande tourne, on
+/// s'arrete avant un caractere UTF-8 coupe en deux par le chunk suivant.
+fn unsent(buffer: &[u8], sent: usize, finished: bool) -> &[u8] {
+    let rest = buffer.get(sent..).unwrap_or_default();
+    if finished {
+        return rest;
+    }
+    match std::str::from_utf8(rest) {
+        Ok(_) => rest,
+        Err(err) if err.error_len().is_none() => &rest[..err.valid_up_to()],
+        Err(_) => rest,
+    }
+}
+
 fn stream_is_done(finished: bool, nothing_left_to_send: bool) -> bool {
     finished && nothing_left_to_send
 }
@@ -453,29 +530,31 @@ pub async fn stream_handler(
                 ));
             };
 
-            let stdout_new = row
-                .stdout_buffer
-                .get(stdout_sent..)
-                .unwrap_or_default()
-                .to_string();
-            let stderr_new = row
-                .stderr_buffer
-                .get(stderr_sent..)
-                .unwrap_or_default()
-                .to_string();
-            stdout_sent = row.stdout_buffer.len();
-            stderr_sent = row.stderr_buffer.len();
-
             let finished = row.status != "Running";
+            // Un evenement par sondage : on n'avance que du flux emis. Avancer
+            // les deux perdait la sortie d'erreur arrivee dans le meme
+            // intervalle que la sortie standard (constat 7).
+            let stdout_new = unsent(&row.stdout_buffer, stdout_sent, finished);
+            let stderr_new = unsent(&row.stderr_buffer, stderr_sent, finished);
             let nothing_left_to_send = stdout_new.is_empty() && stderr_new.is_empty();
             let event = if !stdout_new.is_empty() {
-                Event::default().event("stdout").data(stdout_new)
+                stdout_sent += stdout_new.len();
+                Event::default()
+                    .event("stdout")
+                    .data(String::from_utf8_lossy(stdout_new))
             } else if !stderr_new.is_empty() {
-                Event::default().event("stderr").data(stderr_new)
+                stderr_sent += stderr_new.len();
+                Event::default()
+                    .event("stderr")
+                    .data(String::from_utf8_lossy(stderr_new))
             } else if finished {
                 Event::default().event("status").data(
-                    serde_json::json!({ "status": row.status, "exitCode": row.exit_code })
-                        .to_string(),
+                    serde_json::json!({
+                        "status": row.status,
+                        "exitCode": row.exit_code,
+                        "signal": row.signal,
+                    })
+                    .to_string(),
                 )
             } else {
                 Event::default().event("ping").data("")
@@ -534,7 +613,7 @@ async fn fetch_row(
         .await
         .ok()?;
     let row = sqlx::query_as::<_, ExecRow>(
-        "SELECT status, exit_code, stdout_buffer, stderr_buffer FROM exec_commands WHERE id = $1 AND workshop_name = $2",
+        "SELECT status, exit_code, signal, stdout_buffer, stderr_buffer FROM exec_commands WHERE id = $1 AND workshop_name = $2",
     )
     .bind(id)
     .bind(workshop_name)
@@ -546,7 +625,42 @@ async fn fetch_row(
 
 #[cfg(test)]
 mod workspace_tests {
-    use super::{in_workspace, stream_is_done, with_ceiling, workspace_dir};
+    use super::{in_workspace, stream_is_done, unsent, with_ceiling, workspace_dir, CommandEnd};
+
+    /// Tache 14.5 : un caractere UTF-8 coupe entre deux chunks n'est pas
+    /// transmis a moitie tant que la commande tourne, et l'est a la fin.
+    #[test]
+    fn unsent_holds_back_a_split_character_until_the_command_is_done() {
+        let euro = "€".as_bytes(); // 3 octets
+        assert_eq!(unsent(&euro[..2], 0, false), b"");
+        assert_eq!(unsent(euro, 0, false), euro);
+        assert_eq!(unsent(&euro[..2], 0, true), &euro[..2]);
+        assert_eq!(unsent(b"ab\0cd", 2, false), b"\0cd");
+        assert_eq!(unsent(b"ab", 5, false), b"");
+    }
+
+    /// Tache 14.5 : un signal ou un depassement n'est plus un `Completed`.
+    #[test]
+    fn the_status_tells_a_signal_and_a_timeout_from_a_completion() {
+        let code = |c| CommandEnd {
+            exit_code: Some(c),
+            ..Default::default()
+        };
+        assert_eq!(code(0).status(), "Completed");
+        assert_eq!(code(3).status(), "Completed");
+        let sig = CommandEnd {
+            signal: Some("SEGV".into()),
+            ..Default::default()
+        };
+        assert_eq!(sig.status(), "Killed");
+        let late = CommandEnd {
+            exit_code: Some(124),
+            timed_out: true,
+            ..Default::default()
+        };
+        assert_eq!(late.status(), "Timeout");
+        assert_eq!(CommandEnd::default().status(), "Failed");
+    }
 
     /// Regression (2026-08-30) : une commande SSH non interactive demarre
     /// dans `/home/vscode`, pas dans les sources. `RunDevcontainerTests`
@@ -614,6 +728,10 @@ mod workspace_tests {
             "{wrapped}"
         );
         assert!(wrapped.contains("bash -c '"), "{wrapped}");
+        assert!(
+            wrapped.ends_with("</dev/null"),
+            "entree standard fermee: {wrapped}"
+        );
         // Les guillemets simples d'origine survivent, correctement echappes
         // pour rester a l'interieur des guillemets simples englobants.
         assert!(

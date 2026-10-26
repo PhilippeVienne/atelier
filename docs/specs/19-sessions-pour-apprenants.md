@@ -119,6 +119,8 @@ Vérifié d'abord contre un vrai `sshd` OpenSSH lancé sans privilège sur la ma
 
 Ce dernier point a demandé deux corrections, trouvées par ces passages : l'ouverture de la session SSH n'avait pas de délai, et le `sshd` injecté gardait le `MaxStartups` par défaut d'OpenSSH, qui écarte des connexions dès qu'il y en a dix en attente. À travers le tunnel, ce rejet ne fermait pas la connexion vue par l'api-server : l'appel attendait sans fin, sans une ligne de journal.
 
+Tâche 14.5, outil MCP `exec_in_workshop` (`crates/api-server/src/exec.rs`) : le flux SSE n'avance que du flux émis (la sortie d'erreur n'est plus perdue quand elle arrive avec la sortie standard) ; les tampons `exec_commands` sont en `BYTEA` (PostgreSQL refusait l'octet nul dans un `TEXT` et la sortie revenait vide) ; un signal est enregistré (colonne `signal`, statut `Killed`, champ `signal` de l'événement `status`) et un dépassement du plafond donne le statut `Timeout` ; l'entrée standard est fermée ; l'appel rend la main 300 ms après le statut de sortie même si un processus d'arrière-plan garde la sortie ouverte. Les événements SSE restent du texte : un octet invalide en UTF-8 y devient `U+FFFD`, seul le tampon est fidèle.
+
 Restent ouverts :
 
 - le **compte** ne se choisit pas par appel : la commande tourne sous le compte de session du `sshd` injecté (tâche 14.7, qui applique `remoteUser`). Conséquence observée : `HOME` vaut `/home/vscode` et `USER` vaut `vscode` alors que `id` rend le compte de l'image (même uid) ; l'appelant qui en dépend doit passer `HOME` dans `env` ;
@@ -126,7 +128,7 @@ Restent ouverts :
 - un invité saturé rend des `200` dont la commande a échoué sur `fork` (codes 125 ou 2) : rien ne les distingue d'un échec ordinaire de la commande ;
 - un champ inconnu dans la requête est refusé en `422`, pas en `400` ;
 - chaque appel ouvre sa connexion SSH ; une session réutilisée par Workshop réduirait la latence et la charge de l'invité ;
-- l'appel n'est pas inscrit dans l'historique `exec_commands`, seulement journalisé ; les défauts de l'outil MCP restent ceux du constat 7 (tâche 14.5) ;
+- l'appel n'est pas inscrit dans l'historique `exec_commands`, seulement journalisé ; les défauts de l'outil MCP du constat 7 sont corrigés par la tâche 14.5 (voir plus bas) ;
 - non essayé : une image dont `timeout` vient de busybox.
 
 ### 3.5. Le dépôt source dans l'invité

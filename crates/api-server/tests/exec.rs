@@ -123,14 +123,14 @@ async fn fetch_exec_row(
     pool: &sqlx::PgPool,
     owner_subject: &str,
     id: Uuid,
-) -> (String, Option<i32>, String, String) {
+) -> (String, Option<i32>, Vec<u8>, Vec<u8>) {
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("SELECT set_config('app.current_tenant', $1, true)")
         .bind(owner_subject)
         .execute(&mut *tx)
         .await
         .unwrap();
-    let row: (String, Option<i32>, String, String) = sqlx::query_as(
+    let row: (String, Option<i32>, Vec<u8>, Vec<u8>) = sqlx::query_as(
         "SELECT status, exit_code, stdout_buffer, stderr_buffer FROM exec_commands WHERE id = $1",
     )
     .bind(id)
@@ -241,8 +241,8 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
 
     let mut status = "Running".to_string();
     let mut exit_code = None;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
     for _ in 0..50 {
         let row = fetch_exec_row(&state.db_pool, &owner_subject, id).await;
         status = row.0;
@@ -264,12 +264,12 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
     // doit constater : une commande d'agent qui s'executerait a la racine
     // du guest plutot que dans le workspace ne trouverait pas les sources.
     assert_eq!(
-        stdout,
-        "echo timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello'"
+        String::from_utf8_lossy(&stdout),
+        "echo timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
     );
     assert_eq!(
-        stderr,
-        "stderr from timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello'"
+        String::from_utf8_lossy(&stderr),
+        "stderr from timeout --kill-after=30s 1200s bash -c 'cd /workspaces/repo 2>/dev/null || true; echo hello' </dev/null"
     );
 
     net_proxy.start_kill().ok();
