@@ -191,7 +191,7 @@ impl RunRequest {
 
 /// `[A-Za-z_][A-Za-z0-9_]*` : ce que POSIX accepte comme nom de variable,
 /// et rien qui puisse etre autre chose dans un `export`.
-fn is_env_name(name: &str) -> bool {
+pub(crate) fn is_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
@@ -200,7 +200,7 @@ fn is_env_name(name: &str) -> bool {
 }
 
 /// Ecrit `text` comme un seul mot d'un shell POSIX, quoi qu'il contienne.
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
@@ -447,7 +447,7 @@ pub async fn run_handler(
     Path(name): Path<String>,
     Json(body): Json<RunBody>,
 ) -> Result<Json<RunResponse>, ApiError> {
-    let request = RunRequest::new(
+    let mut request = RunRequest::new(
         body.command,
         body.working_dir,
         body.env,
@@ -458,6 +458,17 @@ pub async fn run_handler(
 
     let workshop = workshops_api(&state).get(&name).await?;
     ensure_owner(&workshop, &user)?;
+    // Champs de session du devcontainer.json (tache 14.7) : `containerEnv`
+    // sous l'environnement de l'appel, qui l'emporte, et `remoteUser` pour
+    // `USER`, `LOGNAME` et `HOME`.
+    let session = crate::exec::SessionDefaults::of(&workshop);
+    for (name, value) in &session.env {
+        request
+            .env
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
+    }
+    request.command = format!("{}{}", session.user_exports(), request.command);
     let pod_ip = resolve_running_pod_ip(&state, &workshop).await?;
     let session_auth = state.session_auth.as_ref().ok_or_else(|| {
         ApiError::service_unavailable(
@@ -477,7 +488,7 @@ pub async fn run_handler(
             tracing::warn!(%err, pod_ip, ssh_port, "exec: guest injoignable (portforward)");
             ApiError::bad_gateway(format!("connexion au guest impossible: {err}"))
         })?;
-    let default_dir = crate::exec::workspace_dir(&workshop.spec.devcontainer.repo);
+    let default_dir = session.dir.clone();
     let outcome = run_over(
         stream,
         crate::exec::SSH_USER,

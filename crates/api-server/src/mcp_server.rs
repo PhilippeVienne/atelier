@@ -509,7 +509,7 @@ impl WorkshopMcpServer {
             },
             private_key,
             command,
-            workshop.spec.devcontainer.repo.clone(),
+            crate::exec::SessionDefaults::of(&workshop),
         )
         .await
         .map_err(|err| {

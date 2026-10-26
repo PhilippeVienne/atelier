@@ -234,7 +234,7 @@ async fn exec_in_workshop_runs_a_real_command_over_ssh_and_buffers_the_result() 
         },
         private_key_pem,
         "echo hello".to_string(),
-        "https://example.invalid/repo.git".to_string(),
+        atelier_api_server::exec::SessionDefaults::for_repo("https://example.invalid/repo.git"),
     )
     .await
     .expect("enregistrement de l'execution");
@@ -403,7 +403,9 @@ async fn exec_in_workshop_keeps_nul_bytes_signals_and_returns_despite_background
                 },
                 pem,
                 command.to_string(),
-                "https://example.invalid/repo.git".to_string(),
+                atelier_api_server::exec::SessionDefaults::for_repo(
+                    "https://example.invalid/repo.git",
+                ),
             )
             .await
             .unwrap();

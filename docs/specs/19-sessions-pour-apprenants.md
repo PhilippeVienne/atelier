@@ -139,6 +139,8 @@ Restent ouverts :
 
 Réalisé par la tâche 14.7 (première moitié) : le champ est `spec.devcontainer.cloneWorkspace` (et non `spec.source`, qui n'existe pas). À faux, `image-builder` ne clone pas et n'installe pas le service de rafraîchissement ; il crée `/workspaces/<dépôt>` vide, au compte de la session.
 
+Tâche 14.7, seconde moitié partielle : `status.session` (`remoteUser`, `workspaceFolder`, `containerEnv`) est écrit par `image-builder` avec le digest et appliqué à chaque exec. Un chemin avec variable (`${...}`) ou un nom de compte douteux est ignoré. `postStartCommand` et `hostRequirements` ne sont pas appliqués.
+
 Les champs du `devcontainer.json` qui décrivent la session sont appliqués : `remoteUser` (au lieu du compte fixe `vscode`), `workspaceFolder` (créé et donné à ce compte), `containerEnv`, `postStartCommand`, et `hostRequirements` comme valeurs par défaut de `resources`.
 
 ### 3.6. Egress de build et egress d'exécution

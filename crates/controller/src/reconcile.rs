@@ -2691,6 +2691,8 @@ fn carry_forward_status(
         // lui : le perdre ferait retomber l'api-server et la sonde de
         // readiness sur les ports historiques, ou plus rien n'ecoute.
         guest_ports: workshop.status.as_ref().and_then(|s| s.guest_ports),
+        // Ecrit par `image-builder` avec le digest, et reporte comme lui.
+        session: workshop.status.as_ref().and_then(|s| s.session.clone()),
         conditions: BTreeMap::new(),
     }
 }

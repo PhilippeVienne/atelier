@@ -17,8 +17,8 @@ pub const IMAGE_BUILD_CONDITION: &str = "ImageBuildFailed";
 
 pub use crd::{
     DevcontainerSource, ExportedService, GuestPorts, GuestServices, IdentityInjectionRule,
-    SimulatorSpec, SimulatorType, Workshop, WorkshopDesiredState, WorkshopPhase, WorkshopResources,
-    WorkshopSpec, WorkshopStatus, WorkshopUpgradeState, GIT_ALIAS_HOST,
+    SessionConfig, SimulatorSpec, SimulatorType, Workshop, WorkshopDesiredState, WorkshopPhase,
+    WorkshopResources, WorkshopSpec, WorkshopStatus, WorkshopUpgradeState, GIT_ALIAS_HOST,
 };
 pub use openbao_client::OpenBaoClient;
 pub use status::patch_workshop_status;

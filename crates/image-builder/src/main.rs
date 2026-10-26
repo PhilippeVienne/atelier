@@ -165,11 +165,41 @@ async fn run() -> Result<()> {
 
         tracing::info!("installing the boot-time workspace refresh service");
         inject_workspace_refresh(&rootfs_dir, &source).await?;
+    }
+
+    // Champs de session du devcontainer.json (tache 14.7). Lus dans le clone
+    // de l'image quand il y en a un ; sinon dans un clone jetable, car le
+    // build lui-meme se fait dans la microVM et n'en laisse rien ici.
+    let session = if source.clone_workspace {
+        read_session_config(
+            &rootfs_dir
+                .join("workspaces")
+                .join(workspace_name(&source))
+                .join(&source.config_path),
+        )
+        .await
     } else {
+        let probe_root = work_dir.join("config-probe");
+        tokio::fs::remove_dir_all(&probe_root).await.ok();
+        tokio::fs::create_dir_all(&probe_root).await?;
+        ensure_workspace_clone(&probe_root, &source, git_credentials.as_ref()).await?;
+        let session = read_session_config(
+            &probe_root
+                .join("workspaces")
+                .join(workspace_name(&source))
+                .join(&source.config_path),
+        )
+        .await;
+        tokio::fs::remove_dir_all(&probe_root).await.ok();
+        session
+    };
+    tracing::info!(?session, "session fields read from devcontainer.json");
+
+    if !source.clone_workspace {
         // Ni clone ni rafraichissement : rien du depot n'entre dans l'invite.
         // Le dossier de travail existe quand meme, au compte de la session.
         tracing::info!("workspace clone disabled, creating an empty workspace directory");
-        ensure_empty_workspace(&rootfs_dir, &source).await?;
+        ensure_empty_workspace(&rootfs_dir, &source, session.workspace_folder.as_deref()).await?;
     }
 
     let guest_ports = GuestPorts::reserved(guest_services_from_env());
@@ -229,7 +259,7 @@ async fn run() -> Result<()> {
         // Les ports vont avec l'image : ils y sont figes, et c'est ici
         // seulement qu'on sait lesquels. Publies dans le meme patch que le
         // digest, pour qu'aucun lecteur ne voie l'un sans l'autre.
-        status_after_build(&digest, guest_ports),
+        status_after_build(&digest, guest_ports, &session),
     )
     .await
     .context("echec de la mise a jour de status.imageDigest sur le Workshop")?;
@@ -1158,12 +1188,133 @@ async fn ensure_workspace_clone(
 /// Dossier de travail vide, pour un Workshop sans clone (tache 14.7) : sans
 /// lui, `cd /workspaces/<depot>` echoue et `mke2fs -d` ne materialise pas un
 /// repertoire vide, d'ou le `.keep`.
-async fn ensure_empty_workspace(rootfs_dir: &Path, source: &DevcontainerSource) -> Result<()> {
-    let ws_dir = rootfs_dir.join("workspaces").join(workspace_name(source));
+async fn ensure_empty_workspace(
+    rootfs_dir: &Path,
+    source: &DevcontainerSource,
+    workspace_folder: Option<&str>,
+) -> Result<()> {
+    // Le dossier declare par le devcontainer.json s'il y en a un, sinon
+    // `/workspaces/<depot>` comme avant.
+    let ws_dir = match workspace_folder {
+        Some(folder) => rootfs_dir.join(folder.trim_start_matches('/')),
+        None => rootfs_dir.join("workspaces").join(workspace_name(source)),
+    };
     tokio::fs::create_dir_all(&ws_dir).await?;
     tokio::fs::write(ws_dir.join(".keep"), "atelier workspace\n").await?;
-    chown_recursive(&rootfs_dir.join("workspaces"));
+    chown_recursive(&ws_dir);
     Ok(())
+}
+
+/// Un chemin absolu sans variable ni caractere de shell : il est insere tel
+/// quel dans des scripts (`cd <chemin>`).
+fn is_plain_absolute_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.contains("..")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
+}
+
+/// Nom de compte accepte : jamais de caractere de shell ni de `:`.
+fn is_plain_user_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Retire commentaires (`//`, `/* */`) et virgules finales d'un JSONC, hors
+/// des chaines : la forme que VS Code accepte pour un `devcontainer.json`.
+fn strip_jsonc(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            out.push(c);
+            if c == '\\' && i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 1;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+            out.push(c);
+        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        } else if c == ',' {
+            // Virgule finale : suivie (espaces mis a part) d'une fermeture.
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if !matches!(chars.get(j), Some('}') | Some(']')) {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Extrait les champs de session d'un `devcontainer.json`. Ce qui est absent,
+/// invalide ou dangereux (variable `${...}`, chemin relatif) est ignore.
+fn parse_session_config(text: &str) -> atelier_common::SessionConfig {
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&strip_jsonc(text)) else {
+        return Default::default();
+    };
+    let remote_user = ["remoteUser", "containerUser"]
+        .iter()
+        .find_map(|key| config.get(key).and_then(|v| v.as_str()))
+        .filter(|name| is_plain_user_name(name))
+        .map(str::to_string);
+    let workspace_folder = config
+        .get("workspaceFolder")
+        .and_then(|v| v.as_str())
+        .filter(|path| is_plain_absolute_path(path))
+        .map(str::to_string);
+    let container_env = config
+        .get("containerEnv")
+        .and_then(|v| v.as_object())
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+                // Une valeur `${localEnv:...}` n'a pas de sens ici.
+                .filter(|(_, value)| !value.contains("${"))
+                .collect()
+        })
+        .unwrap_or_default();
+    atelier_common::SessionConfig {
+        remote_user,
+        workspace_folder,
+        container_env,
+    }
+}
+
+async fn read_session_config(path: &Path) -> atelier_common::SessionConfig {
+    match tokio::fs::read_to_string(path).await {
+        Ok(text) => parse_session_config(&text),
+        Err(err) => {
+            tracing::warn!(%err, ?path, "devcontainer.json illisible, aucun champ de session");
+            Default::default()
+        }
+    }
 }
 
 /// Installe dans le rootfs un service systemd qui remet le clone du
@@ -1410,9 +1561,24 @@ fn guest_service_wanted(value: &str) -> bool {
 /// `terminal` et `ide` sont ecrits meme absents (`null`) : dans un patch
 /// JSON merge, c'est ce qui EFFACE la valeur d'un build precedent du meme
 /// Workshop, qui avait pu installer le service.
-fn status_after_build(digest: &str, ports: GuestPorts) -> serde_json::Value {
+fn status_after_build(
+    digest: &str,
+    ports: GuestPorts,
+    session: &atelier_common::SessionConfig,
+) -> serde_json::Value {
+    // Chaque champ est ecrit, `null` compris : dans un patch JSON merge c'est
+    // ce qui efface la valeur d'un build precedent du meme Workshop.
     serde_json::json!({
         "imageDigest": digest,
+        "session": {
+            "remoteUser": session.remote_user,
+            "workspaceFolder": session.workspace_folder,
+            "containerEnv": if session.container_env.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(session.container_env)
+            },
+        },
         "guestPorts": {
             "ssh": ports.ssh,
             "terminal": ports.terminal,
@@ -2330,7 +2496,7 @@ mod tests {
     #[test]
     fn the_build_publishes_digest_and_ports_together() {
         let all = GuestPorts::reserved(GuestServices::default());
-        let status = status_after_build("sha256:abc", all);
+        let status = status_after_build("sha256:abc", all, &Default::default());
         assert_eq!(status["imageDigest"], "sha256:abc");
         assert_eq!(status["guestPorts"]["ssh"], all.ssh);
         assert_eq!(status["guestPorts"]["ide"], all.ide.unwrap());
@@ -2341,7 +2507,7 @@ mod tests {
             terminal: false,
             ide: false,
         });
-        let status = status_after_build("sha256:abc", exec_only);
+        let status = status_after_build("sha256:abc", exec_only, &Default::default());
         let ports = status["guestPorts"].as_object().unwrap();
         assert!(
             ports["terminal"].is_null() && ports["ide"].is_null(),
@@ -2399,6 +2565,41 @@ mod tests {
 
     /// Tache 14.12 : le refus est reconnaissable (code de sortie dedie), les
     /// autres echecs de build ne le sont pas.
+    #[test]
+    fn session_fields_are_read_from_a_jsonc_devcontainer() {
+        let text = r#"{
+            // commentaire
+            "name": "x, y",
+            "remoteUser": "apprenant", /* bloc */
+            "workspaceFolder": "/workspace",
+            "containerEnv": { "EDITOR": "nano", "AVEC_VAR": "${localEnv:HOME}", "N": 1, },
+        }"#;
+        let session = super::parse_session_config(text);
+        assert_eq!(session.remote_user.as_deref(), Some("apprenant"));
+        assert_eq!(session.workspace_folder.as_deref(), Some("/workspace"));
+        assert_eq!(
+            session.container_env.into_iter().collect::<Vec<_>>(),
+            vec![("EDITOR".to_string(), "nano".to_string())]
+        );
+    }
+
+    #[test]
+    fn dangerous_or_unusable_session_fields_are_ignored() {
+        let session = super::parse_session_config(
+            r#"{"remoteUser":"a;b","workspaceFolder":"${containerWorkspaceFolder}"}"#,
+        );
+        assert_eq!(session, Default::default());
+        let relative = super::parse_session_config(r#"{"workspaceFolder":"../etc"}"#);
+        assert_eq!(relative.workspace_folder, None);
+        assert_eq!(
+            super::parse_session_config("pas du json"),
+            Default::default()
+        );
+        // `containerUser` sert de repli a `remoteUser`.
+        let container = super::parse_session_config(r#"{"containerUser":"dev"}"#);
+        assert_eq!(container.remote_user.as_deref(), Some("dev"));
+    }
+
     #[test]
     fn a_boot_refusal_is_distinguishable_from_other_build_failures() {
         let rootfs = tempfile::tempdir().unwrap();

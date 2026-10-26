@@ -88,6 +88,72 @@ impl client::Handler for ExecClientHandler {
     }
 }
 
+/// Ce qu'une session fixe pour chaque commande : dossier de travail,
+/// environnement et compte annonce (tache 14.7). Vient du Workshop ; les
+/// champs du `devcontainer.json` ne comptent que s'ils sont dans son statut.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionDefaults {
+    pub dir: String,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub user: Option<String>,
+}
+
+impl SessionDefaults {
+    /// Sans statut de session : le clone du depot, comme avant.
+    pub fn for_repo(devcontainer_repo: &str) -> Self {
+        Self {
+            dir: workspace_dir(devcontainer_repo),
+            ..Default::default()
+        }
+    }
+
+    pub fn of(workshop: &atelier_common::Workshop) -> Self {
+        let mut defaults = Self::for_repo(&workshop.spec.devcontainer.repo);
+        let Some(session) = workshop.status.as_ref().and_then(|s| s.session.as_ref()) else {
+            return defaults;
+        };
+        // Avec un clone, le depot reste le dossier de travail (comme avant) ;
+        // sans, c'est le dossier que declare le devcontainer.json.
+        if !workshop.spec.devcontainer.clone_workspace {
+            if let Some(folder) = &session.workspace_folder {
+                defaults.dir = folder.clone();
+            }
+        }
+        defaults.env = session
+            .container_env
+            .iter()
+            .filter(|(name, value)| crate::run::is_env_name(name) && !value.contains('\0'))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        defaults.user = session.remote_user.clone();
+        defaults
+    }
+
+    /// `USER`, `LOGNAME` et `HOME` du compte annonce. `HOME` vient de
+    /// `passwd` : sans cela il restait `/home/vscode` pour un compte qui n'est
+    /// pas `vscode`. Vide sans compte annonce.
+    pub fn user_exports(&self) -> String {
+        let Some(user) = &self.user else {
+            return String::new();
+        };
+        let user = crate::run::quote(user);
+        format!(
+            "export USER={user} LOGNAME={user}; h=$(getent passwd {user} 2>/dev/null | cut -d: -f6); \
+             if [ -n \"$h\" ]; then export HOME=\"$h\"; fi; unset h; "
+        )
+    }
+
+    /// Variables de `containerEnv` et compte, en tete d'un script shell.
+    fn script_prefix(&self) -> String {
+        let mut prefix = String::new();
+        for (name, value) in &self.env {
+            prefix.push_str(&format!("export {name}={}; ", crate::run::quote(value)));
+        }
+        prefix.push_str(&self.user_exports());
+        prefix
+    }
+}
+
 /// Enregistre la commande (statut `Running`) et lance son execution en
 /// arriere-plan ; renvoie l'`execution_id` immediatement (avant meme que la
 /// connexion SSH ne soit etablie).
@@ -98,7 +164,7 @@ pub async fn spawn(
     guest: GuestAddr,
     private_key_pem: String,
     command: String,
-    devcontainer_repo: String,
+    defaults: SessionDefaults,
 ) -> Result<Uuid, sqlx::Error> {
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO exec_commands (tenant, workshop_name, command) VALUES ($1, $2, $3) RETURNING id",
@@ -115,8 +181,9 @@ pub async fn spawn(
         tenant,
         guest,
         private_key_pem,
-        command,
-        workspace_dir(&devcontainer_repo),
+        // L'historique garde la commande telle que l'appelant l'a donnee.
+        format!("{}{}", defaults.script_prefix(), command),
+        defaults.dir,
     ));
 
     Ok(id)
@@ -637,7 +704,66 @@ async fn fetch_row(
 
 #[cfg(test)]
 mod workspace_tests {
-    use super::{in_workspace, stream_is_done, unsent, with_ceiling, workspace_dir, CommandEnd};
+    use super::{
+        in_workspace, stream_is_done, unsent, with_ceiling, workspace_dir, CommandEnd,
+        SessionDefaults,
+    };
+
+    fn workshop(clone: bool, session: serde_json::Value) -> atelier_common::Workshop {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "atelier.dev/v1alpha1",
+            "kind": "Workshop",
+            "metadata": {"name": "w"},
+            "spec": {
+                "devcontainer": {"repo": "https://x/acme/cours.git", "cloneWorkspace": clone},
+                "ownerGroup": "g", "ownerSubject": "s", "resources": {"cpu": "1", "memory": "1Gi"}
+            },
+            "status": {"phase": "Running", "session": session}
+        }))
+        .unwrap()
+    }
+
+    /// Tache 14.7 : le dossier declare ne remplace le clone que sans clone.
+    #[test]
+    fn the_declared_workspace_folder_applies_only_without_a_clone() {
+        let session = serde_json::json!({"workspaceFolder": "/workspace"});
+        assert_eq!(
+            SessionDefaults::of(&workshop(false, session.clone())).dir,
+            "/workspace"
+        );
+        assert_eq!(
+            SessionDefaults::of(&workshop(true, session)).dir,
+            "/workspaces/cours"
+        );
+        assert_eq!(
+            SessionDefaults::of(&workshop(false, serde_json::json!({}))).dir,
+            "/workspaces/cours"
+        );
+    }
+
+    #[test]
+    fn the_session_prefix_exports_the_environment_and_the_account() {
+        let defaults = SessionDefaults::of(&workshop(
+            true,
+            serde_json::json!({
+                "remoteUser": "apprenant",
+                "containerEnv": {"EDITOR": "nano", "MAUVAIS-NOM": "x", "Q": "l'a"}
+            }),
+        ));
+        assert_eq!(defaults.env.len(), 2, "un nom invalide est ecarte");
+        let prefix = defaults.script_prefix();
+        assert!(prefix.contains("export EDITOR='nano'; "), "{prefix}");
+        assert!(prefix.contains(r"export Q='l'\''a'; "), "{prefix}");
+        assert!(prefix.contains("getent passwd 'apprenant'"), "{prefix}");
+        assert!(
+            prefix.contains("export USER='apprenant' LOGNAME='apprenant'"),
+            "{prefix}"
+        );
+        assert_eq!(
+            SessionDefaults::for_repo("https://x/y.git").script_prefix(),
+            ""
+        );
+    }
 
     /// Tache 14.5 : un caractere UTF-8 coupe entre deux chunks n'est pas
     /// transmis a moitie tant que la commande tourne, et l'est a la fin.

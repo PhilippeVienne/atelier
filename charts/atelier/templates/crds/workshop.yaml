@@ -254,6 +254,24 @@ spec:
               podName:
                 nullable: true
                 type: string
+              session:
+                description: Champs de session du `devcontainer.json`, inscrits par `image-builder` avec `image_digest` (tache 14.7). Meme `skip_serializing_if`, pour la meme raison.
+                nullable: true
+                properties:
+                  containerEnv:
+                    additionalProperties:
+                      type: string
+                    description: '`containerEnv`, ajoute a l''environnement de chaque commande.'
+                    type: object
+                  remoteUser:
+                    description: '`remoteUser` (a defaut `containerUser`) : le compte annonce par l''environnement. Fixe `USER`, `LOGNAME` et `HOME` des commandes.'
+                    nullable: true
+                    type: string
+                  workspaceFolder:
+                    description: '`workspaceFolder`, chemin absolu sans variable. Dossier de travail des commandes quand le depot n''est pas clone.'
+                    nullable: true
+                    type: string
+                type: object
               snapshotDigest:
                 description: |-
                   Reference du dernier snapshot Firecracker (etat VM + memoire) pris par `vm-supervisor` lors d'une mise en veille, dans le meme cache content-addressed que `image_digest`. Absent si le Workshop n'a jamais ete suspendu.

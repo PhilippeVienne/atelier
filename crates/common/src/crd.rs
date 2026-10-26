@@ -321,6 +321,25 @@ pub struct WorkshopResources {
     pub max_llm_budget_usd: Option<f64>,
 }
 
+/// Les champs du `devcontainer.json` qui decrivent la session, lus par
+/// `image-builder` et inscrits dans le statut (tache 14.7). L'api-server les
+/// applique a chaque exec.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfig {
+    /// `remoteUser` (a defaut `containerUser`) : le compte annonce par
+    /// l'environnement. Fixe `USER`, `LOGNAME` et `HOME` des commandes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_user: Option<String>,
+    /// `workspaceFolder`, chemin absolu sans variable. Dossier de travail des
+    /// commandes quand le depot n'est pas clone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_folder: Option<String>,
+    /// `containerEnv`, ajoute a l'environnement de chaque commande.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub container_env: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkshopStatus {
@@ -372,6 +391,11 @@ pub struct WorkshopStatus {
     /// controller qui ne le renseigne pas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_ports: Option<GuestPorts>,
+    /// Champs de session du `devcontainer.json`, inscrits par `image-builder`
+    /// avec `image_digest` (tache 14.7). Meme `skip_serializing_if`, pour la
+    /// meme raison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionConfig>,
     #[serde(default)]
     pub conditions: BTreeMap<String, String>,
 }
