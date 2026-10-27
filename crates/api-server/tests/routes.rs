@@ -1312,6 +1312,98 @@ async fn spawn_stub_http_server(
     (port, observed)
 }
 
+/// Ce que le faux `code-server` a observe.
+#[derive(Default, Debug)]
+struct CodeServerObservation {
+    /// Corps du `POST /login` (`password=...`).
+    login_body: Option<String>,
+    /// `Cookie` de la requete qui suit le login.
+    cookie: Option<String>,
+    /// `Authorization` de cette meme requete.
+    authorization: Option<String>,
+}
+
+/// Faux `code-server` sur UNE connexion HTTP/1.1 persistante, comme le vrai :
+/// `POST /login` recoit un 302 et le cookie `code-server-session`, la requete
+/// suivante est servie en 200. Le pont rejoue ce login sur la meme connexion
+/// que la requete du client (`code_server_login`).
+async fn spawn_stub_code_server(
+    session_cookie: &'static str,
+    response_body: &'static str,
+) -> (
+    u16,
+    std::sync::Arc<tokio::sync::Mutex<CodeServerObservation>>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let observed = std::sync::Arc::new(tokio::sync::Mutex::new(CodeServerObservation::default()));
+    let observed_clone = observed.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut reader = BufReader::new(socket);
+        loop {
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {
+                return;
+            }
+            let (mut content_length, mut cookie, mut authorization) = (0usize, None, None);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) if line == "\r\n" => break,
+                    Ok(_) => {
+                        if let Some((name, value)) = line.split_once(':') {
+                            let value = value.trim().to_string();
+                            match name.to_ascii_lowercase().as_str() {
+                                "content-length" => content_length = value.parse().unwrap_or(0),
+                                "cookie" => cookie = Some(value),
+                                "authorization" => authorization = Some(value),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            if reader.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            let response = if request_line.starts_with("POST /login") {
+                observed_clone.lock().await.login_body =
+                    Some(String::from_utf8_lossy(&body).into_owned());
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: /\r\nSet-Cookie: code-server-session={session_cookie}; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n"
+                )
+            } else {
+                let mut seen = observed_clone.lock().await;
+                seen.cookie = cookie;
+                seen.authorization = authorization;
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                )
+            };
+            let last = !request_line.starts_with("POST /login");
+            if reader
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .is_err()
+                || last
+            {
+                return;
+            }
+        }
+    });
+    (port, observed)
+}
+
 /// Variante de [`spawn_stub_http_server`] qui capture l'en-tete
 /// `Authorization` recu (au lieu de la ligne de requete) — utilisee pour
 /// verifier que `crate::session_auth`/`proxy_to_guest_port` injecte bien le
@@ -1382,13 +1474,25 @@ async fn spawn_stub_http_server_capturing_authorization(
 /// un vrai token du ServiceAccount `atelier-api-server`, comme Kubernetes le
 /// projetterait dans le pod du Deployment `api-server` en conditions
 /// reelles) : silencieusement ignore sans ces variables.
-/// Le terminal (`ttyd`) attend `Authorization: Basic`. L'IDE (`code-server`)
-/// ne l'accepte pas : il veut son cookie, obtenu par un login que le pont
-/// rejoue (`GuestAuth::CodeServerCookie`, commit d6fe433). Ce test visait
-/// l'IDE avec la preuve du terminal et echouait en 502 depuis ce commit ; le
-/// parcours par cookie n'a pas encore de test d'integration.
+/// Le terminal (`ttyd`) attend `Authorization: Basic`.
 #[tokio::test]
 async fn terminal_proxy_injects_real_session_auth_basic_header() {
+    session_auth_scenario(false).await;
+}
+
+/// L'IDE (`code-server`) n'accepte pas le Basic : il veut son cookie, obtenu
+/// par un login que le pont rejoue sur la meme connexion
+/// (`GuestAuth::CodeServerCookie`, commit d6fe433). Ce parcours etait teste
+/// avec la preuve du terminal et echouait en 502 depuis ce commit.
+#[tokio::test]
+async fn vscode_proxy_logs_in_to_code_server_and_injects_the_session_cookie() {
+    session_auth_scenario(true).await;
+}
+
+/// Parcours commun : vrai OpenBao, vrai `net-proxy`, vrai cluster ; seul le
+/// service du guest est un faux. `ide` choisit le pont (`/vscode` ou
+/// `/terminal`) et donc la forme de la preuve attendue.
+async fn session_auth_scenario(ide: bool) {
     let Some(client) = try_client().await else {
         eprintln!("pas de kubeconfig accessible, test ignore");
         return;
@@ -1490,8 +1594,14 @@ async fn terminal_proxy_injects_real_session_auth_basic_header() {
         .await
         .expect("ecriture du fichier de token de test");
 
-    let (stub_port, observed_authorization) =
-        spawn_stub_http_server_capturing_authorization("bonjour depuis code-server").await;
+    let (stub_port, observed_authorization, observed_code_server) = if ide {
+        let (port, seen) = spawn_stub_code_server("cookie-de-session-de-test", "bonjour").await;
+        (port, None, Some(seen))
+    } else {
+        let (port, seen) =
+            spawn_stub_http_server_capturing_authorization("bonjour depuis ttyd").await;
+        (port, Some(seen), None)
+    };
 
     let control_port = pick_free_port().await;
     let mut net_proxy = tokio::process::Command::new(&net_proxy_bin)
@@ -1526,7 +1636,11 @@ async fn terminal_proxy_injects_real_session_auth_basic_header() {
     let namespace = "default".to_string();
     let workshops: Api<Workshop> = Api::namespaced(client.clone(), &namespace);
     let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), &namespace);
-    let name = format!("api-vscode-session-auth-test-{}", std::process::id());
+    let name = format!(
+        "api-{}-session-auth-test-{}",
+        if ide { "ide" } else { "term" },
+        std::process::id()
+    );
     let pod_name = format!("{name}-parent");
 
     let _ = workshops.delete(&name, &DeleteParams::default()).await;
@@ -1618,7 +1732,12 @@ async fn terminal_proxy_injects_real_session_auth_basic_header() {
     // les autres tests de ce binaire qui mutent des variables globales.
     unsafe {
         std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string());
-        std::env::set_var("ATELIER_TERMINAL_PORT", stub_port.to_string());
+        let var = if ide {
+            "ATELIER_VSCODE_PORT"
+        } else {
+            "ATELIER_TERMINAL_PORT"
+        };
+        std::env::set_var(var, stub_port.to_string());
         std::env::set_var("ATELIER_K8S_SA_TOKEN_PATH", &sa_token_path);
     }
 
@@ -1650,7 +1769,8 @@ async fn terminal_proxy_injects_real_session_auth_basic_header() {
     let http_client = reqwest::Client::new();
     let response = http_client
         .get(format!(
-            "http://127.0.0.1:{api_port}/v1/workshops/{name}/terminal/static/foo.js"
+            "http://127.0.0.1:{api_port}/v1/workshops/{name}/{}/static/foo.js",
+            if ide { "vscode" } else { "terminal" }
         ))
         .header("Authorization", format!("Bearer {owner_token}"))
         .send()
@@ -1658,13 +1778,32 @@ async fn terminal_proxy_injects_real_session_auth_basic_header() {
         .expect("requete vers le pont vscode");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let expected_credentials =
-        base64::engine::general_purpose::STANDARD.encode(format!("atelier:{password}"));
-    assert_eq!(
-        observed_authorization.lock().await.as_deref(),
-        Some(format!("Basic {expected_credentials}").as_str()),
-        "le guest doit recevoir le Basic Auth derive du vrai secret session_auth"
-    );
+    if let Some(seen) = observed_code_server {
+        let seen = seen.lock().await;
+        assert_eq!(
+            seen.login_body.as_deref(),
+            Some(format!("password={password}").as_str()),
+            "le pont doit rejouer le login avec le vrai secret session_auth"
+        );
+        assert_eq!(
+            seen.cookie.as_deref(),
+            Some("code-server-session=cookie-de-session-de-test"),
+            "la requete du client doit porter le cookie delivre par le login"
+        );
+        assert_eq!(
+            seen.authorization, None,
+            "le JWT du client ne doit pas atteindre le guest"
+        );
+    }
+    if let Some(seen) = observed_authorization {
+        let expected_credentials =
+            base64::engine::general_purpose::STANDARD.encode(format!("atelier:{password}"));
+        assert_eq!(
+            seen.lock().await.as_deref(),
+            Some(format!("Basic {expected_credentials}").as_str()),
+            "le guest doit recevoir le Basic Auth derive du vrai secret session_auth"
+        );
+    }
 
     server.abort();
     net_proxy.start_kill().ok();
