@@ -1382,8 +1382,13 @@ async fn spawn_stub_http_server_capturing_authorization(
 /// un vrai token du ServiceAccount `atelier-api-server`, comme Kubernetes le
 /// projetterait dans le pod du Deployment `api-server` en conditions
 /// reelles) : silencieusement ignore sans ces variables.
+/// Le terminal (`ttyd`) attend `Authorization: Basic`. L'IDE (`code-server`)
+/// ne l'accepte pas : il veut son cookie, obtenu par un login que le pont
+/// rejoue (`GuestAuth::CodeServerCookie`, commit d6fe433). Ce test visait
+/// l'IDE avec la preuve du terminal et echouait en 502 depuis ce commit ; le
+/// parcours par cookie n'a pas encore de test d'integration.
 #[tokio::test]
-async fn vscode_proxy_injects_real_session_auth_basic_header() {
+async fn terminal_proxy_injects_real_session_auth_basic_header() {
     let Some(client) = try_client().await else {
         eprintln!("pas de kubeconfig accessible, test ignore");
         return;
@@ -1613,7 +1618,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
     // les autres tests de ce binaire qui mutent des variables globales.
     unsafe {
         std::env::set_var("ATELIER_NET_PROXY_CONTROL_PORT", control_port.to_string());
-        std::env::set_var("ATELIER_VSCODE_PORT", stub_port.to_string());
+        std::env::set_var("ATELIER_TERMINAL_PORT", stub_port.to_string());
         std::env::set_var("ATELIER_K8S_SA_TOKEN_PATH", &sa_token_path);
     }
 
@@ -1645,7 +1650,7 @@ async fn vscode_proxy_injects_real_session_auth_basic_header() {
     let http_client = reqwest::Client::new();
     let response = http_client
         .get(format!(
-            "http://127.0.0.1:{api_port}/v1/workshops/{name}/vscode/static/foo.js"
+            "http://127.0.0.1:{api_port}/v1/workshops/{name}/terminal/static/foo.js"
         ))
         .header("Authorization", format!("Bearer {owner_token}"))
         .send()
