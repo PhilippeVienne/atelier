@@ -387,7 +387,8 @@ impl WorkshopMcpServer {
         let mine: Vec<Workshop> = all
             .items
             .into_iter()
-            .filter(|w| w.spec.owner_subject == user.subject)
+            // Le groupe, comme `ensure_owner` (tache 14.16).
+            .filter(|w| user.groups.iter().any(|g| g == &w.spec.owner_group))
             .collect();
         serde_json::to_string_pretty(&mine)
             .map_err(|err| ErrorData::internal_error(format!("serialisation: {err}"), None))

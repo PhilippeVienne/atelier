@@ -1257,3 +1257,9 @@
   - *Cause reelle* : sans systemd, `image-builder` copie `atelier-guest-init` sur `/sbin/init`. Ce binaire est lié dynamiquement à glibc ; sur Alpine le noyau ne peut pas l'exécuter, essaie `/etc/init`, `/bin/init`, puis tombe sur `/bin/sh`. La console (`atelier.dev/console-log: "true"` sur le Workshop) le montre : `Run /sbin/init as init process` suivi de `Run /bin/sh as init process`.
   - *Solution* : aucune pour l'instant. Un binaire musl statique ne suffit pas, le `code-server` embarqué (Node, glibc) ne tournerait pas non plus sur musl.
   - *A quoi le reconnaitre* : `check_boot_prerequisites` ne vérifie pas que l'init choisi peut s'exécuter dans l'image. Pour diagnostiquer un invité muet, annoter le Workshop avant la création du pod (l'environnement d'un pod est immuable) et lire `kubectl logs <workshop>-parent -c vm-supervisor`.
+
+- **Le controller empile des Jobs d'éviction `Pending` jusqu'à saturer le noeud (tache 14.16).**
+  - *Symptome observable* : après quelques heures, plus aucun pod ne démarre (`0/1 nodes are available: 1 Too many pods`), et `kubectl get jobs` montre des dizaines de `atelier-image-cache-eviction-<horodatage>`. Un Workshop reste en `BuildingImage` sans erreur.
+  - *Cause reelle* : le controller lance une passe d'éviction toutes les 15 minutes et crée un Job à chaque fois, sans regarder si le précédent est encore actif. Le Job utilise `minio/mc:latest` ; quand l'image ne se télécharge pas (cluster de dev sans accès à Docker Hub), chaque Job reste en `ImagePullBackOff` : 103 en une journée, 87 pods bloqués, limite de 110 pods atteinte.
+  - *Solution* : aucune dans le code pour l'instant. En dev, lancer le controller sans `S3_BUCKET_IMAGE_CACHE` désactive l'éviction. A corriger : ne pas créer de Job tant que le précédent n'est pas terminé, et rendre l'image configurable.
+  - *A quoi le reconnaitre* : `kubectl get pods --no-headers | awk '{print $3}' | sort | uniq -c` ; un nombre anormal de `ImagePullBackOff`.

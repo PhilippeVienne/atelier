@@ -342,6 +342,12 @@ workshops:
   # `status.snapshotDigest` n'est pas renseigne et la copie S3 peut etre
   # incomplete (elle est alors ignoree a la reprise).
   snapshotTimeoutSeconds: 300
+  # NetworkPolicy qui ferme l'entree des pods de Workshop a tout pod autre que
+  # le controller et l'api-server (tache 14.16). A mettre a `false` sur un
+  # cluster dont le plugin reseau n'applique pas les NetworkPolicy, ou dont
+  # le plan de controle tourne hors du cluster.
+  networkPolicy:
+    enabled: true
 
 # ------------------------------------------------------------------------
 # Cache d'images (PVC partage) : eviction LRU (spec

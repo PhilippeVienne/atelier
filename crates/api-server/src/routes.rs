@@ -129,6 +129,7 @@ pub fn router(state: AppState, auth: AuthState) -> Router {
             "/v1/workshops/{name}/credentials/{host}",
             axum::routing::delete(delete_credential),
         )
+        .route("/v1/admin/workshops", get(admin_list_workshops))
         .route("/v1/admin/llm", get(admin_llm_overview))
         .route("/v1/admin/llm/spend", get(admin_llm_spend))
         .route("/v1/admin/llm/models", post(admin_llm_create_model))
@@ -799,19 +800,39 @@ async fn create_workshop(
 async fn list_workshops(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
-    Extension(claims): Extension<Claims>,
 ) -> Result<Json<Vec<Workshop>>, ApiError> {
     let all = workshops_api(&state).list(&Default::default()).await?;
-    // Un administrateur voit tous les Workshops de l'instance : c'est le sens
-    // meme de ce role, et sans cela il ne peut ni constater ce qui tourne ni
-    // rattacher une depense LLM a son environnement. Les autres ne voient que
-    // les leurs, comme avant.
+    // Meme regle que `ensure_owner` : le GROUPE donne la vue, pour tout le
+    // monde, `admin` compris (tache 14.16). Avant, la liste suivait le
+    // createur et rendait tout a `admin` : un collegue du groupe ouvrait un
+    // Workshop par son nom sans le voir dans la liste, et un administrateur
+    // d'une organisation lisait la spec de toutes les autres. Voir
+    // `admin_list_workshops` pour la vue de toute l'instance.
     let visible = all
         .items
         .into_iter()
-        .filter(|w| claims.has_role(ADMIN_ROLE) || w.spec.owner_subject == user.subject)
+        .filter(|w| user.groups.iter().any(|g| g == &w.spec.owner_group))
         .collect();
     Ok(Json(visible))
+}
+
+/// `GET /v1/admin/workshops` : tous les Workshops de l'instance, quel que soit
+/// leur groupe. Reserve au role `admin`, controle cote serveur comme le reste
+/// de la console d'administration. L'appel est journalise : lire l'ensemble
+/// des specs est un acte d'administration, pas une consultation ordinaire.
+async fn admin_list_workshops(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<Workshop>>, ApiError> {
+    if !claims.has_role(ADMIN_ROLE) {
+        return Err(ApiError::forbidden(
+            "reserve aux administrateurs de l'instance",
+        ));
+    }
+    let all = workshops_api(&state).list(&Default::default()).await?;
+    tracing::info!(subject = %user.subject, count = all.items.len(), "liste administrateur de tous les Workshops");
+    Ok(Json(all.items))
 }
 
 async fn get_workshop(

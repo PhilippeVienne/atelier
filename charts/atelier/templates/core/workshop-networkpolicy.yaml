@@ -1,0 +1,34 @@
+{{- if .Values.workshops.networkPolicy.enabled }}
+# Entree des pods de Workshop (tache 14.16, spec 19 constat 13) : sans
+# NetworkPolicy, n'importe quel pod du cluster joignait le port de
+# redirection d'un Workshop. Seuls le controller (sonde, instantane,
+# confinement) et l'api-server (exec, redirection de port, ponts) peuvent
+# desormais s'y connecter. S'ajoute, sans les remplacer, aux NetworkPolicy
+# de campagne que genere le controller (elles ouvrent l'entree entre
+# Workshops d'une meme campagne et d'un meme groupe).
+#
+# Suppose un plugin reseau qui applique les NetworkPolicy ; sans lui, la
+# ressource est acceptee et sans effet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "atelier.fullname" . }}-workshop-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "atelier.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: atelier.dev/workshop
+        operator: Exists
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "atelier.selectorLabels" (dict "root" $ "component" "controller") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "atelier.selectorLabels" (dict "root" $ "component" "apiserver") | nindent 14 }}
+{{- end }}

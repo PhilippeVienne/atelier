@@ -98,6 +98,23 @@ fn sign_jwt(key: &TestKey, sub: &str, group: &str) -> String {
     jsonwebtoken::encode(&header, &claims, &key.encoding_key).expect("signature JWT")
 }
 
+/// Comme [`sign_jwt`], avec un role de realm choisi.
+fn sign_jwt_with_role(key: &TestKey, sub: &str, group: &str, role: &str) -> String {
+    let header = Header {
+        kid: Some(key.kid.clone()),
+        ..Header::new(Algorithm::RS256)
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claims = json!({
+        "sub": sub, "iss": ISSUER, "aud": AUDIENCE, "exp": now + 3600,
+        "groups": [group], "realm_access": { "roles": [role] },
+    });
+    jsonwebtoken::encode(&header, &claims, &key.encoding_key).expect("signature JWT")
+}
+
 async fn try_client() -> Option<Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     Client::try_default().await.ok()
@@ -309,6 +326,52 @@ async fn crud_and_ownership_isolation_against_real_cluster() {
             .iter()
             .any(|w| w["metadata"]["name"] == name),
         "la liste d'un autre sujet ne doit pas contenir le Workshop d'un autre"
+    );
+
+    // Tache 14.16 : la liste suit le GROUPE, comme l'acces par nom.
+    // Un collegue du meme groupe voit le Workshop...
+    let colleague_token = sign_jwt(&key, "collegue@test.atelier", "equipe-proprietaire");
+    let listed_by = |token: String, uri: &'static str| {
+        let app = app.clone();
+        let name = name.clone();
+        async move {
+            let response = app.oneshot(get_request(uri, &token)).await.unwrap();
+            let status = response.status();
+            let list: Value = body_json(response).await;
+            let found = list
+                .as_array()
+                .map(|l| l.iter().any(|w| w["metadata"]["name"] == name))
+                .unwrap_or(false);
+            (status, found)
+        }
+    };
+    assert_eq!(
+        listed_by(colleague_token, "/v1/workshops").await,
+        (StatusCode::OK, true),
+        "un collegue du groupe voit le Workshop dans la liste"
+    );
+    // ... et un administrateur d'une autre organisation ne le voit plus.
+    let admin_token = sign_jwt_with_role(&key, "admin@test.atelier", "equipe-tierce", "admin");
+    assert_eq!(
+        listed_by(admin_token.clone(), "/v1/workshops").await,
+        (StatusCode::OK, false),
+        "admin ne lit plus les Workshops des autres groupes par la liste ordinaire"
+    );
+    // La vue de toute l'instance passe par la route d'administration.
+    assert_eq!(
+        listed_by(admin_token, "/v1/admin/workshops").await,
+        (StatusCode::OK, true),
+        "la route d'administration rend tous les Workshops"
+    );
+    let response = app
+        .clone()
+        .oneshot(get_request("/v1/admin/workshops", &other_token))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "la route d'administration est refusee a qui n'a pas le role admin"
     );
 
     // suspend -> desiredState=Suspended, verifie directement via kube::Api.
