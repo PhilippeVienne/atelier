@@ -45,6 +45,33 @@ const DEFAULT_THRESHOLD_GB: u64 = 15;
 /// non resolus : calibrage a affiner empiriquement une fois en usage reel).
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// Image du Job d'eviction quand `ATELIER_EVICTION_IMAGE` n'est pas definie.
+const DEFAULT_IMAGE: &str = "minio/mc:latest";
+
+/// Etiquette des Jobs d'eviction, pour retrouver ceux qui tournent encore.
+const JOB_LABEL: &str = "atelier.dev/component";
+const JOB_LABEL_VALUE: &str = "image-cache-eviction";
+
+/// Duree maximale d'un Job d'eviction : une periode. Un Job qui ne demarre
+/// jamais (image introuvable, noeud plein) est arrete et nettoye par
+/// Kubernetes au lieu de rester `Pending` pour toujours.
+const JOB_DEADLINE_SECS: i64 = 15 * 60;
+
+/// Reste-t-il un Job d'eviction qui n'est pas termine ? Un Job est termine
+/// quand il porte la condition `Complete` ou `Failed`.
+fn has_active_job(jobs: &[Job]) -> bool {
+    jobs.iter().any(|job| {
+        !job.status
+            .as_ref()
+            .and_then(|status| status.conditions.as_ref())
+            .is_some_and(|conditions| {
+                conditions.iter().any(|c| {
+                    matches!(c.type_.as_str(), "Complete" | "Failed") && c.status == "True"
+                })
+            })
+    })
+}
+
 /// A lancer via `tokio::spawn` au demarrage du controller (`main.rs`),
 /// jamais attendue (boucle infinie). Ne fait rien du tout si S3/
 /// `S3_BUCKET_IMAGE_CACHE` ne sont pas configures (log une seule fois, pas
@@ -69,6 +96,10 @@ pub async fn run_periodic(client: Client, ns: String) {
     };
     let pod_endpoint =
         std::env::var("ATELIER_S3_POD_ENDPOINT").unwrap_or_else(|_| s3.endpoint.clone());
+    let image = std::env::var("ATELIER_EVICTION_IMAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
     let threshold_gb = std::env::var("ATELIER_IMAGE_CACHE_EVICTION_THRESHOLD_GB")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -84,6 +115,7 @@ pub async fn run_periodic(client: Client, ns: String) {
             &pod_endpoint,
             &bucket_image_cache,
             threshold_gb,
+            &image,
         )
         .await
         {
@@ -101,8 +133,25 @@ async fn run_once(
     pod_endpoint: &str,
     bucket_image_cache: &str,
     threshold_gb: u64,
+    image: &str,
 ) -> anyhow::Result<()> {
     let mount_path = storage::IMAGE_CACHE_MOUNT_PATH;
+
+    // Une passe a la fois : sans cette garde, chaque tick ajoutait un Job
+    // meme quand le precedent n'avait jamais demarre, et une image
+    // introuvable empilait une centaine de pods `ImagePullBackOff` en une
+    // journee jusqu'a saturer le noeud.
+    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
+    let running = jobs
+        .list(&kube::api::ListParams::default().labels(&format!("{JOB_LABEL}={JOB_LABEL_VALUE}")))
+        .await?;
+    if has_active_job(&running.items) {
+        tracing::warn!(
+            count = running.items.len(),
+            "passe d'eviction precedente non terminee, aucune nouvelle passe lancee"
+        );
+        return Ok(());
+    }
 
     // Nom unique par execution (pas idempotent sur le NOM, contrairement au
     // reste de ce module) : contrairement a la suppression d'un snapshot
@@ -210,10 +259,15 @@ done
         metadata: kube::api::ObjectMeta {
             name: Some(job_name.clone()),
             namespace: Some(ns.to_string()),
+            labels: Some(std::collections::BTreeMap::from([(
+                JOB_LABEL.to_string(),
+                JOB_LABEL_VALUE.to_string(),
+            )])),
             ..Default::default()
         },
         spec: Some(JobSpec {
             backoff_limit: Some(1),
+            active_deadline_seconds: Some(JOB_DEADLINE_SECS),
             ttl_seconds_after_finished: Some(600),
             template: PodTemplateSpec {
                 spec: Some(PodSpec {
@@ -221,7 +275,7 @@ done
                     volumes: Some(vec![cache_volume]),
                     containers: vec![Container {
                         name: "eviction".to_string(),
-                        image: Some("minio/mc:latest".to_string()),
+                        image: Some(image.to_string()),
                         command: Some(vec!["sh".to_string(), "-c".to_string(), script]),
                         env: Some(env),
                         volume_mounts: Some(vec![cache_mount]),
@@ -236,7 +290,6 @@ done
         ..Default::default()
     };
 
-    let jobs: Api<Job> = Api::namespaced(client.clone(), ns);
     jobs.patch(
         &job_name,
         &PatchParams::apply(FIELD_MANAGER).force(),
@@ -245,4 +298,42 @@ done
     .await?;
     tracing::info!(job = %job_name, "passe d'eviction du cache d'images lancee");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_active_job;
+    use k8s_openapi::api::batch::v1::{Job, JobCondition, JobStatus};
+
+    fn job(conditions: &[(&str, &str)]) -> Job {
+        Job {
+            status: Some(JobStatus {
+                conditions: Some(
+                    conditions
+                        .iter()
+                        .map(|(type_, status)| JobCondition {
+                            type_: type_.to_string(),
+                            status: status.to_string(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Un Job sans condition terminale (en attente, en cours) bloque la passe
+    /// suivante ; `Complete` ou `Failed` a `True` la libere.
+    #[test]
+    fn only_unfinished_jobs_hold_back_the_next_pass() {
+        assert!(!has_active_job(&[]));
+        assert!(has_active_job(&[Job::default()]), "sans statut : actif");
+        assert!(has_active_job(&[job(&[])]), "sans condition : actif");
+        assert!(has_active_job(&[job(&[("Complete", "False")])]));
+        assert!(!has_active_job(&[job(&[("Complete", "True")])]));
+        assert!(!has_active_job(&[job(&[("Failed", "True")])]));
+        assert!(has_active_job(&[job(&[("Complete", "True")]), job(&[]),]));
+    }
 }

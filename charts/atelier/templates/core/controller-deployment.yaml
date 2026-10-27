@@ -167,6 +167,9 @@ spec:
             # alors desactivee, voir crate::eviction).
             - name: ATELIER_IMAGE_CACHE_EVICTION_THRESHOLD_GB
               value: {{ .Values.imageCache.evictionThresholdGb | quote }}
+            # Image du Job d'eviction (shell + `mc`), remplaçable par un miroir.
+            - name: ATELIER_EVICTION_IMAGE
+              value: {{ .Values.imageCache.evictionImage | quote }}
             # Plafond de `resources.disk` d'un Workshop (spec
             # docs/specs/19-sessions-pour-apprenants.md §3.1).
             - name: ATELIER_VM_MAX_DISK_MIB

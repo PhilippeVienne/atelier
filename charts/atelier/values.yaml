@@ -362,6 +362,10 @@ imageCache:
   # Sans effet si S3_BUCKET_IMAGE_CACHE n'est pas configure (l'eviction
   # reste alors desactivee).
   evictionThresholdGb: 15
+  # Image du Job d'eviction (shell + client `mc`). A pointer vers un miroir
+  # interne sur un cluster qui n'atteint pas Docker Hub : un Job dont l'image
+  # ne se telecharge pas est arrete apres 15 minutes, sans rien evincer.
+  evictionImage: minio/mc:latest
 
 # ------------------------------------------------------------------------
 # Observabilite : traces/metriques/logs (spec docs/specs/12-observabilite.md)
