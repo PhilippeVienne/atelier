@@ -115,6 +115,13 @@ const METADATA_ADDR: &str = "169.254.0.1:3132";
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Periode de la verification de l'horloge (tache 14.18) : apres une reprise
+/// d'instantane, l'invite retrouve l'heure de sa mise en veille et retarde.
+const CLOCK_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// Ecart tolere avant de remettre l'horloge a l'heure : en dessous, un saut
+/// ferait plus de mal (horodatages de fichiers, `make`) que le retard.
+const CLOCK_TOLERANCE_SECS: f64 = 2.0;
+
 /// Age au-dela duquel un process directement rattache a PID 1 (deja
 /// orphelin, donc — un `ppid` different signifierait un parent encore
 /// vivant, hors du perimetre de ce watchdog) et INCONNU (ni nous-memes, ni
@@ -161,6 +168,7 @@ fn main() {
     // savoir que le guest vient de demarrer (et est deja injoignable, le cas
     // echeant) sans attendre 15s pour la premiere preuve de vie.
     let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
+    let mut last_clock_check = Instant::now() - CLOCK_CHECK_INTERVAL;
 
     // Boucle de reap infinie : responsabilite non negociable d'un PID 1
     // (tout process orphelin est reparente ici a sa sortie). Les services
@@ -184,6 +192,11 @@ fn main() {
                 std::thread::sleep(Duration::from_millis(500));
             }
             _ => {}
+        }
+
+        if last_clock_check.elapsed() >= CLOCK_CHECK_INTERVAL {
+            last_clock_check = Instant::now();
+            sync_clock();
         }
 
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -347,6 +360,66 @@ fn send_heartbeat(uptime_secs: u64, zombies_reaped_total: u64, killed: &[StaleOr
     }
 }
 
+/// Corps d'une reponse HTTP `GET /time` : les secondes de l'epoque Unix de
+/// l'hote, avec fraction.
+fn parse_host_time(response: &str) -> Option<f64> {
+    let body = response.split_once("\r\n\r\n")?.1.trim();
+    body.parse::<f64>()
+        .ok()
+        .filter(|t| t.is_finite() && *t > 0.0)
+}
+
+/// L'horloge locale s'ecarte-t-elle assez de celle de l'hote pour etre remise
+/// a l'heure ?
+fn clock_needs_correction(local_secs: f64, host_secs: f64) -> bool {
+    (host_secs - local_secs).abs() > CLOCK_TOLERANCE_SECS
+}
+
+/// Remet l'horloge de l'invite a l'heure de l'hote (`net-proxy`, serveur de
+/// metadonnees). Sans effet si l'hote ne repond pas : une horloge un peu en
+/// retard vaut mieux qu'un init qui attend.
+fn sync_clock() {
+    use nix::sys::time::TimeSpec;
+    use nix::time::{clock_settime, ClockId};
+    use std::io::Read;
+
+    let Ok(addr) = METADATA_ADDR.parse() else {
+        return;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
+        return;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let request =
+        format!("GET /time HTTP/1.1\r\nHost: {METADATA_ADDR}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return;
+    }
+    let Some(host) = parse_host_time(&response) else {
+        return;
+    };
+    let local = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    if !clock_needs_correction(local, host) {
+        return;
+    }
+    let target = TimeSpec::new(host.trunc() as i64, (host.fract() * 1e9) as i64);
+    match clock_settime(ClockId::CLOCK_REALTIME, target) {
+        Ok(()) => eprintln!(
+            "atelier-guest-init: horloge remise a l'heure de l'hote (ecart {:+.1}s)",
+            host - local
+        ),
+        Err(err) => eprintln!("atelier-guest-init: horloge non corrigee: {err}"),
+    }
+}
+
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -365,7 +438,26 @@ fn json_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, parse_passwd_entry, SessionAccount};
+    use super::{
+        clock_needs_correction, json_escape, parse_host_time, parse_passwd_entry, SessionAccount,
+    };
+
+    #[test]
+    fn the_host_time_is_read_from_the_http_body() {
+        let ok = "HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\n1793000000.123";
+        assert_eq!(parse_host_time(ok), Some(1793000000.123));
+        assert_eq!(parse_host_time("HTTP/1.1 503 X\r\n\r\n"), None);
+        assert_eq!(parse_host_time("pas du http"), None);
+        assert_eq!(parse_host_time("HTTP/1.1 200 OK\r\n\r\nNaN"), None);
+    }
+
+    #[test]
+    fn only_a_gap_beyond_the_tolerance_corrects_the_clock() {
+        assert!(!clock_needs_correction(100.0, 101.9));
+        assert!(!clock_needs_correction(100.0, 98.1));
+        assert!(clock_needs_correction(100.0, 102.1));
+        assert!(clock_needs_correction(146.0, 100.0), "horloge en avance");
+    }
 
     #[test]
     fn the_session_account_is_read_from_passwd() {

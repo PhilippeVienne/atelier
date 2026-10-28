@@ -212,6 +212,9 @@ async fn run() -> Result<()> {
     tracing::info!("installing sshd");
     inject_sshd(&rootfs_dir, guest_ports.ssh).await?;
 
+    tracing::info!("installing the clock synchronisation service");
+    inject_clock_sync(&rootfs_dir).await?;
+
     tracing::info!("checking for an init system, installing a minimal fallback if absent");
     ensure_init_system(&rootfs_dir).await?;
 
@@ -1769,6 +1772,46 @@ async fn install_and_enable_unit(rootfs_dir: &Path, name: &str, unit_content: &s
     Ok(())
 }
 
+/// Script qui remet l'horloge de l'invite a l'heure de l'hote (tache 14.18).
+///
+/// Une microVM reprise depuis un instantane retrouve l'heure a laquelle elle
+/// a ete figee : apres 46 s de pause, tout ce que l'invite date (fichiers,
+/// journaux, certificats) retarde d'autant. Bash pur, sur des secondes
+/// entieres : ni `awk` ni `bc` ne sont garantis dans l'image. Une horloge qui
+/// ne bouge que de 2 s ou moins n'est pas touchee, un saut fait plus de mal
+/// qu'un petit retard.
+const CLOCK_SYNC_SCRIPT: &str = r#"#!/usr/bin/env bash
+set -u
+while true; do
+  host=$(curl -s -m 3 http://169.254.0.1:3132/time) || { sleep 5; continue; }
+  case "$host" in ''|*[!0-9.]*) sleep 5; continue ;; esac
+  host_secs=${host%%.*}
+  gap=$(( host_secs - $(date +%s) ))
+  [ "$gap" -lt 0 ] && gap=$(( -gap ))
+  if [ "$gap" -gt 2 ]; then
+    date -u -s "@${host_secs}" >/dev/null 2>&1       && echo "atelier-sync-clock: horloge remise a l'heure de l'hote (ecart ${gap}s)"
+  fi
+  sleep 5
+done
+"#;
+
+/// Installe le service systemd qui execute [`CLOCK_SYNC_SCRIPT`]. Sous
+/// l'init d'Atelier (images sans systemd), c'est `atelier-guest-init` qui s'en
+/// charge lui-meme et ce service n'est jamais lance.
+async fn inject_clock_sync(rootfs_dir: &Path) -> Result<()> {
+    let bin_dir = rootfs_dir.join("usr/local/bin");
+    tokio::fs::create_dir_all(&bin_dir).await?;
+    write_executable(&bin_dir.join("atelier-sync-clock.sh"), CLOCK_SYNC_SCRIPT).await?;
+    install_and_enable_unit(
+        rootfs_dir,
+        "atelier-sync-clock.service",
+        "[Unit]\nDescription=Remet l'horloge de l'invite a l'heure de l'hote (atelier)\nAfter=network.target\n\n\
+         [Service]\nType=simple\nRestart=always\nRestartSec=5\nExecStart=/usr/local/bin/atelier-sync-clock.sh\n\n\
+         [Install]\nWantedBy=multi-user.target\n",
+    )
+    .await
+}
+
 /// Installe `sshd` — meme raisonnement que `inject_terminal_and_ide` : ce
 /// n'etait jusqu'ici fourni QUE par le devcontainer de demo externe.
 ///
@@ -2565,6 +2608,22 @@ mod tests {
 
     /// Tache 14.12 : le refus est reconnaissable (code de sortie dedie), les
     /// autres echecs de build ne le sont pas.
+    #[test]
+    fn the_clock_sync_script_is_valid_bash_and_only_moves_a_large_gap() {
+        // Le script est du shell : on verifie sa syntaxe avec bash lui-meme.
+        let output = std::process::Command::new("bash")
+            .args(["-n", "-c", super::CLOCK_SYNC_SCRIPT])
+            .output()
+            .expect("bash disponible");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(super::CLOCK_SYNC_SCRIPT.contains("-gt 2"));
+        assert!(super::CLOCK_SYNC_SCRIPT.contains("169.254.0.1:3132/time"));
+    }
+
     #[test]
     fn session_fields_are_read_from_a_jsonc_devcontainer() {
         let text = r#"{

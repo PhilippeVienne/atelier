@@ -82,6 +82,7 @@ pub fn router(state: MetadataState) -> Router {
         .route("/session-auth", get(session_auth))
         .route("/ssh-authorized-key", get(ssh_authorized_key))
         .route("/heartbeat", post(heartbeat))
+        .route("/time", get(host_time))
         .with_state(state)
 }
 
@@ -108,6 +109,18 @@ async fn ssh_authorized_key(State(state): State<MetadataState>) -> Result<String
         .await
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+}
+
+/// Heure de l'hote en secondes depuis l'epoque Unix, avec les millisecondes
+/// (`1793000000.123`), pour que l'invite remette son horloge a l'heure
+/// (tache 14.18). Une microVM reprise depuis un instantane retrouve l'heure
+/// a laquelle elle a ete figee : il manque la duree de la mise en veille, ou
+/// 46 s mesurees apres une courte pause.
+async fn host_time() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", now.as_secs(), now.subsec_millis())
 }
 
 /// Recoit et journalise le heartbeat de `atelier-guest-init` (PID 1 du
@@ -241,6 +254,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"ssh-ed25519 AAAAtest workshop-demo");
+    }
+
+    #[tokio::test]
+    async fn the_host_time_is_served_as_seconds_with_milliseconds() {
+        let text = host_time().await;
+        let (secs, millis) = text.split_once('.').expect("secondes.millisecondes");
+        assert_eq!(millis.len(), 3, "{text}");
+        let secs: u64 = secs.parse().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(now.abs_diff(secs) <= 1, "{text} vs {now}");
     }
 
     #[tokio::test]
